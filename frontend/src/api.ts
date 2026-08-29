@@ -117,4 +117,16 @@ export const api = {
     if (!resp.ok) throw new Error(`startResearch: ${resp.status}`);
     return (await resp.json()) as { run_id: string; status: string };
   },
+  chat: async (sessionId: string | null, message: string) => {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, message }),
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      throw new Error(detail.detail ?? `chat: ${resp.status}`);
+    }
+    return (await resp.json()) as { run_id: string };
+  },
 };

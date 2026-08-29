@@ -44,6 +44,10 @@ def test_mid_run_failure_three_channels(tmp_path, caplog, monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")  # 端口 9 必拒连
     monkeypatch.setenv("OPENAI_MODEL", "gpt-x")
     monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})
+    # 钉住 provider 解析接缝：只看 env（隔离本机真实 pi 配置，防误打付费 API）
+    from finance_agent.llm.router import LLMRouter
+
+    monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
 
     runner = make_research_runner(tmp_path)  # 真实装配，LLM 边界指向死端口
     client, events = make_client(tmp_path, runner=runner, caplog=caplog)

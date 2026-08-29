@@ -11,6 +11,7 @@ import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .base import LLM, AssistantReply, ToolCall
@@ -22,6 +23,49 @@ _KNOWN_PROVIDERS = ("openai", "anthropic", "zhipuai", "deepseek")
 
 class ProviderConfigError(Exception):
     """provider 三件套未配置齐全（fail-closed）。"""
+
+
+class LLMCallError(Exception):
+    """LLM 调用失败（HTTP 错误必须携带响应体——400 的真实原因在 body 里）。"""
+
+
+def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """内部规范消息 → OpenAI 线格式投影。
+
+    - assistant.tool_calls: call_id/name/arguments → id/type/function(name, arguments=JSON str)
+    - tool 结果：call_id → tool_call_id；剥离 provenance/name 等内部审计字段
+    - 空 tool_calls 不下发（严格网关会拒绝）
+    """
+    wire: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            wire.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": m.get("tool_call_id") or m.get("call_id"),
+                    "content": m.get("content", ""),
+                }
+            )
+        elif role == "assistant":
+            out: dict[str, Any] = {"role": "assistant", "content": m.get("content", "")}
+            tcs = m.get("tool_calls") or []
+            if tcs:
+                out["tool_calls"] = [
+                    {
+                        "id": tc["call_id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                        },
+                    }
+                    for tc in tcs
+                ]
+            wire.append(out)
+        else:
+            wire.append({"role": role, "content": m.get("content", "")})
+    return wire
 
 
 @dataclass(frozen=True)
@@ -49,7 +93,7 @@ class OpenAICompatLLM:
         self._timeout = timeout
 
     def complete(self, messages: list[dict[str, Any]], tools: list[str]) -> AssistantReply:
-        body: dict[str, Any] = {"model": self.spec.model, "messages": messages}
+        body: dict[str, Any] = {"model": self.spec.model, "messages": to_openai_messages(messages)}
         if tools:
             body["tools"] = [
                 {
@@ -62,7 +106,10 @@ class OpenAICompatLLM:
             ]
         url = f"{self.spec.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.spec.api_key}", "Content-Type": "application/json"}
-        resp = self._transport(url, headers, body)
+        try:
+            resp = self._transport(url, headers, body)
+        except Exception as e:
+            raise _normalize_llm_error(e) from e
         msg = resp["choices"][0]["message"]
         tool_calls = [
             ToolCall(
@@ -78,7 +125,11 @@ class OpenAICompatLLM:
         import httpx  # lazy：核心与测试不依赖网络库
 
         resp = httpx.post(url, headers=headers, json=body, timeout=self._timeout)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # 响应体携带网关的真实原因（模型名错 / schema 不兼容 / 余额不足…）
+            raise LLMCallError(f"{e} | body: {resp.text[:500]}") from e
         return resp.json()
 
 
@@ -97,6 +148,15 @@ def _read_dotenv(path: str = ".env") -> dict[str, str]:
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip().strip('"').strip("'")
     return out
+
+
+def _normalize_llm_error(e: Exception) -> Exception:
+    """transport 层的 HTTP 错误 → LLMCallError（携带响应体，可诊断）。"""
+    response = getattr(e, "response", None)
+    if response is not None:
+        body = getattr(response, "text", "")
+        return LLMCallError(f"{e} | body: {str(body)[:500]}")
+    return LLMCallError(str(e))
 
 
 class LLMRouter:
@@ -133,8 +193,52 @@ class LLMRouter:
                 specs[name] = ProviderSpec(name=name, api_key=key, base_url=base.rstrip("/"), model=model)
         return cls(specs, default_provider=default_provider, role_map=role_map)
 
+    @classmethod
+    def from_pi(
+        cls,
+        *,
+        default_provider: str = "novita-gpt",
+        role_map: dict[str, str] | None = None,
+        pi_dir: Path | None = None,
+    ) -> LLMRouter:
+        """直接复用 pi 的 provider 配置（~/.pi/agent/）作为单一真相源。
+
+        只收录 openai-completions 协议的 provider；多模型 provider
+        额外展开 <provider>:<model_id> 别名键。其余协议（如 anthropic-messages）跳过。
+        """
+        pi_dir = pi_dir or (Path.home() / ".pi" / "agent")
+        specs: dict[str, ProviderSpec] = {}
+        models_file, auth_file = pi_dir / "models.json", pi_dir / "auth.json"
+        if models_file.exists() and auth_file.exists():
+            providers = json.loads(models_file.read_text()).get("providers", {})
+            auth = json.loads(auth_file.read_text())
+            for name, prov in providers.items():
+                if prov.get("api") != "openai-completions":
+                    continue  # 非 OpenAI 协议暂不接入（fail-closed）
+                key = (auth.get(name) or {}).get("key")
+                models = prov.get("models") or []
+                base = (prov.get("baseUrl") or "").rstrip("/")
+                if not key or not models or not base:
+                    continue
+                specs[name] = ProviderSpec(
+                    name=name, api_key=key, base_url=base, model=models[0]["id"]
+                )
+                for m in models:  # 全部模型建别名键（含首个），角色路由精确到模型
+                    specs[f"{name}:{m['id']}"] = ProviderSpec(
+                        name=f"{name}:{m['id']}", api_key=key, base_url=base, model=m["id"]
+                    )
+        default_role_map = {"fast": "dashscope:kimi-k3"}
+        return cls(specs, default_provider=default_provider, role_map=role_map or default_role_map)
+
+    def providers(self) -> list[str]:
+        """已注册的 provider/别名键清单。"""
+        return sorted(self._specs)
+
     def get(self, role: str | None = None, *, tool_schemas: dict[str, dict] | None = None) -> LLM:
-        provider = self._role_map.get(role or "", self._default)
+        # 优先级：显式角色路由 > provider 名/别名直取 > 默认
+        provider = self._role_map.get(role or "")
+        if provider is None:
+            provider = role if role in self._specs else self._default
         spec = self._specs.get(provider)
         if spec is None:
             raise ProviderConfigError(

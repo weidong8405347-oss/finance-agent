@@ -21,11 +21,12 @@
 
 ```bash
 uv sync --extra dev --extra data   # 安装依赖
-# 配置 .env：OPENAI/ANTHROPIC/ZHIPUAI/DEEPSEEK 任选 provider 的三件套（API_KEY/BASE_URL/MODEL）
 uv run python -m finance_agent serve   # 一条命令：自动构建前端（首次）+ 起服务 + 打开浏览器
 ```
 
-打开 http://127.0.0.1:8000 —— Sessions 发起研究 / Knowledge 档案时光机 / Decisions 决策卡 / Evaluations 评估报告。
+打开 http://127.0.0.1:8000 —— **对话式交互**（参考 deepseek-harness）：底部输入框直接说事，如「帮我深度研究一下 AAPL」「600519 现在可以买吗」；研究/决策过程与结果在会话流中实时展示。
+
+**LLM 配置**：默认直接复用 pi 的 provider 配置（`~/.pi/agent/`，研究主力 pa/gpt-5.6-sol；fast 角色 kimi-k3；另有 GLM-5.3 / deepseek-v4-pro-0813 等别名可路由）。无 pi 配置时回落 `.env` 三件套（见 [.env.example](.env.example)）。
 
 前端开发热更新模式才需要第二个进程：`cd frontend && npm run dev`（:5173，代理 /api 到 :8000）。
 

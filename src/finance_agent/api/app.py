@@ -38,6 +38,11 @@ class ResearchRequest(BaseModel):
     require_approval: bool = False  # milestone 档：高成本操作先审批
 
 
+class ChatRequest(BaseModel):
+    session_id: str | None = None
+    message: str
+
+
 def create_app(
     *,
     kb: BitemporalStore,
@@ -45,6 +50,7 @@ def create_app(
     decisions: DecisionStore,
     evals_dir: str | Path,
     research_runner: ResearchRunner | None = None,
+    decision_runner: Callable[[str, str, EventStore], None] | None = None,
     research_preflight: Callable[[], str | None] | None = None,
     approval_timeout_s: float = 600.0,
     static_dir: str | Path | None = None,
@@ -179,6 +185,52 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown approval_id") from None
         return {"ok": True}
 
+    # ---------------- Chat（对话式主交互，参考 dsh） ----------------
+
+    @app.post("/api/chat")
+    def chat(req: ChatRequest) -> dict[str, Any]:
+        from .intent import classify_intent, extract_tickers
+
+        run_id = req.session_id or f"live-{uuid.uuid4().hex[:8]}"
+        events.append(
+            Event(run_id=run_id, type="user/message", payload={"content": req.message})
+        )
+        intent = classify_intent(req.message)
+        tickers = extract_tickers(req.message)
+
+        def assistant(text: str) -> None:
+            events.append(
+                Event(run_id=run_id, type="assistant/message", payload={"content": text})
+            )
+
+        if not tickers:
+            if intent == "decide":
+                assistant("想让我出投资建议的话，请带上标的代码（如 AAPL、600519）。")
+            else:
+                assistant(
+                    "请告诉我要研究的具体标的（如 AAPL、600519），"
+                    "或说明你想做什么：深度研究 / 投资建议。"
+                )
+            return {"run_id": run_id}
+
+        ticker = tickers[0]
+        if research_preflight is not None:
+            problem = research_preflight()
+            if problem is not None:
+                assistant(f"⚠ 配置缺失：{problem}")  # 对话式报错（可见、可复制）
+                return {"run_id": run_id}
+
+        def work() -> None:
+            if intent == "decide" and decision_runner is not None:
+                decision_runner(run_id, ticker, events)
+            elif research_runner is not None:
+                research_runner(run_id, ticker, req.message, events)
+            else:
+                assistant("⚠ 后端未装配研究/决策 runner。")
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"run_id": run_id}
+
     # ---------------- Decisions ----------------
 
     @app.get("/api/decisions")
@@ -271,22 +323,28 @@ def _session_summary(events: EventStore, run_id: str, count: int, started_at: st
     """会话状态投影：error > cancelled > done > running；错误原因直接带出。"""
     rows = events._conn.execute(  # noqa: SLF001
         "SELECT type, payload FROM events WHERE run_id = ? AND"
-        " type IN ('research/error', 'research/cancelled', 'research/completed')",
+        " type IN ('research/error', 'research/cancelled', 'research/completed',"
+        " 'decision/error', 'decision/completed')",
         (run_id,),
     ).fetchall()
     types = {r[0] for r in rows}
     status = "running"
     detail = None
-    if "research/error" in types:
+    if "research/error" in types or "decision/error" in types:
         status = "error"
         import json
 
         detail = next(
-            (json.loads(r[1]).get("reason") for r in rows if r[0] == "research/error"), None
+            (
+                json.loads(r[1]).get("reason")
+                for r in rows
+                if r[0] in ("research/error", "decision/error")
+            ),
+            None,
         )
     elif "research/cancelled" in types:
         status = "cancelled"
-    elif "research/completed" in types:
+    elif "research/completed" in types or "decision/completed" in types:
         status = "done"
     return {
         "run_id": run_id,

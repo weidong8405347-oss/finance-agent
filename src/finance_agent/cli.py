@@ -80,13 +80,49 @@ GATEWAY_TOOL_SCHEMAS = {
 }
 
 
-def _real_llm():
+def _router():
+    """provider 配置来源（可测试接缝）：pi 配置优先，.env 兜底。"""
     from .llm.router import LLMRouter
+
+    pi_dir = Path.home() / ".pi" / "agent"
+    if (pi_dir / "models.json").exists() and (pi_dir / "auth.json").exists():
+        return LLMRouter.from_pi()  # 复用 pi 配置（单一真相源）
+    return LLMRouter.from_env()
+
+
+def _real_llm(role: str = "research"):
     from .research.tools import TOOL_SCHEMAS
 
-    return LLMRouter.from_env().get(
-        "research", tool_schemas={**TOOL_SCHEMAS, **GATEWAY_TOOL_SCHEMAS}
-    )
+    return _router().get(role, tool_schemas={**TOOL_SCHEMAS, **GATEWAY_TOOL_SCHEMAS})
+
+
+def make_decision_runner(data_dir: Path):
+    """生产决策 runner（真实装配）。失败三通道：事件 + 日志 +（API 投影）。"""
+
+    def decision_runner(run_id, ticker, events):
+        from .decision.loop import DecisionLoop
+        from .decision.service import DecisionService
+        from .decision.store import DecisionStore
+        from .logging_setup import setup_logging
+
+        logger = setup_logging()
+        try:
+            kb = BitemporalStore(data_dir / "kb.db")
+            svc = DecisionService(
+                kb=kb, decisions=DecisionStore(data_dir / "decisions.db"), events=events
+            )
+            manifest = RunManifest(run_id=run_id, mode=RunMode.LIVE)
+            card_id = DecisionLoop(
+                kb=kb, events=events, decision_service=svc, llm=_real_llm(), manifest=manifest
+            ).run("stock", ticker.upper())
+            events.append(
+                Event(run_id=run_id, type="decision/completed", payload={"card_id": card_id})
+            )
+        except Exception as e:
+            logger.error("decision failed run=%s: %s", run_id, e)
+            events.append(Event(run_id=run_id, type="decision/error", payload={"reason": str(e)}))
+
+    return decision_runner
 
 
 def _ensure_frontend_built(dist: Path) -> bool:
@@ -204,6 +240,7 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
         decisions=DecisionStore(data_dir / "decisions.db"),
         evals_dir=data_dir / "evals",
         research_runner=make_research_runner(data_dir),
+        decision_runner=make_decision_runner(data_dir),
         research_preflight=_research_preflight,
         static_dir=dist,
     )

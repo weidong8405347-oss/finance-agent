@@ -85,6 +85,7 @@ def test_router_from_env(monkeypatch):
 def test_router_missing_provider_config_fail_closed(monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})  # 隔离真实 .env
     router = LLMRouter.from_env(default_provider="openai")
     with pytest.raises(ProviderConfigError):
         router.get("any")

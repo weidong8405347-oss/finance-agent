@@ -32,6 +32,10 @@ def test_coldstart_without_provider_actionable_422(tmp_path, monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})
+    # 钉住 provider 解析接缝：只看 env（隔离本机真实 pi 配置，防误打付费 API）
+    from finance_agent.llm.router import LLMRouter
+
+    monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
 
     client = TestClient(cold_app(tmp_path))
     resp = client.post("/api/research", json={"ticker": "AAPL", "objective": "深度研究"})
@@ -47,6 +51,10 @@ def test_coldstart_dead_provider_visible_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-x")
     monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})
+    # 钉住 provider 解析接缝：只看 env（隔离本机真实 pi 配置，防误打付费 API）
+    from finance_agent.llm.router import LLMRouter
+
+    monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
 
     client = TestClient(cold_app(tmp_path))
     resp = client.post("/api/research", json={"ticker": "AAPL", "objective": "深度研究"})
