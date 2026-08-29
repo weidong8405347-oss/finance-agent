@@ -104,9 +104,8 @@ class AgentKernel:
         fn = self._tools.get(name)
         if fn is None:
             return {"content": f"error: 未注册的工具 {name}", "provenance": []}
-        result = fn(arguments)
-        result.setdefault("provenance", [])
-        return result
+        # 注意：不兜底 provenance 键——缺失正是 leakage-audit 要捕获的信号
+        return fn(arguments)
 
     def _emit(self, type_: str, payload: dict | None = None, *, turn: int = 0, step: int = 0) -> int:
         return self._store.append(

@@ -23,6 +23,7 @@ from ..knowledge.gaps import GapAnalyzer
 from ..knowledge.store import BitemporalStore
 from ..knowledge.writer import ProfileWriter
 from ..llm.base import LLM
+from ..loop.hooks import Hook
 from ..loop.kernel import AgentKernel
 from .prompts import GROUNDING_CONTRACT, build_round_brief
 from .report import IterationReport
@@ -44,6 +45,7 @@ class ResearchLoop:
         namespace: str = "prod",
         gateway_sources: list[str] | None = None,
         max_steps_per_round: int = 16,
+        hooks: list[Hook] | None = None,
     ):
         self._store = store
         self._events = events
@@ -56,6 +58,7 @@ class ResearchLoop:
         self._namespace = namespace
         self._gateway_sources = gateway_sources or []
         self._max_steps = max_steps_per_round
+        self._hooks = hooks or []
         self.stop_reason: str | None = None
 
     def run(
@@ -101,6 +104,7 @@ class ResearchLoop:
                 llm=self._llm,
                 manifest=self._manifest,
                 tools=tools,
+                hooks=self._hooks,
                 max_steps=self._max_steps,
             )
             kernel.run_turn(build_round_brief(entity_kind, entity_id, objective, gaps_before, round_no))

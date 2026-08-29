@@ -53,8 +53,8 @@ class RiskReviewer:
                     f"证据 {eid} 的 available_at（{ev.available_at.isoformat()}）晚于决策时刻"
                 )
 
-        # 3) thesis_points 必须引用决策时刻档案中真实存在的字段
-        profile = self._kb.as_of(card.subject.kind, card.subject.id, card.created_at, namespace=namespace)
+        # 3) thesis_points 必须引用决策时刻档案中真实存在的字段（eval 走叠加视图）
+        profile = self._kb.view(card.subject.kind, card.subject.id, card.created_at, namespace=namespace)
         for field in card.thesis_points:
             if field not in profile:
                 violations.append(f"thesis 引用了档案中不存在的字段: {field}")

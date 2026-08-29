@@ -17,6 +17,7 @@ from ..eventstore.store import EventStore
 from ..harness.manifest import RunManifest, RunMode
 from ..knowledge.store import BitemporalStore
 from ..llm.base import LLM
+from ..loop.hooks import Hook
 from ..loop.kernel import AgentKernel
 from .card import Action, DecisionCard, Horizon, Position, Subject
 from .service import DecisionService, RiskReviewRejected
@@ -40,6 +41,7 @@ class DecisionLoop:
         manifest: RunManifest,
         namespace: str = "prod",
         max_steps: int = 8,
+        hooks: list[Hook] | None = None,
     ):
         self._kb = kb
         self._events = events
@@ -48,6 +50,7 @@ class DecisionLoop:
         self._manifest = manifest
         self._namespace = namespace
         self._max_steps = max_steps
+        self._hooks = hooks or []
 
     def run(self, entity_kind: str, entity_id: str, *, now: datetime | None = None) -> str | None:
         """跑一次决策，返回 card_id；被拒或模型选择不出卡 → None。"""
@@ -61,7 +64,8 @@ class DecisionLoop:
         issued: dict[str, str] = {}
 
         def query_kb(_args: dict[str, Any]) -> dict[str, Any]:
-            profile = self._kb.as_of(entity_kind, entity_id, created_at, namespace=self._namespace)
+            # eval 命名空间下为叠加视图（生产 as_of(T) + eval 增量）
+            profile = self._kb.view(entity_kind, entity_id, created_at, namespace=self._namespace)
             return {
                 "content": json.dumps(
                     {
@@ -108,9 +112,12 @@ class DecisionLoop:
             try:
                 card_id = self._svc.issue(card, self._manifest, namespace=self._namespace)
             except RiskReviewRejected as e:
-                return {"content": f"rejected: {e}", "provenance": []}
+                return {"content": f"rejected: {e}", "provenance": self._rationale_provenance(card)}
             issued["card_id"] = card_id
-            return {"content": json.dumps({"card_id": card_id}), "provenance": []}
+            return {
+                "content": json.dumps({"card_id": card_id}),
+                "provenance": self._rationale_provenance(card),
+            }
 
         self._events.append(
             Event(
@@ -124,7 +131,25 @@ class DecisionLoop:
             llm=self._llm,
             manifest=self._manifest,
             tools={"query_kb": query_kb, "propose_decision": propose_decision},
+            hooks=self._hooks,
             max_steps=self._max_steps,
         )
         kernel.run_turn(f"请基于 {entity_kind}:{entity_id} 的档案给出投资建议。")
         return issued.get("card_id")
+
+    def _rationale_provenance(self, card: DecisionCard) -> list[dict[str, Any]]:
+        """决策卡结果携带 rationale 证据的 provenance（eval 模式 leakage-audit 的审计锚点）。"""
+        prov = []
+        for eid in card.rationale:
+            try:
+                ev = self._kb.get_evidence(eid)
+            except Exception:
+                continue
+            prov.append(
+                {
+                    "source_id": ev.source_id,
+                    "available_at": ev.available_at.isoformat() if ev.available_at else None,
+                    "pit_grade": ev.pit_grade.value,
+                }
+            )
+        return prov

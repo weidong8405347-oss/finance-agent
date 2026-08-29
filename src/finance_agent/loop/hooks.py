@@ -51,7 +51,8 @@ class LeakageAuditHook:
             if msg.get("role") != "tool":
                 continue
             provenance = msg.get("provenance")
-            if not provenance:
+            # 键缺失 = 来源不明 → 拒绝；空列表 = 空结果集（无披露）→ 放行
+            if provenance is None:
                 self._reject(ctx, "tool_result_missing_provenance", msg, None)
             for prov in provenance:
                 raw = prov.get("available_at")

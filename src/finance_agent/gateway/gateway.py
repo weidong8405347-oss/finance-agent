@@ -46,6 +46,9 @@ class DataGateway:
         cap = adapter.capability()
         self._adapters[cap.source_id] = adapter
 
+    def source_ids(self) -> list[str]:
+        return list(self._adapters)
+
     def query(self, source_id: str, request: dict) -> list[DataRecord]:
         adapter = self._adapters.get(source_id)
         if adapter is None:

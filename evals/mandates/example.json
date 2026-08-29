@@ -1,0 +1,18 @@
+{
+  "name": "example-quarterly",
+  "tickers": ["AAPL"],
+  "decision_points": [
+    "2023-03-31",
+    "2023-06-30",
+    "2023-09-30",
+    "2023-12-31"
+  ],
+  "horizon_months": 3,
+  "backbone_model": "<provider/model>",
+  "backbone_cutoff": "2023-10-01",
+  "cost": { "commission_bps": 5.0, "slippage_bps": 10.0 },
+  "incremental_research": true,
+  "n_trials": 10,
+  "dev_fraction": 0.7,
+  "allow_pit_b": false
+}
