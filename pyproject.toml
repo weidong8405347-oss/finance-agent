@@ -1,0 +1,39 @@
+[project]
+name = "finance-agent"
+version = "0.1.0"
+description = "股票投资 agent：Deep Research / Profile / Decision / Evaluate 四环节闭环"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+# 真实数据源 adapter 所需的网络依赖；核心与测试不依赖它们（lazy import）
+data = [
+    "httpx>=0.27",
+    "yfinance>=0.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/finance_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
