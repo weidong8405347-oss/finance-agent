@@ -43,9 +43,12 @@ uv run ruff check src tests
 | `llm/router.py` | LLMRouter 多 provider（env 三件套，角色路由）+ OpenAI 兼容客户端（transport 可注入） |
 | `cli.py` | `python -m finance_agent research --ticker AAPL [--mock]` |
 
-验收（DESIGN.md §9 P1）：脚本化 3 轮迭代完整度 0→0.4→0.8→1.0 单调提升收敛；全部事实绑证据；硬门禁拒绝不落库且循环继续（`test_research_loop.py`）。真实标的跑通需配置 provider 三件套后走 `--mock` 反义路径。
+验收（DESIGN.md §9 P1）：脚本化 3 轮迭代完整度 0→0.4→0.8→1.0 单调提升收敛；全部事实绑证据；硬门禁拒绝不落库且循环继续（`test_research_loop.py`）。真实标的跑通：配置 provider 三件套后去掉 `--mock`。
 
 **P0 地基**
+
+| 模块 | 内容 |
+| --- | --- |
 
 | `eventstore/` | append-only 事件日志（SQLite）+ `derive_messages()` 投影（模型可见=已记录） |
 | `knowledge/` | 双时态 facts（event_time/knowledge_time）+ 证据表 + as_of(T) 投影 + 命名空间隔离 + ProfileWriter 单写者（eval 模式拒写越界证据） |
