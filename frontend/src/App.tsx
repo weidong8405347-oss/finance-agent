@@ -3,6 +3,7 @@ import SessionsPage from "./pages/SessionsPage";
 import KnowledgePage from "./pages/KnowledgePage";
 import DecisionsPage from "./pages/DecisionsPage";
 import EvaluationsPage from "./pages/EvaluationsPage";
+import ApprovalsBanner from "./components/ApprovalsBanner";
 
 type Page = "sessions" | "knowledge" | "decisions" | "evaluations";
 
@@ -37,6 +38,7 @@ export default function App() {
           </nav>
         </div>
       </header>
+      <ApprovalsBanner />
       <main className="mx-auto max-w-6xl px-6 py-6">
         {page === "sessions" && <SessionsPage />}
         {page === "knowledge" && <KnowledgePage />}

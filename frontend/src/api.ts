@@ -5,6 +5,13 @@ export interface SessionRow {
   started_at: string;
 }
 
+export interface ApprovalRow {
+  approval_id: string;
+  run_id: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface EventRow {
   seq: number;
   type: string;
@@ -86,4 +93,26 @@ export const api = {
     ),
   decisions: () => get<DecisionCardJson[]>("/api/decisions"),
   evaluations: () => get<EvalSummary[]>("/api/evaluations"),
+  pendingApprovals: () => get<ApprovalRow[]>("/api/approvals/pending"),
+  decideApproval: async (approvalId: string, approved: boolean) => {
+    const resp = await fetch(`/api/approvals/${approvalId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved }),
+    });
+    if (!resp.ok) throw new Error(`decideApproval: ${resp.status}`);
+  },
+  startResearch: async (ticker: string, objective: string, requireApproval: boolean) => {
+    const resp = await fetch("/api/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticker,
+        objective,
+        require_approval: requireApproval,
+      }),
+    });
+    if (!resp.ok) throw new Error(`startResearch: ${resp.status}`);
+    return (await resp.json()) as { run_id: string; status: string };
+  },
 };

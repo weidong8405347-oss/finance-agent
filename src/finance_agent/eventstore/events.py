@@ -30,6 +30,7 @@ DECISION_CARD = "decision/card_issued"
 LEAKAGE_ATTEMPT = "leakage/attempt"
 RESEARCH_ROUND_START = "research/round_start"
 RESEARCH_ROUND_END = "research/round_end"
+RESEARCH_RUBRIC = "research/rubric"
 
 #: 可投影进模型上下文的事件类型（白名单）
 MODEL_VISIBLE_TYPES: frozenset[str] = frozenset(

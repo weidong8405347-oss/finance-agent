@@ -32,6 +32,15 @@ uv run ruff check src tests
 
 ### 当前进度
 
+**加固与联调已完成（P4 之后）**
+
+| 项 | 内容 |
+| --- | --- |
+| 真实数据联调 | EDGAR adapter 真实 API 冒烟通过（ticker→CIK 解析、filingDate PIT 过滤验证）；LLMRouter 支持 .env 加载 + 工具 schema 注入；CLI 真实模式注册数据源 adapter |
+| research-rubric | LLM-as-judge 软反馈（D4：advisory，解析失败无害）：评分落 `research/rubric` 事件，gaps 进下一轮 brief |
+| 反事实探针接入回放 | `counterfactual=True` 的评估对每个出卡决策点扰动 thesis 字段重放决策，PC/CI/IDS 进 EvalReport |
+| SSE + 审批 | `GET /api/sessions/{id}/stream` 实时事件流；`ApprovalService` + `/api/approvals/*` + 前端审批横幅（D3 milestone 档落地）；Sessions 页可发起研究 |
+
 **UI 骨架已完成（参考 deepseek-harness 范式）**
 
 | 层 | 内容 |

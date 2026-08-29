@@ -17,7 +17,12 @@ GROUNDING_CONTRACT = """\
 
 
 def build_round_brief(
-    entity_kind: str, entity_id: str, objective: str, gaps: GapReport, round_no: int
+    entity_kind: str,
+    entity_id: str,
+    objective: str,
+    gaps: GapReport,
+    round_no: int,
+    judge_feedback: str | None = None,
 ) -> str:
     parts = [
         f"研究目标：{objective}",
@@ -30,5 +35,7 @@ def build_round_brief(
         parts.append("待更新（陈旧）字段：" + ", ".join(gaps.stale))
     if gaps.conflicts:
         parts.append("存在冲突待裁决：" + ", ".join(gaps.conflicts))
+    if judge_feedback:
+        parts.append("上一轮评审反馈（软反馈，供参考）：" + judge_feedback)
     parts.append("可用工具：register_evidence / propose_fact / query_kb / 数据源查询工具。")
     return "\n".join(parts)

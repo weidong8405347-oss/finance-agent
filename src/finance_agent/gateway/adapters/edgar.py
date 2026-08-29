@@ -20,6 +20,7 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 class EdgarAdapter:
     def __init__(self, *, user_agent: str = "finance-agent research (contact: local@example.com)"):
         self._ua = user_agent
+        self._ticker_map: dict[str, str] | None = None  # ticker -> CIK（惰性加载）
 
     def capability(self) -> SourceCapability:
         return SourceCapability(
@@ -32,7 +33,8 @@ class EdgarAdapter:
     def query(self, request: dict, as_of: datetime | None = None) -> list[DataRecord]:
         import httpx  # lazy：核心与测试不依赖网络库
 
-        cik = str(request["cik"]).zfill(10)
+        cik = request.get("cik") or self._resolve_cik(request["ticker"], httpx)
+        cik = str(cik).zfill(10)
         forms = set(request.get("forms") or [])
         resp = httpx.get(_SUBMISSIONS_URL.format(cik=cik), headers={"User-Agent": self._ua}, timeout=30)
         resp.raise_for_status()
@@ -63,3 +65,20 @@ class EdgarAdapter:
                 )
             )
         return records
+
+    def _resolve_cik(self, ticker: str, httpx) -> str:
+        """ticker → CIK（SEC 官方映射表，进程内缓存）。"""
+        if self._ticker_map is None:
+            resp = httpx.get(
+                "https://www.sec.gov/files/company_tickers.json",
+                headers={"User-Agent": self._ua},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            self._ticker_map = {
+                row["ticker"].upper(): str(row["cik_str"]) for row in resp.json().values()
+            }
+        cik = self._ticker_map.get(ticker.upper())
+        if cik is None:
+            raise KeyError(f"EDGAR 未找到 ticker: {ticker}")
+        return cik

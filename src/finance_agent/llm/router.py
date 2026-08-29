@@ -82,6 +82,23 @@ class OpenAICompatLLM:
         return resp.json()
 
 
+def _read_dotenv(path: str = ".env") -> dict[str, str]:
+    """极简 .env 解析（KEY=VALUE，忽略注释/空行）。文件不存在即空。"""
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
 class LLMRouter:
     def __init__(
         self,
@@ -102,7 +119,8 @@ class LLMRouter:
         role_map: dict[str, str] | None = None,
         env: Mapping[str, str] | None = None,
     ) -> LLMRouter:
-        env = env or os.environ
+        if env is None:
+            env = {**_read_dotenv(), **os.environ}  # .env 打底，环境变量优先
         specs: dict[str, ProviderSpec] = {}
         for name in _KNOWN_PROVIDERS:
             prefix = name.upper()
@@ -115,11 +133,11 @@ class LLMRouter:
                 specs[name] = ProviderSpec(name=name, api_key=key, base_url=base.rstrip("/"), model=model)
         return cls(specs, default_provider=default_provider, role_map=role_map)
 
-    def get(self, role: str | None = None) -> LLM:
+    def get(self, role: str | None = None, *, tool_schemas: dict[str, dict] | None = None) -> LLM:
         provider = self._role_map.get(role or "", self._default)
         spec = self._specs.get(provider)
         if spec is None:
             raise ProviderConfigError(
                 f"provider {provider!r} 未配置（需要 {provider.upper()}_API_KEY/BASE_URL/MODEL 三件套）"
             )
-        return OpenAICompatLLM(spec)
+        return OpenAICompatLLM(spec, tool_schemas=tool_schemas)

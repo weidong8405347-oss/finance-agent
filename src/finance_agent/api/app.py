@@ -6,16 +6,36 @@
 
 from __future__ import annotations
 
+import threading
+import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from ..decision.store import DecisionStore
+from ..eventstore.events import Event
 from ..eventstore.store import EventStore
+from ..harness.approvals import ApprovalService
 from ..knowledge.store import BitemporalStore
+from .sse import iter_sse_events
+
+# research_runner(run_id, ticker, objective, events) —— 命令入口的注入点（测试用假 runner）
+ResearchRunner = Callable[[str, str, str, EventStore], None]
+
+
+class ResearchRequest(BaseModel):
+    """模块级定义：函数内局部类在 `from __future__ import annotations` 下
+    无法被 FastAPI 解析为请求体模型（会被误当 query 参数）。"""
+
+    ticker: str
+    objective: str = ""
+    require_approval: bool = False  # milestone 档：高成本操作先审批
 
 
 def create_app(
@@ -24,6 +44,7 @@ def create_app(
     events: EventStore,
     decisions: DecisionStore,
     evals_dir: str | Path,
+    research_runner: ResearchRunner | None = None,
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.1.0")
     app.add_middleware(
@@ -33,6 +54,7 @@ def create_app(
         allow_headers=["*"],
     )
     evals_path = Path(evals_dir)
+    approvals = ApprovalService(events)
 
     # ---------------- Sessions ----------------
 
@@ -99,6 +121,57 @@ def create_app(
                 for field, rec in sorted(profile.items())
             },
         }
+
+    @app.get("/api/sessions/{run_id}/stream")
+    def stream_events(run_id: str) -> StreamingResponse:
+        return StreamingResponse(
+            iter_sse_events(events, run_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ---------------- 命令入口（写操作经审批闸） ----------------
+
+    @app.post("/api/research")
+    def start_research(req: ResearchRequest) -> dict[str, Any]:
+        run_id = f"live-{uuid.uuid4().hex[:8]}"
+
+        def work() -> None:
+            if req.require_approval:
+                approval_id = approvals.request(
+                    run_id,
+                    {"op": "research", "ticker": req.ticker, "objective": req.objective},
+                )
+                if not approvals.wait(approval_id):
+                    events.append(
+                        Event(run_id=run_id, type="research/cancelled", payload={"reason": "rejected"})
+                    )
+                    return
+            if research_runner is not None:
+                research_runner(run_id, req.ticker, req.objective, events)
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"run_id": run_id, "status": "started"}
+
+    @app.get("/api/approvals/pending")
+    def list_pending_approvals() -> list[dict[str, Any]]:
+        return [
+            {
+                "approval_id": r.approval_id,
+                "run_id": r.run_id,
+                "detail": r.detail,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in approvals.pending()
+        ]
+
+    @app.post("/api/approvals/{approval_id}")
+    def decide_approval(approval_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            approvals.decide(approval_id, bool(body.get("approved")))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown approval_id") from None
+        return {"ok": True}
 
     # ---------------- Decisions ----------------
 

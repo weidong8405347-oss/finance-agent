@@ -24,6 +24,7 @@ class EvalConfig(BaseModel, frozen=True):
     backbone_cutoff: date | None = None  # 截止日分区依据；不登记则全区间 UNKNOWN
     cost: CostModel = Field(default_factory=lambda: CostModel())
     incremental_research: bool = False  # D7：允许 eval 命名空间内补研究
+    counterfactual: bool = False  # P4：对已出卡的决策点跑反事实扰动（PC/CI/IDS）
     n_trials: int = Field(default=10, ge=1)  # dev 区间上的迭代次数估计（DSR 多重检验校正）
     dev_fraction: float = 0.7  # 时间序前段为 dev，后段为 holdout（报 generalization gap）
     allow_pit_b: bool = False

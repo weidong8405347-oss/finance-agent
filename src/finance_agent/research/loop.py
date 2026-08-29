@@ -13,6 +13,7 @@ from ..eventstore.events import (
     CONTEXT_INJECT,
     RESEARCH_ROUND_END,
     RESEARCH_ROUND_START,
+    RESEARCH_RUBRIC,
     Event,
 )
 from ..eventstore.store import EventStore
@@ -46,6 +47,7 @@ class ResearchLoop:
         gateway_sources: list[str] | None = None,
         max_steps_per_round: int = 16,
         hooks: list[Hook] | None = None,
+        judge_llm: LLM | None = None,  # research-rubric 软反馈（advisory，D4）
     ):
         self._store = store
         self._events = events
@@ -59,6 +61,7 @@ class ResearchLoop:
         self._gateway_sources = gateway_sources or []
         self._max_steps = max_steps_per_round
         self._hooks = hooks or []
+        self._judge_llm = judge_llm
         self.stop_reason: str | None = None
 
     def run(
@@ -74,6 +77,7 @@ class ResearchLoop:
         # 评估时刻：显式传入（评估回放）则固定；否则每次 gap 分析取当前真实时间，
         # 避免 run 内新写入的事实因 knowledge_time 晚于「起跑线时刻」而不可见。
         fixed_now = now
+        judge_feedback: str | None = None  # 上一轮 rubric 的软反馈
 
         def _now() -> datetime:
             return fixed_now or datetime.now(UTC)
@@ -107,7 +111,12 @@ class ResearchLoop:
                 hooks=self._hooks,
                 max_steps=self._max_steps,
             )
-            kernel.run_turn(build_round_brief(entity_kind, entity_id, objective, gaps_before, round_no))
+            kernel.run_turn(
+                build_round_brief(
+                    entity_kind, entity_id, objective, gaps_before, round_no,
+                    judge_feedback=judge_feedback,
+                )
+            )
 
             gaps_after = analyzer.analyze(entity_kind, entity_id, _now(), namespace=self._namespace)
             report = IterationReport(
@@ -124,6 +133,8 @@ class ResearchLoop:
             self._emit(RESEARCH_ROUND_END, report.model_dump(mode="json"))
             reports.append(report)
 
+            judge_feedback = self._judge_round(report)
+
             if gaps_after.completeness >= self._target:
                 self.stop_reason = "converged"
                 break
@@ -134,6 +145,23 @@ class ResearchLoop:
             self.stop_reason = "budget"
 
         return reports
+
+    def _judge_round(self, report: IterationReport) -> str | None:
+        """rubric 软反馈：评分落事件，gaps 进下一轮 brief；解析失败无害。"""
+        if self._judge_llm is None:
+            return None
+        from .rubric import RubricJudge
+
+        digest = report.model_dump_json()
+        score = RubricJudge(self._judge_llm).judge(digest)
+        if score is None:
+            self._emit(RESEARCH_RUBRIC, {"round": report.round, "parse_error": True})
+            return None
+        self._emit(
+            RESEARCH_RUBRIC,
+            {"round": report.round, "scores": score.model_dump(), "gaps": score.gaps},
+        )
+        return "；".join(score.gaps) if score.gaps else None
 
     def _emit(self, type_: str, payload: dict) -> None:
         self._events.append(Event(run_id=self._manifest.run_id, type=type_, payload=payload))

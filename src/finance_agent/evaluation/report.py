@@ -41,6 +41,13 @@ class Aggregate(BaseModel):
     generalization_gap: float
 
 
+class CounterfactualSummary(BaseModel):
+    trials: int
+    pc: float  # 越高越糟（背答案嫌疑）
+    ci: float
+    ids: float
+
+
 class EvalReport(BaseModel):
     eval_run_id: str
     config_name: str
@@ -48,6 +55,7 @@ class EvalReport(BaseModel):
     verdict: Literal["clean", "contaminated"]  # 硬门禁：leakage>0 或 canary 命中即 contaminated
     leakage_events: int
     canary_triggered: bool = False
+    counterfactual: CounterfactualSummary | None = None
     outcomes: list[DecisionOutcome] = Field(default_factory=list)
     aggregate: Aggregate
 

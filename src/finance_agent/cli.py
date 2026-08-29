@@ -13,6 +13,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .eventstore.events import Event
 from .eventstore.store import EventStore
 from .gateway.gateway import DataGateway
 from .harness.manifest import RunManifest, RunMode
@@ -22,11 +23,19 @@ from .knowledge.writer import ProfileWriter
 from .research.loop import ResearchLoop
 
 
-def _build(tmp: Path, llm, *, sources: list[str]) -> tuple[ResearchLoop, BitemporalStore, EventStore]:
+def _build(
+    tmp: Path, llm, *, sources: list[str], register_adapters: bool = False
+) -> tuple[ResearchLoop, BitemporalStore, EventStore]:
     events = EventStore(tmp / "events.db")
     kb = BitemporalStore(tmp / "kb.db")
     writer = ProfileWriter(store=kb, events=events)
     gateway = DataGateway(mode="live", events=events, run_id="live-cli")
+    if register_adapters:
+        from .gateway.adapters.edgar import EdgarAdapter
+        from .gateway.adapters.prices import YFinancePricesAdapter
+
+        gateway.register(EdgarAdapter())
+        gateway.register(YFinancePricesAdapter())
     manifest = RunManifest(run_id="live-cli", mode=RunMode.LIVE)
     loop = ResearchLoop(
         store=kb,
@@ -42,10 +51,42 @@ def _build(tmp: Path, llm, *, sources: list[str]) -> tuple[ResearchLoop, Bitempo
     return loop, kb, events
 
 
+GATEWAY_TOOL_SCHEMAS = {
+    "query_edgar": {
+        "name": "query_edgar",
+        "description": "查询 SEC EDGAR 披露（filingDate 为 PIT 可知时刻）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "forms": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["ticker"],
+        },
+    },
+    "query_prices": {
+        "name": "query_prices",
+        "description": "查询日线行情（available_at = 交易日 +1d）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+            },
+            "required": ["ticker"],
+        },
+    },
+}
+
+
 def _real_llm():
     from .llm.router import LLMRouter
+    from .research.tools import TOOL_SCHEMAS
 
-    return LLMRouter.from_env().get("research")
+    return LLMRouter.from_env().get(
+        "research", tool_schemas={**TOOL_SCHEMAS, **GATEWAY_TOOL_SCHEMAS}
+    )
 
 
 def _serve(data_dir: Path, host: str, port: int) -> int:
@@ -55,11 +96,39 @@ def _serve(data_dir: Path, host: str, port: int) -> int:
     from .decision.store import DecisionStore
 
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    def research_runner(run_id, ticker, objective, events):
+        """生产研究 runner：真实 LLM + 数据源。provider 未配置时落错误事件（fail-closed）。"""
+        from .gateway.adapters.edgar import EdgarAdapter
+        from .gateway.adapters.prices import YFinancePricesAdapter
+        from .llm.router import ProviderConfigError
+
+        kb = BitemporalStore(data_dir / "kb.db")
+        writer = ProfileWriter(store=kb, events=events)
+        gateway = DataGateway(mode="live", events=events, run_id=run_id)
+        gateway.register(EdgarAdapter())
+        gateway.register(YFinancePricesAdapter())
+        manifest = RunManifest(run_id=run_id, mode=RunMode.LIVE)
+        try:
+            llm = _real_llm()
+        except ProviderConfigError as e:
+            events.append(
+                Event(run_id=run_id, type="research/error", payload={"reason": str(e)})
+            )
+            return
+        loop = ResearchLoop(
+            store=kb, events=events, writer=writer, gateway=gateway, llm=llm,
+            manifest=manifest, max_rounds=3, completeness_target=0.8,
+            gateway_sources=gateway.source_ids(), judge_llm=None,
+        )
+        loop.run("stock", ticker.upper(), objective or f"深度研究 {ticker.upper()}")
+
     app = create_app(
         kb=BitemporalStore(data_dir / "kb.db"),
         events=EventStore(data_dir / "events.db"),
         decisions=DecisionStore(data_dir / "decisions.db"),
         evals_dir=data_dir / "evals",
+        research_runner=research_runner,
     )
     uvicorn.run(app, host=host, port=port)
     return 0
@@ -129,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             sources = ["edgar", "prices"]
 
         data_dir = Path(args.data_dir or tempfile.mkdtemp(prefix="finance-agent-"))
-        loop, kb, _events = _build(data_dir, llm, sources=sources)
+        loop, kb, _events = _build(data_dir, llm, sources=sources, register_adapters=not args.mock)
         reports = loop.run("stock", args.ticker.upper(), objective=f"深度研究 {args.ticker.upper()}")
         gaps = GapAnalyzer(kb).analyze("stock", args.ticker.upper(), datetime.now(UTC))
         print(json.dumps({

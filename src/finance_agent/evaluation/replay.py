@@ -32,9 +32,15 @@ from ..loop.kernel import AgentKernel
 from ..research.loop import ResearchLoop
 from .canary import canary_record, detect_canary_in_evidence, make_canary_adapter
 from .config import EvalConfig
+from .counterfactual import (
+    CounterfactualProbe,
+    CounterfactualResult,
+    DropField,
+    ScaleField,
+)
 from .holdout import HoldoutLedger
 from .prices import PriceBook
-from .report import Aggregate, DecisionOutcome, EvalReport
+from .report import Aggregate, CounterfactualSummary, DecisionOutcome, EvalReport
 from .stats import deflated_sharpe, max_drawdown, prob_sharpe, sharpe
 
 EVAL_REPORT = "eval/report"
@@ -107,6 +113,17 @@ class ReplayEngine:
                 self._save_checkpoint(checkpoint_path, completed, outcomes)
 
         outcomes.sort(key=lambda o: (o.point, o.ticker))
+
+        # 反事实扰动（D9/P4）：对每个已出卡决策点重放扰动决策
+        cf_results: list[CounterfactualResult] = []
+        if config.counterfactual:
+            for o in outcomes:
+                if o.incomplete or not o.card_id:
+                    continue
+                r = self._run_counterfactual(config, eval_run_id, namespace, o)
+                if r is not None:
+                    cf_results.append(r)
+
         leakage_events = len(self._events.read(eval_run_id, types={LEAKAGE_ATTEMPT}))
         canary_triggered = self._canary_check(config, namespace)
         verdict = "contaminated" if (leakage_events > 0 or canary_triggered) else "clean"
@@ -117,6 +134,7 @@ class ReplayEngine:
             verdict=verdict,
             leakage_events=leakage_events,
             canary_triggered=canary_triggered,
+            counterfactual=_mean_cf(cf_results),
             outcomes=outcomes,
             aggregate=self._aggregate(config, outcomes),
         )
@@ -329,6 +347,82 @@ class ReplayEngine:
         evidence_ids = [eid for card in cards for eid in card.rationale]
         return detect_canary_in_evidence(self._kb, evidence_ids)
 
+    def _run_counterfactual(
+        self, config: EvalConfig, eval_run_id: str, namespace: str, outcome: DecisionOutcome
+    ) -> CounterfactualResult | None:
+        """对单个已出卡决策做反事实重放：扰动 thesis 引用字段，重跑决策环。
+
+        manifest 按该点的 T 重建（created_at == T 是 risk-review 的硬校验），
+        事件流与泄漏审计归属本 eval run——cf 重放中引用越界证据同样判污染。
+        """
+        from ..knowledge.models import Fact
+
+        card = self._svc.decisions.get(outcome.card_id)
+        t_dt = datetime.combine(outcome.point, time(23, 59, 59), tzinfo=UTC)
+        manifest = RunManifest(
+            run_id=eval_run_id,
+            mode=RunMode.EVAL,
+            eval_as_of=t_dt,
+            backbone_model=config.backbone_model,
+            backbone_cutoff=config.backbone_cutoff,
+            allow_pit_b=config.allow_pit_b,
+        )
+        probe = CounterfactualProbe(
+            self._kb,
+            entity_kind=card.subject.kind,
+            entity_id=card.subject.id,
+            as_of=t_dt,
+            namespace=namespace,  # 与决策同视图（生产 as_of(T) + eval 增量）
+        )
+        base_view = probe.base_view()
+        perturbations = []
+        for f in card.thesis_points:
+            value = base_view.get(f, {}).get("value")
+            if isinstance(value, (int, float)):
+                perturbations.append(ScaleField(f, 0.1))
+            else:
+                perturbations.append(DropField(f))
+        if not perturbations:
+            return None
+
+        def decider(view):
+            """把（扰动后的）视图物化到一次性 cf 命名空间，重跑决策环。"""
+            cf_ns = f"cf:{uuid.uuid4().hex[:8]}"
+            for field, fv in view.items():
+                if not fv.get("evidence_ids"):
+                    continue
+                self._kb.assert_fact(
+                    Fact(
+                        entity_kind=card.subject.kind,
+                        entity_id=card.subject.id,
+                        field=field,
+                        value=fv["value"],
+                        event_time=(
+                            datetime.fromisoformat(fv["event_time"]) if fv.get("event_time") else None
+                        ),
+                        knowledge_time=datetime.fromisoformat(fv["knowledge_time"]),
+                        evidence_ids=list(fv["evidence_ids"]),
+                    ),
+                    namespace=cf_ns,
+                )
+            loop = DecisionLoop(
+                kb=self._kb,
+                events=self._events,
+                decision_service=self._svc,
+                llm=self._llm_agent,
+                manifest=manifest,
+                namespace=cf_ns,
+                hooks=[LeakageAuditHook(event_sink=self._events)],
+            )
+            with contextlib.suppress(LeakageDetected):
+                card_id = loop.run(card.subject.kind, card.subject.id, now=t_dt)
+                if card_id:
+                    c = self._svc.decisions.get(card_id)
+                    return {"action": c.action.value, "conviction": c.conviction}
+            return {"action": "none", "conviction": 0}
+
+        return probe.run(decider, perturbations)
+
     def _persist(self, config: EvalConfig, report: EvalReport) -> None:
         out_dir = self._artifacts / report.eval_run_id
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -351,3 +445,15 @@ class ReplayEngine:
             )
         )
 
+
+
+def _mean_cf(results: list[CounterfactualResult]) -> CounterfactualSummary | None:
+    if not results:
+        return None
+    n = len(results)
+    return CounterfactualSummary(
+        trials=sum(r.trials for r in results),
+        pc=sum(r.pc for r in results) / n,
+        ci=sum(r.ci for r in results) / n,
+        ids=sum(r.ids for r in results) / n,
+    )

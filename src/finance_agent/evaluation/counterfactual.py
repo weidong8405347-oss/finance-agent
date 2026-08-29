@@ -78,7 +78,12 @@ class CounterfactualProbe:
     def base_view(self) -> ProfileDict:
         profile = self._kb.view(self._kind, self._id, self._as_of, namespace=self._namespace)
         return {
-            f: {"value": r.value, "knowledge_time": r.knowledge_time.isoformat()}
+            f: {
+                "value": r.value,
+                "knowledge_time": r.knowledge_time.isoformat(),
+                "event_time": r.event_time.isoformat() if r.event_time else None,
+                "evidence_ids": list(r.evidence_ids),
+            }
             for f, r in profile.items()
         }
 
