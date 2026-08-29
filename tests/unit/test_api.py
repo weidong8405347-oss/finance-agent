@@ -80,7 +80,15 @@ def make_client(tmp_path):
 def test_sessions_list_and_events(tmp_path):
     client = make_client(tmp_path)
     runs = client.get("/api/sessions").json()
-    assert runs == [{"run_id": "run-1", "event_count": 3, "started_at": runs[0]["started_at"]}]
+    assert runs == [
+        {
+            "run_id": "run-1",
+            "event_count": 3,
+            "started_at": runs[0]["started_at"],
+            "status": "running",
+            "status_detail": None,
+        }
+    ]
 
     timeline = client.get("/api/sessions/run-1/events").json()
     assert [e["type"] for e in timeline] == ["turn/start", "user/message", "fact/asserted"]

@@ -77,10 +77,18 @@ export default function SessionsPage() {
                     : "border-neutral-200 bg-white hover:border-neutral-400"
                 }`}
               >
-                <div>{s.run_id}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate">{s.run_id}</span>
+                  <StatusBadge status={s.status} />
+                </div>
                 <div className="mt-0.5 opacity-70">
                   {s.event_count} events · {new Date(s.started_at).toLocaleString()}
                 </div>
+                {s.status === "error" && s.status_detail && (
+                  <div className="mt-1 select-text break-all text-[11px] text-red-500">
+                    {s.status_detail}
+                  </div>
+                )}
               </button>
             </li>
           ))}
@@ -111,27 +119,52 @@ const STYLE: Record<string, string> = {
   "leakage/attempt": "border-red-300 bg-red-50",
   "hook/verdict": "border-purple-200 bg-purple-50",
   "decision/card_issued": "border-green-200 bg-green-50",
+  "research/error": "border-red-400 bg-red-50",
+  "research/cancelled": "border-neutral-300 bg-neutral-100",
+  "research/completed": "border-green-200 bg-green-50",
 };
+
+const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
+  running: { text: "运行中", cls: "bg-blue-100 text-blue-800" },
+  done: { text: "已完成", cls: "bg-green-100 text-green-800" },
+  error: { text: "失败", cls: "bg-red-100 text-red-800" },
+  cancelled: { text: "已取消", cls: "bg-neutral-200 text-neutral-600" },
+};
+
+function StatusBadge({ status }: { status: SessionRow["status"] }) {
+  const s = STATUS_LABEL[status] ?? { text: status, cls: "bg-neutral-100" };
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] ${s.cls}`}>{s.text}</span>;
+}
 
 function EventCard({ event }: { event: EventRow }) {
   const [open, setOpen] = useState(false);
   const style = STYLE[event.type] ?? "border-neutral-200 bg-white";
+  const errorReason =
+    event.type === "research/error" ? String(event.payload.reason ?? "") : null;
   return (
-    <button
-      onClick={() => setOpen(!open)}
-      className={`block w-full rounded border px-3 py-2 text-left text-xs ${style}`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="font-mono font-medium">{event.type}</span>
+    // 外层 div 而非 button：payload 文字必须可选择/可复制（事故教训 RCA-2026-08-29）
+    <div className={`rounded border px-3 py-2 text-xs ${style}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <span className="font-mono font-medium">
+          {open ? "▾" : "▸"} {event.type}
+        </span>
         <span className="font-mono text-neutral-400">
           #{event.seq} · t{event.turn}/s{event.step}
         </span>
-      </div>
+      </button>
+      {errorReason && (
+        <div className="mt-1 select-text break-all font-mono text-[11px] text-red-700">
+          {errorReason}
+        </div>
+      )}
       {open && (
-        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-white/70 p-2 font-mono text-[11px] text-neutral-700">
+        <pre className="mt-2 max-h-64 select-text overflow-auto whitespace-pre-wrap break-all rounded bg-white/70 p-2 font-mono text-[11px] text-neutral-700">
           {JSON.stringify(event.payload, null, 2)}
         </pre>
       )}
-    </button>
+    </div>
   );
 }

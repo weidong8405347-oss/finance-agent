@@ -45,6 +45,8 @@ def create_app(
     decisions: DecisionStore,
     evals_dir: str | Path,
     research_runner: ResearchRunner | None = None,
+    research_preflight: Callable[[], str | None] | None = None,
+    approval_timeout_s: float = 600.0,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.1.0")
@@ -64,10 +66,7 @@ def create_app(
         rows = events._conn.execute(  # noqa: SLF001 - 投影层只读聚合
             "SELECT run_id, COUNT(*), MIN(ts) FROM events GROUP BY run_id ORDER BY MIN(ts) DESC"
         ).fetchall()
-        return [
-            {"run_id": r[0], "event_count": r[1], "started_at": r[2]}
-            for r in rows
-        ]
+        return [_session_summary(events, r[0], r[1], r[2]) for r in rows]
 
     @app.get("/api/sessions/{run_id}/events")
     def session_events(run_id: str) -> list[dict[str, Any]]:
@@ -135,6 +134,12 @@ def create_app(
 
     @app.post("/api/research")
     def start_research(req: ResearchRequest) -> dict[str, Any]:
+        if research_runner is None:
+            raise HTTPException(status_code=503, detail="研究功能未装配")
+        if research_preflight is not None:
+            problem = research_preflight()
+            if problem is not None:
+                raise HTTPException(status_code=422, detail=problem)
         run_id = f"live-{uuid.uuid4().hex[:8]}"
 
         def work() -> None:
@@ -143,7 +148,7 @@ def create_app(
                     run_id,
                     {"op": "research", "ticker": req.ticker, "objective": req.objective},
                 )
-                if not approvals.wait(approval_id):
+                if not approvals.wait(approval_id, timeout=approval_timeout_s):
                     events.append(
                         Event(run_id=run_id, type="research/cancelled", payload={"reason": "rejected"})
                     )
@@ -260,3 +265,33 @@ def _mount_static(app: FastAPI, static_dir: str | Path | None) -> None:
         if path and candidate.is_file() and candidate.is_relative_to(dist):
             return FileResponse(candidate)
         return FileResponse(dist / "index.html")
+
+
+def _session_summary(events: EventStore, run_id: str, count: int, started_at: str) -> dict[str, Any]:
+    """会话状态投影：error > cancelled > done > running；错误原因直接带出。"""
+    rows = events._conn.execute(  # noqa: SLF001
+        "SELECT type, payload FROM events WHERE run_id = ? AND"
+        " type IN ('research/error', 'research/cancelled', 'research/completed')",
+        (run_id,),
+    ).fetchall()
+    types = {r[0] for r in rows}
+    status = "running"
+    detail = None
+    if "research/error" in types:
+        status = "error"
+        import json
+
+        detail = next(
+            (json.loads(r[1]).get("reason") for r in rows if r[0] == "research/error"), None
+        )
+    elif "research/cancelled" in types:
+        status = "cancelled"
+    elif "research/completed" in types:
+        status = "done"
+    return {
+        "run_id": run_id,
+        "event_count": count,
+        "started_at": started_at,
+        "status": status,
+        "status_detail": detail,
+    }

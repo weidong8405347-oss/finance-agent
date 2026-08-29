@@ -9,10 +9,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ class EventStore:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._subscribers: list[Callable[[StoredEvent], None]] = []
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
@@ -71,7 +73,25 @@ class EventStore:
                 ),
             )
             self._conn.commit()
-            return int(cur.lastrowid)  # type: ignore[arg-type]
+            seq = int(cur.lastrowid)  # type: ignore[arg-type]
+
+        if self._subscribers:
+            stored = StoredEvent(
+                seq=seq, run_id=event.run_id, type=event.type, payload=event.payload,
+                turn=event.turn, step=event.step, correlation_id=event.correlation_id,
+                ts=event.ts,
+            )
+            for fn in self._subscribers:
+                # 订阅者（如日志镜像）异常不得反噬真相源
+                with contextlib.suppress(Exception):
+                    fn(stored)
+        return seq
+
+    # ---------------- 订阅（错误镜像等运维通道） ----------------
+
+    def subscribe(self, fn: Callable[[StoredEvent], None]) -> None:
+        """订阅新事件（append 提交后同步回调）。订阅者异常绝不反噬落库。"""
+        self._subscribers.append(fn)
 
     # ---------------- 读 ----------------
 

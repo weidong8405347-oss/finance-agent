@@ -108,12 +108,77 @@ def _ensure_frontend_built(dist: Path) -> bool:
     return (dist / "index.html").exists()
 
 
+def make_research_runner(data_dir: Path):
+    """生产研究 runner（真实装配）。LLM 与网络是唯一外部边界。
+
+    失败纪律（RCA 规矩 1 三通道）：事件落库 + 日志输出 +（由 API 层投影）用户可见。
+    """
+    from .logging_setup import setup_logging
+
+    logger = setup_logging()
+
+    def research_runner(run_id, ticker, objective, events):
+        from .gateway.adapters.edgar import EdgarAdapter
+        from .gateway.adapters.prices import YFinancePricesAdapter
+
+        kb = BitemporalStore(data_dir / "kb.db")
+        writer = ProfileWriter(store=kb, events=events)
+        gateway = DataGateway(mode="live", events=events, run_id=run_id)
+        gateway.register(EdgarAdapter())
+        gateway.register(YFinancePricesAdapter())
+        manifest = RunManifest(run_id=run_id, mode=RunMode.LIVE)
+        try:
+            llm = _real_llm()
+            loop = ResearchLoop(
+                store=kb, events=events, writer=writer, gateway=gateway, llm=llm,
+                manifest=manifest, max_rounds=3, completeness_target=0.8,
+                gateway_sources=gateway.source_ids(),
+            )
+            reports = loop.run("stock", ticker.upper(), objective or f"深度研究 {ticker.upper()}")
+        except Exception as e:  # 失败不得静默：事件 + 日志（API 层负责状态投影）
+            logger.error("research failed run=%s: %s", run_id, e)
+            events.append(
+                Event(run_id=run_id, type="research/error", payload={"reason": str(e)})
+            )
+            return
+        events.append(
+            Event(
+                run_id=run_id,
+                type="research/completed",
+                payload={
+                    "rounds": len(reports),
+                    "stop_reason": loop.stop_reason,
+                    "completeness": reports[-1].completeness_after if reports else 0.0,
+                },
+            )
+        )
+        logger.info("research completed run=%s rounds=%d", run_id, len(reports))
+
+    return research_runner
+
+
+def _research_preflight() -> str | None:
+    """研究前置校验：无 provider → 返回可操作指引（422 快速失败，不静默）。"""
+    from .llm.router import ProviderConfigError
+
+    try:
+        _real_llm()
+    except ProviderConfigError as e:
+        return (
+            f"未配置 LLM provider（{e}）。请在项目根目录 .env 配置三件套，"
+            "例如：OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL"
+        )
+    return None
+
+
 def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_build: bool) -> int:
     import uvicorn
 
     from .api.app import create_app
     from .decision.store import DecisionStore
+    from .logging_setup import mirror_events_to_logging, setup_logging
 
+    logger = setup_logging()
     repo_root = Path(__file__).resolve().parents[2]
     dist = repo_root / "frontend" / "dist"
     if auto_build:
@@ -130,38 +195,16 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
 
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    def research_runner(run_id, ticker, objective, events):
-        """生产研究 runner：真实 LLM + 数据源。provider 未配置时落错误事件（fail-closed）。"""
-        from .gateway.adapters.edgar import EdgarAdapter
-        from .gateway.adapters.prices import YFinancePricesAdapter
-        from .llm.router import ProviderConfigError
-
-        kb = BitemporalStore(data_dir / "kb.db")
-        writer = ProfileWriter(store=kb, events=events)
-        gateway = DataGateway(mode="live", events=events, run_id=run_id)
-        gateway.register(EdgarAdapter())
-        gateway.register(YFinancePricesAdapter())
-        manifest = RunManifest(run_id=run_id, mode=RunMode.LIVE)
-        try:
-            llm = _real_llm()
-        except ProviderConfigError as e:
-            events.append(
-                Event(run_id=run_id, type="research/error", payload={"reason": str(e)})
-            )
-            return
-        loop = ResearchLoop(
-            store=kb, events=events, writer=writer, gateway=gateway, llm=llm,
-            manifest=manifest, max_rounds=3, completeness_target=0.8,
-            gateway_sources=gateway.source_ids(), judge_llm=None,
-        )
-        loop.run("stock", ticker.upper(), objective or f"深度研究 {ticker.upper()}")
+    events = EventStore(data_dir / "events.db")
+    mirror_events_to_logging(events, logger)  # 错误类事件自动镜像到日志（规矩 1 通道 2）
 
     app = create_app(
         kb=BitemporalStore(data_dir / "kb.db"),
-        events=EventStore(data_dir / "events.db"),
+        events=events,
         decisions=DecisionStore(data_dir / "decisions.db"),
         evals_dir=data_dir / "evals",
-        research_runner=research_runner,
+        research_runner=make_research_runner(data_dir),
+        research_preflight=_research_preflight,
         static_dir=dist,
     )
     uvicorn.run(app, host=host, port=port)
@@ -233,6 +276,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             sources: list[str] = []
         else:
+            problem = _research_preflight()
+            if problem is not None:
+                print(problem, file=sys.stderr)
+                return 2
             llm = _real_llm()
             sources = ["edgar", "prices"]
 

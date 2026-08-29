@@ -3,6 +3,8 @@ export interface SessionRow {
   run_id: string;
   event_count: number;
   started_at: string;
+  status: "running" | "done" | "error" | "cancelled";
+  status_detail: string | null;
 }
 
 export interface ApprovalRow {

@@ -44,6 +44,13 @@ uv run ruff check src tests
 
 `serve` 参数：`--no-open`（不开浏览器）/ `--no-build`（不自动构建前端）/ `--host/--port/--data-dir`。
 
+### 工程约定（CI 强制，源自 2026-08-29 静默失败事故 [RCA](docs/incidents/2026-08-29-silent-failure-rca.md)）
+
+1. **失败可见性三通道**：任何 fail-closed/错误路径的测试必须同时断言——事件落库 + 日志输出 + 用户可见状态（API 状态投影/UI）。缺一即测试失败。错误处理不允许「静默 return」。
+2. **真实装配测试**：每条用户可达路径（CLI 命令、POST 端点）至少一个测试不注入假 runner；依赖注入只允许在系统边界（LLM provider、网络数据源）。
+
+测试分层：unit（组件契约）→ integration（P0 全链路/冷启动 E2E）→ L1 失败可见性 → L2 CLI 真实子进程。
+
 ### 当前进度
 
 **加固与联调已完成（P4 之后）**
