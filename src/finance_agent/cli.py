@@ -89,11 +89,44 @@ def _real_llm():
     )
 
 
-def _serve(data_dir: Path, host: str, port: int) -> int:
+def _ensure_frontend_built(dist: Path) -> bool:
+    """dist 缺失且本机有 npm 时自动构建（一条命令体验，参考 dsh web）。"""
+    import shutil
+    import subprocess
+
+    if (dist / "index.html").exists():
+        return True
+    frontend_dir = dist.parent
+    if not (frontend_dir / "package.json").exists() or shutil.which("npm") is None:
+        return False
+    print(f"[finance-agent] 前端未构建，自动执行 npm install && npm run build（{frontend_dir}）…")
+    try:
+        subprocess.run(["npm", "install", "--no-fund", "--no-audit"], cwd=frontend_dir, check=True)
+        subprocess.run(["npm", "run", "build"], cwd=frontend_dir, check=True)
+    except subprocess.CalledProcessError:
+        return False
+    return (dist / "index.html").exists()
+
+
+def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_build: bool) -> int:
     import uvicorn
 
     from .api.app import create_app
     from .decision.store import DecisionStore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = repo_root / "frontend" / "dist"
+    if auto_build:
+        _ensure_frontend_built(dist)
+
+    url = f"http://{host}:{port}"
+    print(f"[finance-agent] 数据目录: {data_dir}")
+    print(f"[finance-agent] 服务启动: {url}")
+    if open_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,6 +162,7 @@ def _serve(data_dir: Path, host: str, port: int) -> int:
         decisions=DecisionStore(data_dir / "decisions.db"),
         evals_dir=data_dir / "evals",
         research_runner=research_runner,
+        static_dir=dist,
     )
     uvicorn.run(app, host=host, port=port)
     return 0
@@ -141,14 +175,19 @@ def main(argv: list[str] | None = None) -> int:
     research.add_argument("--ticker", required=True)
     research.add_argument("--mock", action="store_true", help="离线演示（脚本化 LLM）")
     research.add_argument("--data-dir", default=None)
-    serve = sub.add_parser("serve", help="启动 API 服务（UI 投影层）")
+    serve = sub.add_parser("serve", help="启动服务（API + UI 同源，一条命令）")
     serve.add_argument("--data-dir", default="./data")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    serve.add_argument("--no-build", action="store_true", help="不自动构建前端")
     args = parser.parse_args(argv)
 
     if args.cmd == "serve":
-        return _serve(Path(args.data_dir), args.host, args.port)
+        return _serve(
+            Path(args.data_dir), args.host, args.port,
+            open_browser=not args.no_open, auto_build=not args.no_build,
+        )
 
     if args.cmd == "research":
         if args.mock:

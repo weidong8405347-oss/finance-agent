@@ -17,6 +17,18 @@
 - **评估反穿越三层防线**：数据层（时间锁）+ 知识库层（as_of 隔离）+ 模型层（grounding 校验 + canary + LLM-only 基线）
 - **权力分离**：研究 agent 无权改评估代码与 holdout 数据；评估结果是硬门禁，完整性不进加权总分
 
+## 快速开始
+
+```bash
+uv sync --extra dev --extra data   # 安装依赖
+# 配置 .env：OPENAI/ANTHROPIC/ZHIPUAI/DEEPSEEK 任选 provider 的三件套（API_KEY/BASE_URL/MODEL）
+uv run python -m finance_agent serve   # 一条命令：自动构建前端（首次）+ 起服务 + 打开浏览器
+```
+
+打开 http://127.0.0.1:8000 —— Sessions 发起研究 / Knowledge 档案时光机 / Decisions 决策卡 / Evaluations 评估报告。
+
+前端开发热更新模式才需要第二个进程：`cd frontend && npm run dev`（:5173，代理 /api 到 :8000）。
+
 ## 参考项目
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — 插件架构与 Web UI 交互范式参考
@@ -29,6 +41,8 @@ uv sync --extra dev   # 安装依赖（真实数据源 adapter 另需 --extra da
 uv run pytest         # 测试（含 PIT 穿越用例）
 uv run ruff check src tests
 ```
+
+`serve` 参数：`--no-open`（不开浏览器）/ `--no-build`（不自动构建前端）/ `--host/--port/--data-dir`。
 
 ### 当前进度
 

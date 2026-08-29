@@ -45,6 +45,7 @@ def create_app(
     decisions: DecisionStore,
     evals_dir: str | Path,
     research_runner: ResearchRunner | None = None,
+    static_dir: str | Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.1.0")
     app.add_middleware(
@@ -213,6 +214,9 @@ def create_app(
             return {"error": "not found"}
         return json.loads(report_file.read_text())
 
+    # ---------------- 前端静态伺服（一条命令 = API + UI，参考 dsh web） ----------------
+    _mount_static(app, static_dir)
+
     return app
 
 
@@ -229,3 +233,30 @@ def _evidence_json(kb: BitemporalStore, evidence_id: str) -> dict[str, Any]:
         "available_at": ev.available_at.isoformat() if ev.available_at else None,
         "pit_grade": ev.pit_grade.value,
     }
+
+
+_BUILD_HINT = """<!doctype html><html><body style="font-family:monospace;padding:2em">
+<h2>前端未构建</h2>
+<p>API 正常（/api/* 可用）。构建 UI：</p>
+<pre>cd frontend &amp;&amp; npm install &amp;&amp; npm run build</pre>
+<p>或重新运行 finance-agent serve（dist 缺失且本机有 npm 时会自动构建）。</p>
+</body></html>"""
+
+
+def _mount_static(app: FastAPI, static_dir: str | Path | None) -> None:
+    """SPA 静态伺服：/api/* 端点先行（注册顺序优先）；其余路径先找静态文件，
+    再回退 index.html（前端路由）。路径穿越防护：候选必须落在 dist 内。"""
+    from fastapi.responses import FileResponse, HTMLResponse
+
+    dist = Path(static_dir).resolve() if static_dir else None
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):  # type: ignore[no-untyped-def]
+        if path.startswith("api"):
+            raise HTTPException(status_code=404)
+        if dist is None or not (dist / "index.html").exists():
+            return HTMLResponse(_BUILD_HINT)
+        candidate = (dist / path).resolve()
+        if path and candidate.is_file() and candidate.is_relative_to(dist):
+            return FileResponse(candidate)
+        return FileResponse(dist / "index.html")
