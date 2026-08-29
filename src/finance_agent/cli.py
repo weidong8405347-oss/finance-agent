@@ -48,6 +48,23 @@ def _real_llm():
     return LLMRouter.from_env().get("research")
 
 
+def _serve(data_dir: Path, host: str, port: int) -> int:
+    import uvicorn
+
+    from .api.app import create_app
+    from .decision.store import DecisionStore
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    app = create_app(
+        kb=BitemporalStore(data_dir / "kb.db"),
+        events=EventStore(data_dir / "events.db"),
+        decisions=DecisionStore(data_dir / "decisions.db"),
+        evals_dir=data_dir / "evals",
+    )
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="finance-agent")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -55,7 +72,14 @@ def main(argv: list[str] | None = None) -> int:
     research.add_argument("--ticker", required=True)
     research.add_argument("--mock", action="store_true", help="离线演示（脚本化 LLM）")
     research.add_argument("--data-dir", default=None)
+    serve = sub.add_parser("serve", help="启动 API 服务（UI 投影层）")
+    serve.add_argument("--data-dir", default="./data")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
+
+    if args.cmd == "serve":
+        return _serve(Path(args.data_dir), args.host, args.port)
 
     if args.cmd == "research":
         if args.mock:

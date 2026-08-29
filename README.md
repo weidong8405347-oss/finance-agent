@@ -32,6 +32,14 @@ uv run ruff check src tests
 
 ### 当前进度
 
+**UI 骨架已完成（参考 deepseek-harness 范式）**
+
+| 层 | 内容 |
+| --- | --- |
+| `api/app.py` | FastAPI 只读投影：Sessions（run 列表 + 事件时间线）/ Knowledge（实体 + as_of 时光机 + 证据回指）/ Decisions / Evaluations |
+| `frontend/` | React+Vite+Tailwind 四页：Sessions 时间线（事件卡片可按类型高亮）· Knowledge 时光机（datetime 选择器切换历史投影）· Decisions 决策卡 · Evaluations 判定表 |
+| `cli.py serve` | `python -m finance_agent serve` 启动 API（前端 `npm run dev` 代理 /api） |
+
 **P4 硬化已完成**
 
 | 模块 | 内容 |
