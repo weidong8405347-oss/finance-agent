@@ -30,14 +30,27 @@ uv run pytest         # 测试（含 PIT 穿越用例）
 uv run ruff check src tests
 ```
 
-### 当前进度：P0 地基已完成
+### 当前进度
+
+**P1 研究闭环（生产模式）已完成**
 
 | 模块 | 内容 |
 | --- | --- |
+| `research/loop.py` | ResearchLoop：gap 分析 → LLM turn（工具）→ 过程评估 → IterationReport；收敛/停滞/预算三种终止 |
+| `knowledge/schema.py + gaps.py` | 实体档案 schema（stock/industry 必填字段 + 新鲜度策略）+ GapAnalyzer（缺口驱动迭代） |
+| `knowledge/guard.py` | numeric-guard：数值必须与证据原文逐字一致（writer 内硬门禁，含 knowledge_time 不变量） |
+| `research/tools.py` | register_evidence / propose_fact / query_kb；**knowledge_time 由证据推导，不信任模型自报** |
+| `llm/router.py` | LLMRouter 多 provider（env 三件套，角色路由）+ OpenAI 兼容客户端（transport 可注入） |
+| `cli.py` | `python -m finance_agent research --ticker AAPL [--mock]` |
+
+验收（DESIGN.md §9 P1）：脚本化 3 轮迭代完整度 0→0.4→0.8→1.0 单调提升收敛；全部事实绑证据；硬门禁拒绝不落库且循环继续（`test_research_loop.py`）。真实标的跑通需配置 provider 三件套后走 `--mock` 反义路径。
+
+**P0 地基**
+
 | `eventstore/` | append-only 事件日志（SQLite）+ `derive_messages()` 投影（模型可见=已记录） |
 | `knowledge/` | 双时态 facts（event_time/knowledge_time）+ 证据表 + as_of(T) 投影 + 命名空间隔离 + ProfileWriter 单写者（eval 模式拒写越界证据） |
 | `gateway/` | DataGateway 时间锁（PIT 分级 fail-closed，评估模式双重过滤 + leakage/attempt 审计）+ EDGAR/行情 A 级源骨架 |
 | `loop/` | 最小 agent kernel（turn/step 事件序）+ LeakageAuditHook（必达） |
 | `harness/` | RunManifest（模式冻结 + backbone cutoff 分区） |
 
-验收（DESIGN.md §9 P0）：事件回放可重建任意 run 的模型上下文（`test_loop_kernel.py` 不变量测试）；as_of(T) 正确性含 reporting-lag / restatement / 命名空间隔离 / 网关时间锁 / hook 拦截等穿越用例（39 tests）。
+P0 验收：事件回放可重建任意 run 的模型上下文（不变量测试）；as_of(T) 正确性含 reporting-lag / restatement / 命名空间隔离 / 网关时间锁 / hook 拦截等穿越用例。
