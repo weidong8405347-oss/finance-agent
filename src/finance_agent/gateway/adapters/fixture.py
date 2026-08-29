@@ -13,7 +13,7 @@ RecordsFn = Callable[[dict, datetime | None], list[DataRecord]]
 class FixtureAdapter:
     def __init__(self, capability: SourceCapability, records: list[DataRecord] | RecordsFn):
         self._cap = capability
-        self._records = records
+        self.records = records  # 公开：引擎按决策点替换诱饵内容
         self.seen_as_of: list[datetime | None] = []
 
     def capability(self) -> SourceCapability:
@@ -21,6 +21,6 @@ class FixtureAdapter:
 
     def query(self, request: dict, as_of: datetime | None = None) -> list[DataRecord]:
         self.seen_as_of.append(as_of)
-        if callable(self._records):
-            return self._records(request, as_of)
-        return list(self._records)
+        if callable(self.records):
+            return self.records(request, as_of)
+        return list(self.records)

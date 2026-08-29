@@ -45,7 +45,12 @@ class EvalReport(BaseModel):
     eval_run_id: str
     config_name: str
     config_hash: str
-    verdict: Literal["clean", "contaminated"]  # 硬门禁：leakage>0 → contaminated
+    verdict: Literal["clean", "contaminated"]  # 硬门禁：leakage>0 或 canary 命中即 contaminated
     leakage_events: int
+    canary_triggered: bool = False
     outcomes: list[DecisionOutcome] = Field(default_factory=list)
     aggregate: Aggregate
+
+    def redacted(self) -> EvalReport:
+        """holdout 报告脱敏：只含聚合统计，不含逐 case 细节（评估对齐稿 §2.5）。"""
+        return self.model_copy(update={"outcomes": []})

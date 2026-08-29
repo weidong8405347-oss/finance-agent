@@ -32,6 +32,18 @@ uv run ruff check src tests
 
 ### 当前进度
 
+**P4 硬化已完成**
+
+| 模块 | 内容 |
+| --- | --- |
+| `evaluation/canary.py` | 合成诱饵：带唯一 token 的假「未来事实」，决策引用即整批 contaminated |
+| `evaluation/counterfactual.py` | 反事实扰动探针 PC/CI/IDS（决策不随证据变化 = 背答案） |
+| `evaluation/holdout.py` | holdout 预算账本（fail-closed）+ 报告脱敏为仅聚合（`EvalReport.redacted()`） |
+| `harness/protected.py` | protected paths：评估代码/配置/holdout 数据对 agent 写禁止 |
+| `evaluation/replay.py` | 断点恢复（checkpoint.json 原子写，同 eval_run_id 续跑） |
+
+验收（DESIGN.md §9 P4）：canary 命中/豁免用例、预算耗尽拒绝、protected path 写拦截、中断续跑后 4 点报告完整——均可复现。
+
 **P3 评估闭环已完成**
 
 | 模块 | 内容 |

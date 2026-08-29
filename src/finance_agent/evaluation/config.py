@@ -27,6 +27,9 @@ class EvalConfig(BaseModel, frozen=True):
     n_trials: int = Field(default=10, ge=1)  # dev 区间上的迭代次数估计（DSR 多重检验校正）
     dev_fraction: float = 0.7  # 时间序前段为 dev，后段为 holdout（报 generalization gap）
     allow_pit_b: bool = False
+    canary: bool = False  # P4：注入合成诱饵，决策引用即判污染
+    is_holdout: bool = False  # holdout 运行：预算制 + 报告脱敏为仅聚合
+    holdout_budget: int = Field(default=10, ge=1)
 
     @model_validator(mode="after")
     def _sorted_points(self) -> EvalConfig:

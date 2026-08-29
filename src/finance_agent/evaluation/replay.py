@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time
@@ -29,7 +30,9 @@ from ..llm.base import LLM
 from ..loop.hooks import LeakageAuditHook, LeakageDetected
 from ..loop.kernel import AgentKernel
 from ..research.loop import ResearchLoop
+from .canary import canary_record, detect_canary_in_evidence, make_canary_adapter
 from .config import EvalConfig
+from .holdout import HoldoutLedger
 from .prices import PriceBook
 from .report import Aggregate, DecisionOutcome, EvalReport
 from .stats import deflated_sharpe, max_drawdown, prob_sharpe, sharpe
@@ -62,10 +65,24 @@ class ReplayEngine:
         self._artifacts = Path(artifacts_dir)
         self._gateway_factory = gateway_factory
 
-    def run(self, config: EvalConfig) -> EvalReport:
-        eval_run_id = f"eval-{uuid.uuid4().hex[:8]}"
+    def run(self, config: EvalConfig, *, eval_run_id: str | None = None) -> EvalReport:
+        eval_run_id = eval_run_id or f"eval-{uuid.uuid4().hex[:8]}"
         namespace = f"eval:{eval_run_id}"
+
+        # holdout：预算制，fail-closed（评估对齐稿 §2.5）
+        ledger: HoldoutLedger | None = None
+        if config.is_holdout:
+            ledger = HoldoutLedger(self._artifacts / "holdout_ledger.json")
+            ledger.assert_allowed(config.name, budget=config.holdout_budget)
+
+        # 断点恢复：加载已完成的 (point, ticker)
+        checkpoint_path = self._artifacts / eval_run_id / "checkpoint.json"
+        completed: set[str] = set()
         outcomes: list[DecisionOutcome] = []
+        if checkpoint_path.exists():
+            saved = json.loads(checkpoint_path.read_text())
+            completed = set(saved.get("completed", []))
+            outcomes = [DecisionOutcome(**o) for o in saved.get("outcomes", [])]
 
         for point in config.decision_points:
             # 决策时刻 = T 日收盘后（当日全天信息可知）
@@ -80,21 +97,32 @@ class ReplayEngine:
             )
             zone = manifest.cutoff_zone(t_dt).value
             for ticker in config.tickers:
+                key = f"{point.isoformat()}|{ticker}"
+                if key in completed:
+                    continue
                 outcomes.append(
                     self._replay_one(config, manifest, namespace, ticker, point, t_dt, zone)
                 )
+                completed.add(key)
+                self._save_checkpoint(checkpoint_path, completed, outcomes)
 
+        outcomes.sort(key=lambda o: (o.point, o.ticker))
         leakage_events = len(self._events.read(eval_run_id, types={LEAKAGE_ATTEMPT}))
+        canary_triggered = self._canary_check(config, namespace)
+        verdict = "contaminated" if (leakage_events > 0 or canary_triggered) else "clean"
         report = EvalReport(
             eval_run_id=eval_run_id,
             config_name=config.name,
             config_hash=config.config_hash(),
-            verdict="contaminated" if leakage_events > 0 else "clean",
+            verdict=verdict,
             leakage_events=leakage_events,
+            canary_triggered=canary_triggered,
             outcomes=outcomes,
             aggregate=self._aggregate(config, outcomes),
         )
         self._persist(config, report)
+        if ledger is not None:
+            ledger.consume(config.name, budget=config.holdout_budget)
         return report
 
     # ---------------- 单点回放 ----------------
@@ -179,6 +207,11 @@ class ReplayEngine:
                 mode="eval", eval_as_of=t_dt, events=self._events, run_id=manifest.run_id
             )
         )
+        if config.canary:
+            adapter = make_canary_adapter()
+            adapter.records = [canary_record(ticker, t_dt)]  # 按决策点生成诱饵
+            gateway.register(adapter)
+
         loop = ResearchLoop(
             store=self._kb,
             events=self._events,
@@ -273,11 +306,36 @@ class ReplayEngine:
             generalization_gap=dev_mean - hold_mean,
         )
 
+    @staticmethod
+    def _save_checkpoint(path: Path, completed: set[str], outcomes: list[DecisionOutcome]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(
+                {
+                    "completed": sorted(completed),
+                    "outcomes": [o.model_dump(mode="json") for o in outcomes],
+                },
+                ensure_ascii=False,
+            )
+        )
+        tmp.replace(path)  # 原子写
+
+    def _canary_check(self, config: EvalConfig, namespace: str) -> bool:
+        """扫描本 run 决策卡 rationale 引用的证据，命中诱饵 token 即污染。"""
+        if not config.canary:
+            return False
+        cards = self._svc.decisions.list(namespace=namespace)
+        evidence_ids = [eid for card in cards for eid in card.rationale]
+        return detect_canary_in_evidence(self._kb, evidence_ids)
+
     def _persist(self, config: EvalConfig, report: EvalReport) -> None:
         out_dir = self._artifacts / report.eval_run_id
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "config.json").write_text(config.model_dump_json(indent=2))
-        (out_dir / "report.json").write_text(report.model_dump_json(indent=2))
+        # holdout 报告落盘即脱敏：只含聚合统计，改进者读不到逐 case 细节
+        to_write = report.redacted() if config.is_holdout else report
+        (out_dir / "report.json").write_text(to_write.model_dump_json(indent=2))
         self._events.append(
             Event(
                 run_id=report.eval_run_id,
