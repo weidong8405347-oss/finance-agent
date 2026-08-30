@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .base import LLM, AssistantReply, ToolCall
+from .base import LLM, AssistantReply, OnDelta, ToolCall
 
 Transport = Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]]
 
@@ -120,6 +120,76 @@ class OpenAICompatLLM:
             for tc in (msg.get("tool_calls") or [])
         ]
         return AssistantReply(content=msg.get("content") or "", tool_calls=tool_calls)
+
+    def stream_complete(
+        self, messages: list[dict[str, Any]], tools: list[str], *, on_delta: OnDelta
+    ) -> AssistantReply:
+        """流式补全（OpenAI SSE）：文本 delta 经 on_delta 逐段回调；
+        tool_calls 的增量分片按 index 累积，结束后聚合为 AssistantReply。"""
+        body: dict[str, Any] = {
+            "model": self.spec.model,
+            "messages": to_openai_messages(messages),
+            "stream": True,
+        }
+        if tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": self._tool_schemas.get(
+                        name, {"name": name, "parameters": {"type": "object", "properties": {}}}
+                    ),
+                }
+                for name in tools
+            ]
+        url = f"{self.spec.base_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {self.spec.api_key}", "Content-Type": "application/json"}
+
+        content_parts: list[str] = []
+        tc_acc: dict[int, dict[str, str]] = {}  # index → {id, name, arguments}
+        import httpx  # lazy
+
+        try:
+            with httpx.stream(
+                "POST", url, headers=headers, json=body, timeout=self._timeout
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    choices = json.loads(data).get("choices") or []
+                    if not choices:  # 心跳/usage-only 等无 choices 帧
+                        continue
+                    delta = choices[0].get("delta", {})
+                    if delta.get("content"):
+                        content_parts.append(delta["content"])
+                        on_delta(delta["content"])
+                    for tc_delta in delta.get("tool_calls") or []:
+                        slot = tc_acc.setdefault(tc_delta["index"], {"id": "", "name": "", "arguments": ""})
+                        if tc_delta.get("id"):
+                            slot["id"] = tc_delta["id"]
+                        fn = tc_delta.get("function") or {}
+                        if fn.get("name"):
+                            slot["name"] += fn["name"]
+                        if fn.get("arguments"):
+                            slot["arguments"] += fn["arguments"]
+        except Exception as e:
+            raise _normalize_llm_error(e) from e
+
+        return AssistantReply(
+            content="".join(content_parts),
+            tool_calls=[
+                ToolCall(
+                    call_id=slot["id"] or f"call-{i}",
+                    name=slot["name"],
+                    arguments=json.loads(slot["arguments"] or "{}"),
+                )
+                for i, (idx, slot) in enumerate(sorted(tc_acc.items()))
+                if slot["name"]
+            ],
+        )
 
     def _httpx_transport(self, url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         import httpx  # lazy：核心与测试不依赖网络库

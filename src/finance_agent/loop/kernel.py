@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..eventstore.events import (
+    ASSISTANT_CHUNK,
     ASSISTANT_MESSAGE,
     STEP_END,
     STEP_START,
@@ -75,7 +76,15 @@ class AgentKernel:
             for hook in self._hooks:  # 必达：泄漏审计等；拒绝即中断本 turn
                 hook.before_model(ctx)
 
-            reply = self._llm.complete(messages, tools=list(self._tools))
+            stream = getattr(self._llm, "stream_complete", None)  # 可选能力：流式
+            if stream is not None:
+
+                def on_delta(text: str, *, _turn: int = turn, _step: int = step) -> None:
+                    self._emit(ASSISTANT_CHUNK, payload={"text": text}, turn=_turn, step=_step)
+
+                reply = stream(messages, tools=list(self._tools), on_delta=on_delta)
+            else:
+                reply = self._llm.complete(messages, tools=list(self._tools))
             if hasattr(self._llm, "received_seqs"):  # 测试探针：记录调用时日志水位
                 self._llm.received_seqs.append(watermark)  # type: ignore[attr-defined]
 

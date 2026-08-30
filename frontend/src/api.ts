@@ -1,10 +1,27 @@
 // API client：所有数据都是后端投影（字段可回指 event/fact id）
 export interface SessionRow {
   run_id: string;
-  event_count: number;
+  title: string | null;
   started_at: string;
-  status: "running" | "done" | "error" | "cancelled";
+  last_active: string;
+  status: "idle" | "running" | "done" | "error" | "cancelled";
   status_detail: string | null;
+}
+
+export interface CommandSpec {
+  name: string;
+  summary: string;
+  usage: string;
+  needs_approval: boolean;
+}
+
+export interface ChildRun {
+  run_id: string;
+  step: string;
+  kind: string;
+  command_id: string;
+  started_at: string;
+  status: string;
 }
 
 export interface ApprovalRow {
@@ -104,18 +121,12 @@ export const api = {
     });
     if (!resp.ok) throw new Error(`decideApproval: ${resp.status}`);
   },
-  startResearch: async (ticker: string, objective: string, requireApproval: boolean) => {
-    const resp = await fetch("/api/research", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ticker,
-        objective,
-        require_approval: requireApproval,
-      }),
-    });
-    if (!resp.ok) throw new Error(`startResearch: ${resp.status}`);
-    return (await resp.json()) as { run_id: string; status: string };
+  commands: () => get<CommandSpec[]>("/api/commands"),
+  sessionChildren: (runId: string) => get<ChildRun[]>(`/api/sessions/${runId}/children`),
+  stopSession: async (runId: string) => {
+    const resp = await fetch(`/api/sessions/${runId}/stop`, { method: "POST" });
+    if (!resp.ok) throw new Error(`stopSession: ${resp.status}`);
+    return (await resp.json()) as { stopped: string | null };
   },
   chat: async (sessionId: string | null, message: string) => {
     const resp = await fetch("/api/chat", {

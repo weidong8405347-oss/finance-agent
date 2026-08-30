@@ -219,6 +219,13 @@ def create_app(
             chat_service.submit_message(run_id)
         return {"run_id": run_id}
 
+    @app.post("/api/sessions/{run_id}/stop")
+    def stop_session(run_id: str) -> dict[str, Any]:
+        """Stop 按钮：中断该会话正在运行的 command（轮次边界安全停，Q6）。"""
+        if command_runner is None:
+            return {"stopped": None}
+        return {"stopped": command_runner.cancel(run_id)}
+
     # ---------------- 审批 ----------------
 
     @app.get("/api/approvals/pending")

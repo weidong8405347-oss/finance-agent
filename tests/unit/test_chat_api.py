@@ -76,8 +76,13 @@ def test_plain_message_runs_main_agent_turn(tmp_path):
     resp = client.post("/api/chat", json={"message": "你好"})
     run_id = resp.json()["run_id"]
 
-    wait_event(events, run_id, lambda e: e.type == "assistant/message" and e.payload.get("content") == "好的")
+    # 等 turn 结束（turn/end 是一个 turn 的完成边界；assistant/message 在其前落库）
+    wait_event(events, run_id, lambda e: e.type == "turn/end")
     types = [e.type for e in events.read(run_id)]
+    assert any(
+        e.type == "assistant/message" and e.payload.get("content") == "好的"
+        for e in events.read(run_id)
+    )
     # session/title 与 system 契约先于 user/message
     assert types[0] == "session/title"
     assert types[1] == "context/inject"

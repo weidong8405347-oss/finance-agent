@@ -32,6 +32,8 @@ def test_turn_event_sequence_without_tools(tmp_path):
         "turn/start",
         "user/message",
         "step/start",
+        "assistant/chunk",  # 流式增量（MockLLM 两段式）
+        "assistant/chunk",
         "assistant/message",
         "step/end",
         "turn/end",
@@ -142,3 +144,28 @@ def test_tool_exception_is_elastic_not_turn_fatal(tmp_path):
     results = [e for e in store.read("r1") if e.type == "tool/result"]
     assert "entity_kind" in results[0].payload["content"]  # 错误内容回给模型
     assert not [e for e in store.read("r1") if e.type == "turn/error"]
+
+
+def test_streaming_emits_chunks_then_message(tmp_path):
+    """streaming：assistant/chunk 逐段落库（replay/UI 保真），assistant/message 仍是终态；
+    chunk 不进模型可见投影（白名单不变）。"""
+    from finance_agent.eventstore.events import ASSISTANT_CHUNK, MODEL_VISIBLE_TYPES
+    from finance_agent.harness.manifest import RunManifest, RunMode
+    from finance_agent.llm.base import AssistantReply
+    from finance_agent.llm.mock import MockLLM
+    from finance_agent.loop.kernel import AgentKernel
+
+    llm = MockLLM([AssistantReply(content="流式回答全文")])
+    store = EventStore(tmp_path / "e.db")
+    kernel = AgentKernel(
+        store=store, llm=llm,
+        manifest=RunManifest(run_id="r1", mode=RunMode.LIVE), tools={},
+    )
+    out = kernel.run_turn("go")
+    assert out == "流式回答全文"
+    chunks = [e for e in store.read("r1") if e.type == ASSISTANT_CHUNK]
+    assert len(chunks) == 2 and "".join(c.payload["text"] for c in chunks) == "流式回答全文"
+    assert ASSISTANT_CHUNK not in MODEL_VISIBLE_TYPES
+    # derive_messages 只见终态 message，不见 chunk
+    msgs = store.derive_messages("r1")
+    assert sum(1 for m in msgs if m.get("role") == "assistant") == 1

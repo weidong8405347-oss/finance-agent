@@ -18,3 +18,13 @@ class MockLLM:
         if not self._replies:
             raise RuntimeError("MockLLM 脚本耗尽")
         return self._replies.pop(0)
+
+    def stream_complete(self, messages, tools, *, on_delta) -> AssistantReply:
+        """流式替身：把脚本 content 切成两段经 on_delta 吐出（可测 chunk 落库）。"""
+        reply = self.complete(messages, tools)
+        text = reply.content
+        if text:
+            mid = max(1, len(text) // 2)
+            on_delta(text[:mid])
+            on_delta(text[mid:])
+        return reply

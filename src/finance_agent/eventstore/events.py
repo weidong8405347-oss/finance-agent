@@ -19,6 +19,7 @@ STEP_START = "step/start"
 STEP_END = "step/end"
 USER_MESSAGE = "user/message"
 ASSISTANT_MESSAGE = "assistant/message"
+ASSISTANT_CHUNK = "assistant/chunk"  # 流式增量（入日志保 replay/UI 保真，不进模型上下文）
 CONTEXT_INJECT = "context/inject"
 TOOL_CALL = "tool/call"  # 审计用；模型上下文中的工具调用折叠在 assistant/message
 TOOL_RESULT = "tool/result"
