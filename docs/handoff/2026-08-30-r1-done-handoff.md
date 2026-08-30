@@ -7,9 +7,28 @@
 
 ## 0. 一句话现状
 
-**R1（编排层）+ R1.5（证据完整性防线）+ R2（对话流 UI + streaming）已完成**，
-160 passed + 前端构建通过 + 真实 BE 场景全链路验证（研究真正读取 10-K 正文产出证据绑定事实）。
-**等用户确认 R2 后进 R3（档案 UI + HTML 存档）与 R4（usage 成本仪表）**（混合模式：R3/R4 连续做）。
+**重设计四期全部完成**（R1 编排层 / R1.5 证据完整性 / R2 对话流 UI + streaming / R3 档案 UI + HTML 存档 / R4 用量仪表），
+163 passed + 前端构建通过 + 真实 /research BE 全链路验证（3 轮收敛 90%、存档/报告/用量/冲突旗标在线）。
+commits：ecc8202(R1) → e7fc344(R1.5) → b815fcf(R2) → 09eb53e(R3+R4)。
+
+## R3+R4 要点（commit 09eb53e）
+
+- ProfileRenderer：自包含 HTML（内联 SVG/无 JS）+ 证据锚点 hover + 版本化 archive/
+  （**内容哈希**幂等，与 kb_snapshot_id 的 as_of 语义区分）
+- API：entities 健康度投影 / archives 版本列表+读取 / reports 全文在线阅读
+- KnowledgePage 重做（列表选中联动摘要 + 详情页 + 时光机 + 存档查看器）
+- AssistantReply.usage → kernel 按 turn 聚合 → TurnFold 显示 token
+- **整改**：StepDeps.knowledge_dir 必填（测试曾污染仓库工作树，真实 run 抓出）；
+  usage 容忍 provider 嵌套明细（ValidationError 真实抓出）；knowledge/ 入 .gitignore
+
+## 下一步候选（backlog，按价值排序）
+
+1. **yfinance 安装**（PyPI 网络当时不通）→ 行情工具可用后估值维度解锁
+2. **steer**（运行中改方向，Q6 后置项）
+3. **主 agent 对 stalled 研究的重试上限**收紧（观察到自主重试 3 次才停）
+4. **前端组件级测试**（L4 欠账，vitest）
+5. **评估配置的中文补全体验**（/evaluate 配置选择卡的对话式微调）
+6. **INDUSTRY 档案与多实体对比视图**
 
 ## R1.5（验收事故整改，commit e7fc344）
 
