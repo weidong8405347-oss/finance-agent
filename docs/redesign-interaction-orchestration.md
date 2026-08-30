@@ -1,10 +1,13 @@
 # 交互与编排层重设计（归因 + 对齐稿）
 
 > 来源：docs/handoff/2026-08-29-redesign-handoff.md 的归因作业与方案细化。
-> 状态：**v2 待用户对齐**（§5 决策点确认后才动工）。
-> v2 变更（2026-08-29 用户输入）：交互主体改为 **command 制**——四个 step +
+> 状态：**v3 待最终确认**（§5 剩余决策点）。
+> v2（2026-08-29 用户输入）：交互主体改为 **command 制**——四个 step +
 > 独立评估系统做成 `/command`；无 command 走主 agent 对话；主 agent 也可自主调用 command；
 > command 内每个 step = 一个 step agent（可挂 plugin 提升能力）。
+> v3（2026-08-29 用户确认 + 新增）：command 命名定案；`/evaluate` 默认强制审批、
+> 仅当 prompt 明确「不用审批」才豁免；新增两块——**研究结论折叠卡**（长文只显摘要，
+> 点击展开）与**股票档案完整 UI**（全部股票档案浏览 + HTML 存档 + 图表）。
 > 约束：地基（EventStore / 双时态 KB / DataGateway / 决策卡 / 评估回放 / 可观测性）不动；
 > 本稿只重构「用户 → 对话 → 主 agent / command → step agent」这一层。
 
@@ -97,7 +100,7 @@
 | `/research <标的> [目标]` | S1 研究 → 过程评估 | 只调研不出档案重组；过程评估给质量反馈 |
 | `/profile <标的>` | S1 研究 → S2 档案更新 → 过程评估 | 调研并落库/修订档案（thesis/facts） |
 | `/decide <标的>` | S1 研究 → S2 档案 → S3 决策卡 → 过程评估 | 全链路到出卡（risk-review 硬门禁不变） |
-| `/evaluate <配置>` | S4 独立效果评估 | eval 模式隔离环境；**强制审批**（高成本） |
+| `/evaluate <配置>` | S4 独立效果评估 | eval 模式隔离环境；**默认强制审批**，仅当 prompt 中明确「不用审批」才豁免（豁免落 `approval/waived` 事件，可审计） |
 
 - **幂等性由 gap 分析保证**：`/decide` 每次都含 S1，但档案新鲜完整时 S1 零轮收敛
   （gap 分析输出「无需研究」），不会重复花钱。
@@ -158,6 +161,8 @@ StepAgentDef = {
 | `step_agent/end` | `{child_run_id, status, summary}` | 否 |
 | `assistant/chunk` | `{text}` 流式增量 | 否（只服务 UI 保真/replay） |
 | `approval/asked` · `approval/decided` | `{approval_id, op, detail}` / `{approved}` | 否 |
+| `approval/waived` | `{op, basis}`（用户原话依据；豁免必须可审计） | 否 |
+| `report/published` | `{child_run_id, kind, title, summary, artifact_path, quality_flags}` —— 折叠卡数据源；全文为磁盘 artifact，事件只带摘要+指针 | 否 |
 | `session/title` | `{title}`（首条用户消息截断） | 否 |
 
 子 run 内部仍用现有 turn/step/tool 事件全集；父流只承载轻量桥接事件，
@@ -189,6 +194,8 @@ UI 钻取细节时打开子流。`derive_messages` 白名单不变（§2 行 2�
 │ 状态+时间 │     └ StepAgentCard × N（嵌套：S1 研究 第2轮 ·   │
 │          │       完整度 61% · 可展开钻取子流）              │
 │          │   ApprovalCard（内联：说明 + 允许/拒绝）          │
+│          │   ResearchFoldCard（研究结论：默认只显标题+摘要+ │
+│          │     质量旗标，点击展开全文；长文不刷屏）          │
 │          │   TurnProcess 折叠控件（turn 结束默认折叠）       │
 │          │   ErrorCard（失败三通道的用户可见通道）           │
 ├──────────┴─────────────────────────────────────────────────┤
@@ -204,14 +211,45 @@ UI 钻取细节时打开子流。`derive_messages` 白名单不变（§2 行 2�
 - Knowledge/Decisions/Evaluations 保留为钻取页（从证据 chips、决策卡、评估事件跳转）。
 - `ApprovalsBanner` 删除（含 2s 轮询）。
 
-### 3.8 不变量（重设计不得破坏）
+### 3.8 研究结论折叠卡与档案 HTML 存档
+
+**ResearchFoldCard（对话流内）**：S1 产出的研究报告是长文，不进对话流刷屏。
+step agent 完成时发 `report/published`（摘要 + artifact 指针）；全文渲染为
+Markdown artifact 存 `data/reports/<child_run_id>/round-N.md`；UI 默认只显
+标题 + 摘要 + quality_flags，点击展开经 API 拉全文。事件体积可控，
+「UI 可回指 event id」不破（artifact 路径在事件载荷里）。
+
+**档案 HTML 存档（磁盘投影，版本化）**：
+
+- 档案本体仍是 EventStore/KB 投影；**command run 的 S2 step 完成且档案有变化时**
+  由 ProfileRenderer 生成自包含单文件 HTML：
+  `knowledge/stocks/<TICKER>/archive/<kb_snapshot_id>.html` + `latest.html` 软链。
+  版本化存档 = as_of 时光机的磁盘对应物，历史版本永不删除。
+- **自包含 + 服务端渲染 SVG 图表**：价格走势、财务指标趋势等图表以**内联 SVG**
+  渲染进 HTML（Jinja 模板，无 JS/无外部依赖）——可离线打开、可 diff、可审计，
+  与「投影」定位一致（图表数据经 DataGateway 生产模式查询，写入 HTML 时保留
+  证据指针）。不用 ECharts 等运行时库（外部依赖 + 不可审计）。
+- HTML 内每个事实数字保留证据锚点（hover 出原文摘录 + available_at），
+  与 DESIGN.md §7.3「一切数字可溯源」一致。
+
+**Knowledge 页升级为完整档案 UI**：
+
+- **全部股票档案列表**：所有实体（含历史研究过、含退市标记）一屏可查，
+  显示完整度/新鲜度/冲突数/最近研究时间；行业档案同列。
+- **档案详情页**：facts 分维度表 + thesis + timeline + 冲突标记；
+  as_of 时光机（日期选择整页切换投影，diff 标出后来被修订的内容）；
+  **HTML 存档查看器**：版本列表 + iframe 内嵌渲染（或新页打开原始 HTML）。
+- 入口双向：Knowledge 页可进；对话流里证据 chips / 决策卡 / ResearchFoldCard
+  中的标的也可点击跳入对应档案页。
+
+### 3.9 不变量（重设计不得破坏）
 
 1. 模型可见 = 已记录；derive_messages 白名单不变。
 2. 一切数据采集经 DataGateway；子 run 的 gateway 用子 manifest（eval 锁随 manifest 传递）。
 3. 知识库单写者：S2 step agent 内的 ProfileWriter 纪律不变。
 4. risk-review 必达：S3 step agent 内部纪律不变；过程评估硬门禁不变。
 5. 失败三通道 + 真实装配测试：step agent 失败 → 子流 error 事件 + 父流 step_agent/end(status=error) + 日志。
-6. 审批 fail-closed：超时/无应答 = rejected；`/evaluate` 强制审批。
+6. 审批 fail-closed：超时/无应答 = rejected；`/evaluate` 默认强制审批，豁免必须落 `approval/waived`（带用户原话依据）。
 7. 评估权力分离：`/evaluate` 走 eval 命名空间，永不回流生产（地基，不动）。
 
 ---
@@ -235,17 +273,29 @@ approval 事件化；事件词汇扩展；children 端点。
 3. 闲聊（无标的）→ 直接答，不调任何 command。
 4. 档案新鲜时 `/decide BE` → S1 gap 分析零轮收敛（不重复花钱）。
 5. step agent 失败 → 三通道可见（子流 error + 父流 step_agent/end(error) + 日志）。
-6. `/evaluate` → 必出 approval/asked；拒绝 → 不执行；超时 → rejected。
+6. `/evaluate` → 默认必出 approval/asked；拒绝 → 不执行；超时 → rejected；
+   prompt 明确「不用审批」→ 落 approval/waived（含原话依据）后直接执行。
 7. 不变量回归：`uv run pytest` 全绿（地基测试语义不动）。
 
 ### R2 对话流 UI
 
-前端装配层 + 节点渲染（含 CommandCard/StepAgentCard 嵌套）+ composer slash 补全 /
-双态 / 排队 + 侧栏收窄可折叠 + 审批内联卡 + 删 banner。
+前端装配层 + 节点渲染（含 CommandCard/StepAgentCard 嵌套、**ResearchFoldCard**
+摘要折叠卡）+ composer slash 补全 / 双态 / 排队 + 侧栏收窄可折叠 + 审批内联卡 + 删 banner。
 
-验收：R1 的七个场景在 UI 全程可见可操作；前端构建通过（L4 组件测试欠账记录在案）。
+验收：R1 的七个场景在 UI 全程可见可操作；研究长文默认折叠、点击展开全文；
+前端构建通过（L4 组件测试欠账记录在案）。
 
-### R3 streaming + 成本仪表
+### R3 档案 UI + HTML 存档
+
+ProfileRenderer（KB → 自包含 HTML + 内联 SVG 图表 + 版本化 archive/）；
+Knowledge 页重做（全部股票/行业档案列表、详情页、as_of 时光机、HTML 存档查看器）；
+对话流与档案页双向跳转。
+
+验收：跑一次 `/profile AAPL` 后生成 `archive/<snapshot>.html` 且 latest 更新；
+HTML 离线打开图表可见、数字 hover 出证据；Knowledge 页列出全部历史股票档案；
+as_of 切换后整页投影正确（地基 as_of 测试语义不动）。
+
+### R4 streaming + 成本仪表
 
 LLM 抽象加 stream；`assistant/chunk` 落库 + SSE；turn usage 落库 + 折叠控件显示。
 
@@ -258,9 +308,10 @@ LLM 抽象加 stream；`assistant/chunk` 落库 + SSE；turn usage 落库 + 折�
 | # | 决策点 | 建议 | 备选 |
 | --- | --- | --- | --- |
 | D1 | 主 agent 上下文模型 | 无状态重建：每 turn 从 EventStore 投影；per-run 串行锁 + 消息排队 | 常驻内存上下文（多一条上下文通道，违背铁律精神） |
-| D2 | command 命名 | `/research` `/profile` `/decide` `/evaluate`（对应 S1 / S1+S2 / 全链路 / S4 独立评估） | 保留用户草稿名 deepresearch/updateprofile/stockanalysis/evalstrategy |
-| D3 | 主 agent 调 command 的确认策略 | research/profile/decide：口头确认即调；evaluate：强制审批卡 | 全部强制审批卡（打断感强） |
+| D2 | command 命名 | **已定**：`/research` `/profile` `/decide` `/evaluate`（2026-08-29 用户确认） | — |
+| D3 | command 审批策略 | **已定**：research/profile/decide 主 agent 口头确认即调；`/evaluate` **默认强制审批，仅 prompt 明确「不用审批」才豁免**，豁免落 `approval/waived` 事件可审计（2026-08-29 用户确认） | — |
+| D8 | 档案 HTML 存档方案 | 自包含单文件 HTML + 服务端渲染内联 SVG 图表（无 JS/无外部依赖，可审计可 diff） | ECharts 等 JS 运行时库（交互强但依赖外部、不可审计） |
 | D4 | `assistant/chunk` 是否落库 | **落库**（dsh 同款：保 replay/UI 保真；可定期清理老 run 的 chunk） | 只走 SSE 不落库（省存储，live 与 reload 渲染不一致） |
 | D5 | step agent 进度呈现 | 父流 step_agent/progress 轻量桥接 + 子流钻取 | 只靠子流（父流活动卡无实时进度） |
 | D6 | 会话标题 | 首条用户消息截断 30 字 | LLM 生成（dsh 做法，多一次调用，后置） |
-| D7 | 分期 | R1 → R2 → R3 分三期 | R1+R2 合并（改动面大，回归风险高） |
+| D7 | 分期 | R1 → R2 → R3 → R4 分四期（档案 UI+HTML 存档独立成 R3） | 合并分期（改动面大，回归风险高） |
