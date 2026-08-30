@@ -7,9 +7,22 @@
 
 ## 0. 一句话现状
 
-**重设计四期全部完成**（R1 编排层 / R1.5 证据完整性 / R2 对话流 UI + streaming / R3 档案 UI + HTML 存档 / R4 用量仪表），
-163 passed + 前端构建通过 + 真实 /research BE 全链路验证（3 轮收敛 90%、存档/报告/用量/冲突旗标在线）。
-commits：ecc8202(R1) → e7fc344(R1.5) → b815fcf(R2) → 09eb53e(R3+R4)。
+**重设计四期 + R5（验收反馈批次）全部完成**。
+commits：ecc8202(R1) → e7fc344(R1.5 证据完整性) → b815fcf(R2 UI+流式) → 09eb53e(R3+R4 存档+用量) → 35b7a8d(R5 能力目录/过程透明/stale 刷新)。
+164 passed + 前端构建 + 多轮真实 run 在线验证。
+
+## R5 要点（commit 35b7a8d，用户验收反馈驱动）
+
+1. **能力目录**：`STEP_MANIFEST`（steps.py，新增 tools/skills/MCP 的登记处）+
+   `GET /api/capabilities` + 前端「能力」页（主 agent/四 command 的 step 分解全可见）
+2. **过程透明**：模型名上事件（assistant/message + turn/end，UI 显示）；
+   档案写入/冲突桥接父流（✎ 档案写入 field（vN，证据 N 条））；
+   `/api/knowledge/series`（字段时序）+ `/api/knowledge/compare`（跨实体对比）
+3. **Knowledge 机制修复**：stale 字段不再计入收敛——「完整但陈旧」强制刷新研究
+   （回归 test_stale_fields_force_refresh_even_when_complete）；
+   Knowledge 详情页新增图表区（时序折线 + 竞对条形图，MiniChart 零依赖）
+4. 答疑：Knowledge 在**任何路径**的研究写入后都会更新（slash 或主 agent 代调同一管线）；
+   用户看到的「无需新一轮研究」= 档案已完整且新鲜（gap 分析判定）——stale 修复后陈旧档案会自动刷新
 
 ## R3+R4 要点（commit 09eb53e）
 
