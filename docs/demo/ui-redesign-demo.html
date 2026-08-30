@@ -164,6 +164,17 @@
   .ev { border-bottom: 1px dotted var(--ink-3); cursor: help; }
   .arch { font-family: var(--mono); font-size: 12px; }
   .hidden { display: none !important; }
+  table.list tbody tr { cursor: pointer; }
+  table.list tr.sel td { background: #f0f0f0; }
+  table.list tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--ink); }
+  .lk { color: var(--blue); text-decoration: none; }
+  .lk:hover { text-decoration: underline; }
+  button.detail { font-size: 12px; border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: 2px 10px; }
+  button.detail:hover { border-color: var(--ink-2); }
+  .backrow { margin-bottom: 14px; }
+  .kbdetail-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .kbdetail-head h2 { margin: 0; }
+  .asof { font-size: 12px; color: var(--ink-2); }
 </style>
 </head>
 <body>
@@ -340,67 +351,24 @@
 <!-- ================= Knowledge 页 ================= -->
 <div class="hidden" id="page-kb">
   <main style="overflow-y:auto;height:calc(100vh - 44px)">
-  <div class="kb">
+
+  <!-- 列表视图：点击行选中 → 下方摘要联动切换；「详情」进详情页 -->
+  <div class="kb" id="kbListView">
     <h2>Knowledge · 全部档案</h2>
     <table class="list">
-      <thead><tr><th>实体</th><th>名称/行业</th><th>完整度</th><th>新鲜度</th><th>冲突</th><th>最近研究</th><th>HTML 存档</th></tr></thead>
-      <tbody>
-        <tr>
-          <td class="mono">stock:BE</td><td>Bloom Energy · 燃料电池</td>
-          <td><span class="meter"><i style="width:61%"></i></span> 61%</td>
-          <td>2 字段陈旧</td><td>0</td><td>今天</td>
-          <td class="arch"><a href="archive-sample-BE.html" target="_blank">latest.html</a> · 7 个版本</td>
-        </tr>
-        <tr>
-          <td class="mono">stock:600519</td><td>贵州茅台 · 白酒</td>
-          <td><span class="meter"><i style="width:88%"></i></span> 88%</td>
-          <td>新鲜</td><td>1</td><td>昨天</td>
-          <td class="arch">latest.html · 23 个版本</td>
-        </tr>
-        <tr>
-          <td class="mono">stock:TSLA</td><td>Tesla · 电动车</td>
-          <td><span class="meter"><i style="width:74%"></i></span> 74%</td>
-          <td>新鲜</td><td>2</td><td>3 天前</td>
-          <td class="arch">latest.html · 15 个版本</td>
-        </tr>
-        <tr style="color:var(--ink-3)">
-          <td class="mono">stock:GPS</td><td>Gap Inc. · 服装零售 <span class="badge" style="background:#f0f0f0">已剔除关注</span></td>
-          <td><span class="meter"><i style="width:40%"></i></span> 40%</td>
-          <td>陈旧</td><td>0</td><td>90 天前</td>
-          <td class="arch">latest.html · 4 个版本</td>
-        </tr>
-        <tr>
-          <td class="mono">industry:sofc</td><td>固体氧化物燃料电池行业</td>
-          <td><span class="meter"><i style="width:45%"></i></span> 45%</td>
-          <td>—</td><td>0</td><td>今天</td>
-          <td class="arch">latest.html · 3 个版本</td>
-        </tr>
-      </tbody>
+      <thead><tr><th>实体</th><th>名称/行业</th><th>完整度</th><th>新鲜度</th><th>冲突</th><th>最近研究</th><th>HTML 存档</th><th></th></tr></thead>
+      <tbody id="kbRows"></tbody>
     </table>
-
-    <div class="kv">
-      <div class="panel">
-        <h3>stock:BE · facts（as_of <input type="date" value="2026-08-29" style="font:inherit;font-size:12px"> · 时光机）</h3>
-        <div class="row2"><span class="k">revenue.fy2024</span><span class="v"><span class="ev" title="证据 ev-71c0 · 10-K：'Total revenue was $1.47 billion' · available 2025-02-27 · PIT-A">$1.47B</span> · v3</span></div>
-        <div class="row2"><span class="k">backlog</span><span class="v"><span class="ev" title="证据 ev-7f2a · 10-Q 2025Q2 · available 2025-08-06 · PIT-A">$14B</span> · v2</span></div>
-        <div class="row2"><span class="k">capacity.manufacturing</span><span class="v">2GW · v3</span></div>
-        <div class="row2"><span class="k">margins.gross</span><span class="v">28.4% · v2</span></div>
-        <div class="row2"><span class="k">cash_flow.operating</span><span class="v" style="color:var(--red)">-$0.21B · v1</span></div>
-        <div class="row2"><span class="k">thesis 版本</span><span class="v">v5 · <a href="archive-sample-BE.html" target="_blank">打开 HTML 存档</a></span></div>
-      </div>
-      <div class="panel">
-        <h3>HTML 存档版本（knowledge/stocks/BE/archive/）</h3>
-        <div class="row2"><span class="k">latest →</span><span class="v">9f3c…e1 · 今天 09:52</span></div>
-        <div class="row2"><span class="k">v7</span><span class="v">9f3c…e1 · 今天 09:52</span></div>
-        <div class="row2"><span class="k">v6</span><span class="v">77ab…42 · 3 天前</span></div>
-        <div class="row2"><span class="k">v5</span><span class="v">c01d…9b · 上周</span></div>
-        <p style="font-size:11px;color:var(--ink-3);margin-top:10px">
-          自包含单文件 HTML（内联 SVG 图表、无外部依赖），S2 写入后按 kb_snapshot 版本化生成；
-          历史版本永不删除。点版本号可看该版档案原貌，与 as_of 时光机互为磁盘对应物。</p>
-        <iframe src="archive-sample-BE.html" style="width:100%;height:300px;border:1px solid var(--line);border-radius:8px;margin-top:10px" title="HTML 存档预览"></iframe>
-      </div>
-    </div>
+    <p style="font-size:11px;color:var(--ink-3);margin-top:8px">点击行 = 选中（下方摘要联动切换）；「详情」= 进入该实体完整档案页（facts/thesis/时间线/时光机/存档版本）。</p>
+    <div class="kv" id="kbSummary"></div>
   </div>
+
+  <!-- 详情视图（按选中实体渲染） -->
+  <div class="kb hidden" id="kbDetailView">
+    <div class="backrow"><button class="detail" onclick="backToList()">← 返回全部档案</button></div>
+    <div id="kbDetail"></div>
+  </div>
+
   </main>
 </div>
 
@@ -424,6 +392,161 @@
   menu.querySelectorAll('.it').forEach(b => b.addEventListener('click', () => {
     ta.value = b.querySelector('.n').textContent + ' '; ta.focus(); syncMenu();
   }));
+
+  /* ================= Knowledge 数据与渲染 ================= */
+  const ENTITIES = {
+    be: { id: "stock:BE", name: "Bloom Energy", ind: "燃料电池", comp: 61, fresh: "2 字段陈旧", conf: 0, last: "今天",
+      file: "archive-sample-BE.html", ver: "v7", snap: "9f3c…e1", nver: 7,
+      thesis: "SOFC 主业直接受益 AI 数据中心供电缺口，在手订单 $14B（+38% YoY）与产能爬坡构成 12 个月维度核心支撑；但经营现金流为负、估值隐含较高执行预期。",
+      flags: ["evidence-gap: 一致预期无 PIT 源", "low-confidence: 产能爬坡"],
+      facts: [
+        ["revenue.fy2024", "$1.47B", "证据 ev-71c0 · 10-K FY2024：'Total revenue was $1.47 billion' · available 2025-02-27 · PIT-A", "2024-12-31", "2025-02-27", "v3", 0],
+        ["backlog", "$14B", "证据 ev-7f2a · 10-Q 2025Q2：'remaining performance obligations of $14 billion' · available 2025-08-06 · PIT-A", "2025-06-30", "2025-08-06", "v2", 0],
+        ["capacity.manufacturing", "2GW", "证据 ev-8031 · Fremont 扩产公告 · available 2025-05-01 · PIT-B", "2025-05-01", "2025-05-01", "v3", 0],
+        ["margins.gross", "28.4%", "", "2025-06-30", "2025-08-06", "v2", 0],
+        ["cash_flow.operating", "-$0.21B", "", "2025-06-30", "2025-08-06", "v1", 1],
+      ],
+      timeline: [["2025-02-27", "FY2024 10-K 发布：营收 $1.47B（+10.5%）", "ev-71c0"],
+                 ["2025-05-01", "Fremont 扩产至 2GW 公告", "ev-8031"],
+                 ["2025-08-06", "2025Q2 10-Q：backlog $14B（+38% YoY）", "ev-7f2a"]],
+      versions: [["v7", "9f3c…e1", "今天 09:52"], ["v6", "77ab…42", "3 天前"], ["v5", "c01d…9b", "上周"]] },
+    mt: { id: "600519.SH", name: "贵州茅台", ind: "白酒", comp: 88, fresh: "新鲜", conf: 1, last: "昨天",
+      file: "archive-demo-600519.html", ver: "v23", snap: "77ab…42", nver: 23,
+      thesis: "高端白酒需求承压但批价韧性仍存；直营占比提升对冲渠道利润压缩。失效条件：批价跌破 2000 元且连续两月无修复。",
+      flags: ["conflict: 批价两个来源口径不一致"],
+      facts: [
+        ["revenue.fy2024", "¥1741亿", "证据 ev-mt-01 · 2024 年报：'营业总收入 1741.44 亿元' · available 2025-04-03 · PIT-A", "2024-12-31", "2025-04-03", "v4", 0],
+        ["margins.gross", "91.9%", "", "2024-12-31", "2025-04-03", "v3", 0],
+        ["批价.飞天散瓶", "¥2080", "", "2026-08-25", "2026-08-26", "v9", 0],
+        ["channel.direct_share", "45.8%", "", "2024-12-31", "2025-04-03", "v2", 0],
+        ["dividend.payout", "75%", "", "2024-12-31", "2025-04-03", "v1", 0],
+      ],
+      timeline: [["2025-04-03", "2024 年报：营收 1741 亿（+15.7%）", "ev-mt-01"],
+                 ["2026-08-26", "飞天散瓶批价 2080 元（周度渠道调研）", "ev-mt-44"]],
+      versions: [["v23", "77ab…42", "昨天 18:03"], ["v22", "3e55…a8", "4 天前"], ["v21", "5d21…c7", "上周"]] },
+    tsla: { id: "TSLA", name: "Tesla, Inc.", ind: "电动车", comp: 74, fresh: "新鲜", conf: 2, last: "3 天前",
+      file: "archive-demo-tsla.html", ver: "v15", snap: "c01d…9b", nver: 15,
+      thesis: "汽车主业毛利率触底，储能为第二增长曲线；估值由 Robotaxi 叙事主导。失效条件：储能装机增速连续两季 < 30%。",
+      flags: ["conflict ×2: 汽车毛利率口径 / 交付量口径"],
+      facts: [
+        ["revenue.fy2024", "$97.7B", "证据 ev-ts-02 · 10-K FY2024：'Total revenues were $97.7 billion' · available 2025-01-29 · PIT-A", "2024-12-31", "2025-01-29", "v3", 0],
+        ["deliveries.fy2024", "1.79M", "", "2024-12-31", "2025-01-02", "v2", 0],
+        ["energy.storage_deployed", "31.4GWh", "", "2024-12-31", "2025-01-29", "v2", 0],
+        ["margins.auto_gross", "16.4%", "", "2025-06-30", "2025-07-23", "v4", 1],
+      ],
+      timeline: [["2025-01-29", "FY2024 10-K：营收 $97.7B（+0.9%）", "ev-ts-02"],
+                 ["2025-07-23", "2025Q2：汽车毛利率 16.4%（口径冲突已标记）", "ev-ts-19"]],
+      versions: [["v15", "c01d…9b", "3 天前"], ["v14", "9f3c…e1", "10 天前"]] },
+    gps: { id: "GPS", name: "Gap Inc.（已剔除关注）", ind: "服装零售", comp: 40, fresh: "陈旧", conf: 0, last: "90 天前",
+      file: "archive-demo-gps.html", ver: "v4", snap: "3e55…a8", nver: 4,
+      thesis: "品牌重塑未见拐点，档案停止更新；保留为历史研究样本。",
+      flags: ["stale: 全部字段 > 90 天"],
+      facts: [
+        ["revenue.fy2024", "$15.1B", "证据 ev-gps-01 · 10-K FY2024：'Net sales were $15.1 billion' · available 2025-03-08 · PIT-A", "2025-01-31", "2025-03-08", "v1", 0],
+        ["margins.gross", "41.3%", "", "2025-01-31", "2025-03-08", "v1", 0],
+      ],
+      timeline: [["2025-03-08", "FY2024 10-K 发布", "ev-gps-01"]],
+      versions: [["v4", "3e55…a8", "90 天前"]] },
+    sofc: { id: "industry:sofc", name: "固体氧化物燃料电池（SOFC）", ind: "行业档案", comp: 45, fresh: "—", conf: 0, last: "今天",
+      file: "archive-demo-sofc.html", ver: "v3", snap: "5d21…c7", nver: 3,
+      thesis: "AI 数据中心供电缺口把 SOFC 从备选项推为主供补充；行业瓶颈在电堆寿命与规模化制造成本。",
+      flags: [],
+      facts: [
+        ["market.size.2024", "$2.4B", "证据 ev-in-03 · 行业白皮书 2025：'global SOFC market reached $2.4 billion' · available 2025-03-15 · PIT-B", "2024-12-31", "2025-03-15", "v2", 0],
+        ["market.cagr", "31%", "", "2024-12-31", "2025-03-15", "v1", 0],
+        ["chain.key_bottleneck", "电堆寿命/热循环", "", "2025-06-30", "2025-07-10", "v1", 0],
+      ],
+      timeline: [["2025-03-15", "行业白皮书：2024 市场规模 $2.4B", "ev-in-03"]],
+      versions: [["v3", "5d21…c7", "今天 09:40"]] },
+  };
+  let selEntity = "be";
+
+  function evSpan(f) {
+    const [field, val, ev, et, kt, ver, neg] = f;
+    const v = ev ? `<span class="ev" title="${ev}">${val}</span>` : val;
+    return `<div class="row2"><span class="k">${field}</span><span class="v" ${neg ? 'style="color:var(--red)"' : ""}>${v} · ${ver}</span></div>`;
+  }
+  function factRows(f) {
+    const [field, val, ev, et, kt, ver, neg] = f;
+    const v = ev ? `<span class="ev" title="${ev}">${val}</span>` : val;
+    return `<tr><td class="mono">${field}</td><td class="num" ${neg ? 'style="color:var(--red)"' : ""}>${v}</td><td class="mono">${et}</td><td class="mono">${kt}</td><td class="mono">${ver}</td></tr>`;
+  }
+  function versionRows(e) {
+    return e.versions.map(v => `<div class="row2"><span class="k">${v[0]}</span><span class="v">${v[1]} · ${v[2]}</span></div>`).join("");
+  }
+
+  function renderList() {
+    document.getElementById("kbRows").innerHTML = Object.entries(ENTITIES).map(([k, e]) => `
+      <tr class="${k === selEntity ? "sel" : ""}" onclick="selectEntity('${k}')">
+        <td class="mono">${e.id}</td><td>${e.name} · ${e.ind}</td>
+        <td><span class="meter"><i style="width:${e.comp}%"></i></span> ${e.comp}%</td>
+        <td>${e.fresh}</td><td>${e.conf}</td><td>${e.last}</td>
+        <td class="arch"><a class="lk" href="${e.file}" target="_blank" onclick="event.stopPropagation()">latest.html</a> · ${e.nver} 版本</td>
+        <td><button class="detail" onclick="event.stopPropagation();openDetail('${k}')">查看详情 →</button></td>
+      </tr>`).join("");
+  }
+
+  function renderSummary() {
+    const e = ENTITIES[selEntity];
+    document.getElementById("kbSummary").innerHTML = `
+      <div class="panel">
+        <h3>${e.id} · 摘要 <span class="tag">${e.ver} · 完整度 ${e.comp}%</span></h3>
+        ${e.facts.slice(0, 4).map(evSpan).join("")}
+        <div class="row2"><span class="k">thesis</span><span class="v" style="text-align:right;max-width:70%">${e.thesis.slice(0, 42)}…</span></div>
+      </div>
+      <div class="panel">
+        <h3>HTML 存档（${e.nver} 个版本）</h3>
+        ${versionRows(e)}
+        <iframe src="${e.file}" style="width:100%;height:260px;border:1px solid var(--line);border-radius:8px;margin-top:10px" title="存档预览"></iframe>
+      </div>`;
+  }
+
+  function selectEntity(k) { selEntity = k; renderList(); renderSummary(); }
+
+  function openDetail(k) {
+    selEntity = k;
+    const e = ENTITIES[k];
+    document.getElementById("kbDetail").innerHTML = `
+      <div class="kbdetail-head">
+        <h2>${e.name}</h2><span class="mono" style="color:var(--ink-3);font-size:12px">${e.id}</span>
+        <span class="badge b-done">完整度 ${e.comp}%</span>
+        ${e.conf ? `<span class="badge b-wait">冲突 ${e.conf}</span>` : ""}
+        <span class="asof">as_of <input type="date" value="2026-08-29" style="font:inherit;font-size:12px" onchange="alert('整页切换为该时点投影；后来被修订的内容以 diff 标出（时光机）')"> 时光机</span>
+      </div>
+      <div class="kv">
+        <div>
+          <div class="panel"><h3>投资论点（thesis ${e.ver}）</h3>
+            <div style="font-size:13px;color:var(--ink-2)">${e.thesis}</div>
+            <div class="flags" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${e.flags.map(f => `<span class="flag warn">${f}</span>`).join("")}</div>
+          </div>
+          <div class="panel" style="margin-top:14px"><h3>核心事实（含证据锚点，hover 数字看原文）</h3>
+            <table class="list" style="border:0"><thead><tr><th>字段</th><th>值</th><th>event_time</th><th>knowledge_time</th><th>版本</th></tr></thead>
+            <tbody>${e.facts.map(factRows).join("")}</tbody></table>
+          </div>
+          <div class="panel" style="margin-top:14px"><h3>关键事件时间线</h3>
+            <table class="list" style="border:0"><thead><tr><th>knowledge_time</th><th>事件</th><th>证据</th></tr></thead>
+            <tbody>${e.timeline.map(t => `<tr><td class="mono">${t[0]}</td><td>${t[1]}</td><td class="mono">${t[2]}</td></tr>`).join("")}</tbody></table>
+          </div>
+        </div>
+        <div>
+          <div class="panel"><h3>HTML 存档版本（knowledge/…/archive/）</h3>
+            ${versionRows(e)}
+            <div class="row2"><span class="k"><a class="lk" href="${e.file}" target="_blank">新页打开 latest.html ↗</a></span><span class="v">自包含 · 可离线</span></div>
+            <iframe src="${e.file}" style="width:100%;height:520px;border:1px solid var(--line);border-radius:8px;margin-top:10px" title="存档预览"></iframe>
+          </div>
+        </div>
+      </div>`;
+    document.getElementById("kbListView").classList.add("hidden");
+    document.getElementById("kbDetailView").classList.remove("hidden");
+  }
+
+  function backToList() {
+    document.getElementById("kbDetailView").classList.add("hidden");
+    document.getElementById("kbListView").classList.remove("hidden");
+    renderList(); renderSummary();
+  }
+
+  renderList(); renderSummary();
 </script>
 </body>
 </html>
