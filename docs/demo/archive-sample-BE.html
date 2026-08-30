@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>stock:BE · Bloom Energy 档案存档 · v7 (9f3c…e1)</title>
+<style>
+  body { font: 14px/1.7 Georgia, "Songti SC", serif; color: #1a1a1a; max-width: 760px; margin: 0 auto; padding: 32px 28px 80px; }
+  .mono { font-family: ui-monospace, Menlo, monospace; }
+  header.doc { border-bottom: 2px solid #1a1a1a; padding-bottom: 14px; margin-bottom: 22px; }
+  header.doc h1 { font-size: 22px; margin: 0 0 6px; }
+  header.doc .meta { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #666; }
+  h2 { font-size: 15px; margin: 28px 0 8px; border-left: 4px solid #1a1a1a; padding-left: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+  td, th { border-bottom: 1px solid #e0e0e0; padding: 6px 8px; text-align: left; }
+  th { font-size: 11px; color: #777; font-weight: 600; }
+  .num { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .ev { border-bottom: 1px dotted #999; cursor: help; position: relative; }
+  .ev:hover { background: #fffbe6; }
+  .ev:hover::after { content: attr(data-ev); position: absolute; left: 0; top: 130%; z-index: 5;
+    background: #1a1a1a; color: #fff; font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    padding: 8px 10px; border-radius: 6px; width: 340px; white-space: pre-wrap; line-height: 1.5; }
+  .neg { color: #b91c1c; }
+  .flag { display: inline-block; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;
+    border: 1px solid #fde68a; background: #fffbeb; color: #b45309; border-radius: 4px; padding: 1px 7px; margin-right: 6px; }
+  .chart { margin: 10px 0 4px; }
+  .cap { font-size: 11px; color: #777; font-family: ui-monospace, Menlo, monospace; margin-bottom: 14px; }
+  .thesis { background: #fafaf7; border: 1px solid #e8e6df; border-radius: 8px; padding: 14px 18px; font-size: 13.5px; }
+  footer.doc { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 12px; font-size: 11px; color: #888; font-family: ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <h1>Bloom Energy Corporation <span class="mono" style="font-size:14px;color:#666">NYSE: BE</span></h1>
+  <div class="meta">
+    档案版本 v7 · kb_snapshot 9f3c…e1 · 生成于 2026-08-29 09:52（knowledge_time ≤ 此时刻）
+    · 事实 38 条 · 证据绑定率 100% · 冲突 0
+  </div>
+</header>
+
+<h2>投资论点（thesis v5）</h2>
+<div class="thesis">
+  SOFC 主业直接受益 AI 数据中心供电缺口，在手订单与产能爬坡构成 12 个月维度的核心支撑；
+  但经营现金流为负、估值隐含较高执行预期。<b>失效条件</b>：连续两季营收增速 &lt; 8%；
+  大客户订单取消率 &gt; 10%。
+  <div style="margin-top:8px"><span class="flag">evidence-gap: 一致预期无 PIT 源</span><span class="flag">low-confidence: 产能爬坡</span></div>
+</div>
+
+<h2>价格走势（日线 · 近 12 个月）</h2>
+<div class="chart">
+  <svg width="700" height="200" viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg">
+    <rect width="700" height="200" fill="#fff"/>
+    <line x1="48" y1="20" x2="48" y2="168" stroke="#ddd"/>
+    <line x1="48" y1="168" x2="684" y2="168" stroke="#ddd"/>
+    <g font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#999">
+      <text x="10" y="172">$10</text><text x="10" y="120">$20</text><text x="10" y="68">$30</text><text x="10" y="24">$40</text>
+      <text x="52" y="184">2025-09</text><text x="212" y="184">2025-12</text><text x="372" y="184">2026-03</text><text x="532" y="184">2026-06</text><text x="640" y="184">2026-08</text>
+    </g>
+    <line x1="48" y1="168" x2="48" y2="20" stroke="#eee"/>
+    <polyline fill="none" stroke="#1a1a1a" stroke-width="1.6"
+      points="48,150 80,146 112,152 144,138 176,142 208,128 240,132 272,118 304,96 336,104 368,88 400,72 432,80 464,60 496,68 528,52 560,58 592,44 624,50 656,38 684,34"/>
+    <circle cx="684" cy="34" r="3" fill="#1a1a1a"/>
+    <text x="600" y="26" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#1a1a1a">$38.42（2026-08-28）</text>
+  </svg>
+</div>
+<div class="cap">数据：DataGateway · yfinance 日线 · available_at = 交易日 +1d · PIT-A · evidence ev-price-12m</div>
+
+<h2>关键财务指标（FY2021–FY2024 营收与毛利率）</h2>
+<div class="chart">
+  <svg width="700" height="180" viewBox="0 0 700 180" xmlns="http://www.w3.org/2000/svg">
+    <rect width="700" height="180" fill="#fff"/>
+    <g font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#999">
+      <text x="8" y="146">0</text><text x="8" y="106">0.5B</text><text x="8" y="66">1.0B</text><text x="8" y="26">1.5B</text>
+    </g>
+    <line x1="44" y1="144" x2="660" y2="144" stroke="#ddd"/>
+    <g>
+      <rect x="90"  y="76.8"  width="60" height="67.2" fill="#1a1a1a"/>
+      <rect x="230" y="70.4"  width="60" height="73.6" fill="#1a1a1a"/>
+      <rect x="370" y="38.4"  width="60" height="105.6" fill="#1a1a1a"/>
+      <rect x="510" y="26.4"  width="60" height="117.6" fill="#1a1a1a"/>
+    </g>
+    <g font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#1a1a1a" text-anchor="middle">
+      <text x="120" y="70">$0.84B</text><text x="260" y="64">$0.92B</text><text x="400" y="32">$1.33B</text><text x="540" y="20">$1.47B</text>
+      <text x="120" y="160" fill="#999">FY21</text><text x="260" y="160" fill="#999">FY22</text><text x="400" y="160" fill="#999">FY23</text><text x="540" y="160" fill="#999">FY24</text>
+    </g>
+    <polyline fill="none" stroke="#b45309" stroke-width="1.4" stroke-dasharray="4 3"
+      points="120,96 260,92 400,64 540,58"/>
+    <text x="580" y="52" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#b45309">毛利率 28.4%</text>
+  </svg>
+</div>
+<div class="cap">柱：营收（左轴）· 虚线：毛利率 · 数据：10-K 各年度 · PIT-A · evidence ev-71c0 等</div>
+
+<h2>核心事实（按维度）</h2>
+<table>
+  <tr><th>字段</th><th>值</th><th>event_time</th><th>knowledge_time</th><th>版本</th></tr>
+  <tr><td class="mono">revenue.fy2024</td>
+      <td class="num"><span class="ev" data-ev="ev-71c0 · 10-K FY2024
+'Total revenue was $1.47 billion'
+retrieved 2026-08-29 · available 2025-02-27 · PIT-A">$1.47B</span></td>
+      <td class="mono">2024-12-31</td><td class="mono">2025-02-27</td><td class="mono">v3</td></tr>
+  <tr><td class="mono">backlog</td>
+      <td class="num"><span class="ev" data-ev="ev-7f2a · 10-Q 2025Q2
+'remaining performance obligations of $14 billion'
+retrieved 2026-08-29 · available 2025-08-06 · PIT-A">$14B</span></td>
+      <td class="mono">2025-06-30</td><td class="mono">2025-08-06</td><td class="mono">v2</td></tr>
+  <tr><td class="mono">capacity.manufacturing</td>
+      <td class="num"><span class="ev" data-ev="ev-8031 · Fremont 工厂扩产公告
+'annual capacity of 2 gigawatts'
+retrieved 2026-08-29 · available 2025-05-01 · PIT-B">2GW</span></td>
+      <td class="mono">2025-05-01</td><td class="mono">2025-05-01</td><td class="mono">v3</td></tr>
+  <tr><td class="mono">margins.gross</td><td class="num">28.4%</td><td class="mono">2025-06-30</td><td class="mono">2025-08-06</td><td class="mono">v2</td></tr>
+  <tr><td class="mono">cash_flow.operating</td><td class="num neg">-$0.21B</td><td class="mono">2025-06-30</td><td class="mono">2025-08-06</td><td class="mono">v1</td></tr>
+</table>
+
+<h2>反方证据</h2>
+<table>
+  <tr><th>假设</th><th>反对证据</th><th>状态</th></tr>
+  <tr><td>AI 数据中心需求持续超预期</td><td>订单增长或含补贴锁定下的提前下单（ev-8c11）</td><td class="mono">open</td></tr>
+  <tr><td>产能爬坡按计划</td><td>同业 SOFC 爬坡历史平均延期 2 个季度（ev-8d07）</td><td class="mono">open</td></tr>
+</table>
+
+<h2>关键事件时间线</h2>
+<table>
+  <tr><th>knowledge_time</th><th>事件</th><th>证据</th></tr>
+  <tr><td class="mono">2025-02-27</td><td>FY2024 10-K 发布：营收 $1.47B（+10.5%）</td><td class="mono">ev-71c0</td></tr>
+  <tr><td class="mono">2025-05-01</td><td>Fremont 扩产至 2GW 公告</td><td class="mono">ev-8031</td></tr>
+  <tr><td class="mono">2025-08-06</td><td>2025Q2 10-Q：backlog $14B（+38% YoY）</td><td class="mono">ev-7f2a</td></tr>
+</table>
+
+<footer class="doc">
+  finance-agent · ProfileRenderer · 本文件是 EventStore/双时态 KB 的投影，可由 kb_snapshot 9f3c…e1 重建
+  · 生成参数：live 模式 · 图表数据经 DataGateway（生产模式）
+  · 每个数字 hover 可见证据原文/available_at/PIT 等级
+</footer>
+
+</body>
+</html>

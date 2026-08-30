@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>finance-agent · 交互重设计 demo</title>
+<style>
+  :root {
+    --ink: #171717; --ink-2: #525252; --ink-3: #a3a3a3;
+    --line: #e5e5e5; --bg: #fafafa; --card: #ffffff;
+    --blue: #1d4ed8; --blue-bg: #eff6ff;
+    --green: #15803d; --green-bg: #f0fdf4; --green-line: #bbf7d0;
+    --red: #b91c1c; --red-bg: #fef2f2; --red-line: #fecaca;
+    --amber: #b45309; --amber-bg: #fffbeb; --amber-line: #fde68a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 14px/1.6 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; color: var(--ink); background: var(--bg); }
+  button { font: inherit; cursor: pointer; }
+  .mono { font-family: var(--mono); }
+
+  /* ---------- 骨架 ---------- */
+  header.top { height: 44px; background: var(--card); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 20px; padding: 0 16px; position: sticky; top: 0; z-index: 10; }
+  header.top .brand { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+  header.top nav { display: flex; gap: 2px; }
+  header.top nav button { border: 0; background: none; padding: 4px 12px; border-radius: 6px; font-size: 13px; color: var(--ink-2); }
+  header.top nav button.on { background: var(--ink); color: #fff; }
+  .eval-badge { font-family: var(--mono); font-size: 11px; color: var(--amber); background: var(--amber-bg);
+    border: 1px solid var(--amber-line); border-radius: 4px; padding: 1px 8px; }
+
+  .shell { display: grid; grid-template-columns: 240px 1fr; height: calc(100vh - 44px); }
+
+  /* ---------- 侧栏 ---------- */
+  aside { border-right: 1px solid var(--line); background: var(--card); overflow-y: auto; padding: 12px 10px; }
+  aside h3 { font-size: 11px; color: var(--ink-3); font-weight: 600; letter-spacing: .05em; padding: 4px 8px 8px; }
+  .sess { display: block; width: 100%; text-align: left; border: 1px solid transparent; background: none;
+    border-radius: 8px; padding: 8px 10px; margin-bottom: 2px; }
+  .sess:hover { background: #f5f5f5; }
+  .sess.on { background: #f0f0f0; border-color: var(--line); }
+  .sess .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .m { display: flex; justify-content: space-between; align-items: center; margin-top: 3px; }
+  .sess .time { font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+  .badge { font-size: 10px; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .b-run { background: var(--blue-bg); color: var(--blue); }
+  .b-done { background: var(--green-bg); color: var(--green); }
+  .b-err { background: var(--red-bg); color: var(--red); }
+  .b-wait { background: var(--amber-bg); color: var(--amber); }
+
+  /* ---------- 对话流 ---------- */
+  main { overflow-y: auto; display: flex; flex-direction: column; }
+  .flow { flex: 1; width: 100%; max-width: 768px; margin: 0 auto; padding: 24px 20px 12px; }
+  .row { margin-bottom: 14px; }
+  .u { display: flex; justify-content: flex-end; }
+  .u .b { max-width: 80%; background: var(--ink); color: #fff; border-radius: 14px; padding: 8px 14px; white-space: pre-wrap; }
+  .a .b { max-width: 88%; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 16px; white-space: pre-wrap; }
+  .a .b strong { font-weight: 600; }
+  .chip { display: inline-block; font-family: var(--mono); font-size: 11px; background: #f5f5f5; border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 5px; color: var(--ink-2); }
+
+  /* ---------- 通用卡片 ---------- */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
+  .card .hd { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 8px 12px; background: none; border: 0; font-size: 12.5px; }
+  .card .hd:hover { background: #fafafa; }
+  .card .hd .arrow { color: var(--ink-3); font-family: var(--mono); width: 12px; }
+  .card .bd { border-top: 1px solid var(--line); padding: 10px 14px; font-size: 13px; display: none; }
+  .card.open .bd { display: block; }
+  .tag { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+  .spacer { flex: 1; }
+
+  /* ToolCard */
+  .tool .hd { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .tool .hd .name { color: var(--ink); font-weight: 600; }
+  .tool pre { font-family: var(--mono); font-size: 11.5px; background: #fafafa; border-radius: 6px;
+    padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--ink-2); }
+  .tool .lbl { font-size: 11px; color: var(--ink-3); margin: 6px 0 2px; }
+
+  /* CommandCard */
+  .cmd { border-color: #d4d4d4; }
+  .cmd > .hd { padding: 10px 14px; }
+  .cmd .slash { font-family: var(--mono); font-weight: 700; font-size: 13px; }
+  .cmd .steps { padding: 4px 14px 12px; }
+  .prog { height: 4px; background: #f0f0f0; border-radius: 2px; overflow: hidden; margin: 8px 0 10px; }
+  .prog i { display: block; height: 100%; background: var(--ink); border-radius: 2px; }
+
+  /* StepAgentCard（嵌套） */
+  .step { border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: #fdfdfd; }
+  .step .hd { padding: 7px 10px; font-size: 12px; }
+  .step .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot-run { background: var(--blue); animation: pulse 1.2s infinite; }
+  .dot-ok { background: var(--green); }
+  .dot-err { background: var(--red); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .meter { display: inline-block; width: 110px; height: 5px; background: #eee; border-radius: 3px; vertical-align: middle; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--green); }
+
+  /* ResearchFoldCard */
+  .fold { border-color: var(--green-line); background: linear-gradient(0deg, #fdfffd, #fff); }
+  .fold .sum { color: var(--ink-2); padding: 2px 14px 10px; font-size: 13px; }
+  .fold .flags { padding: 0 14px 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .flag { font-size: 10.5px; font-family: var(--mono); border-radius: 4px; padding: 1px 7px; }
+  .flag.warn { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-line); }
+  .flag.ok { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-line); }
+  .fold .full { border-top: 1px dashed var(--line); padding: 12px 16px; display: none; font-size: 13px; }
+  .fold.open .full { display: block; }
+  .fold .full h4 { margin: 10px 0 4px; font-size: 13px; }
+  .fold .full p { color: var(--ink-2); margin-bottom: 8px; }
+
+  /* ApprovalCard */
+  .appr { border-color: var(--amber-line); background: var(--amber-bg); }
+  .appr .in { padding: 12px 14px; }
+  .appr .t { font-weight: 600; font-size: 13px; color: var(--amber); margin-bottom: 4px; }
+  .appr .d { font-size: 12.5px; color: var(--ink-2); margin-bottom: 10px; }
+  .appr .ops { display: flex; gap: 8px; }
+  .btn { border-radius: 7px; padding: 5px 14px; font-size: 12.5px; border: 1px solid var(--line); background: var(--card); }
+  .btn.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .btn.danger { color: var(--red); border-color: var(--red-line); }
+
+  /* TurnProcess 折叠控件 */
+  .tp { display: flex; align-items: center; gap: 8px; color: var(--ink-3); font-size: 12px;
+    font-family: var(--mono); padding: 4px 2px; margin-bottom: 14px; }
+  .tp button { border: 0; background: none; color: var(--ink-3); font-family: var(--mono); font-size: 12px; padding: 0; }
+  .tp button:hover { color: var(--ink); }
+  .tp hr { flex: 1; border: 0; border-top: 1px solid var(--line); }
+
+  /* ErrorCard */
+  .err { border: 1px solid var(--red-line); background: var(--red-bg); border-radius: 10px; padding: 9px 13px; margin-bottom: 14px; }
+  .err .t { font-family: var(--mono); font-size: 12px; color: var(--red); font-weight: 600; }
+  .err .d { font-size: 12.5px; color: var(--red); margin-top: 2px; }
+
+  /* ---------- composer ---------- */
+  .composer { border-top: 1px solid var(--line); background: var(--card); }
+  .composer .in { max-width: 768px; margin: 0 auto; padding: 12px 20px 14px; position: relative; }
+  .composer textarea { width: 100%; resize: none; border: 1px solid #d4d4d4; border-radius: 12px;
+    padding: 10px 14px; font: inherit; font-size: 14px; outline: none; }
+  .composer textarea:focus { border-color: var(--ink-2); }
+  .composer .bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .composer .hint { font-size: 11px; color: var(--ink-3); }
+  .send { border-radius: 8px; background: var(--ink); color: #fff; border: 0; padding: 6px 16px; font-size: 13px; }
+  .stop { border-radius: 8px; background: var(--card); color: var(--red); border: 1px solid var(--red-line); padding: 6px 16px; font-size: 13px; }
+  .slash-menu { position: absolute; left: 20px; right: 20px; bottom: 100%; margin-bottom: 6px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.08); overflow: hidden; }
+  .slash-menu .it { display: flex; gap: 10px; align-items: baseline; padding: 9px 14px; width: 100%; border: 0; background: none; text-align: left; }
+  .slash-menu .it:hover, .slash-menu .it.on { background: #f5f5f5; }
+  .slash-menu .n { font-family: var(--mono); font-weight: 700; font-size: 13px; }
+  .slash-menu .d { font-size: 12px; color: var(--ink-3); }
+
+  /* ---------- Knowledge 页 ---------- */
+  .kb { max-width: 1024px; margin: 0 auto; padding: 24px 20px 60px; }
+  .kb h2 { font-size: 16px; margin-bottom: 12px; }
+  table.list { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  table.list th { text-align: left; font-size: 11px; color: var(--ink-3); font-weight: 600; padding: 8px 12px; border-bottom: 1px solid var(--line); background: #fafafa; }
+  table.list td { padding: 9px 12px; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+  table.list tr:last-child td { border-bottom: 0; }
+  table.list tr:hover td { background: #fafafa; }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .panel h3 { font-size: 13px; margin-bottom: 8px; }
+  .panel .row2 { display: flex; justify-content: space-between; font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed #f0f0f0; }
+  .panel .row2:last-child { border-bottom: 0; }
+  .panel .row2 .k { color: var(--ink-2); }
+  .panel .row2 .v { font-family: var(--mono); font-size: 12px; }
+  .ev { border-bottom: 1px dotted var(--ink-3); cursor: help; }
+  .arch { font-family: var(--mono); font-size: 12px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <span class="brand">finance-agent</span>
+  <nav>
+    <button id="nav-chat" class="on" onclick="showPage('chat')">对话</button>
+    <button id="nav-kb" onclick="showPage('kb')">Knowledge</button>
+    <button onclick="alert('Decisions 页保持现状，从决策卡事件钻取')">Decisions</button>
+    <button onclick="alert('Evaluations 页保持现状')">Evaluations</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="eval-badge hidden" id="evalBadge">EVAL @ 2023-06-30</span>
+</header>
+
+<!-- ================= 对话页 ================= -->
+<div class="shell" id="page-chat">
+  <aside>
+    <h3>会话</h3>
+    <button class="sess on"><div class="t">BE 是否值得投资</div>
+      <div class="m"><span class="badge b-run">运行中</span><span class="time">09:41</span></div></button>
+    <button class="sess"><div class="t">600519 决策讨论</div>
+      <div class="m"><span class="badge b-done">已完成</span><span class="time">昨天</span></div></button>
+    <button class="sess"><div class="t">TSLA 档案更新</div>
+      <div class="m"><span class="badge b-done">已完成</span><span class="time">3 天前</span></div></button>
+    <button class="sess"><div class="t">walk-forward 2023 评估</div>
+      <div class="m"><span class="badge b-err">失败</span><span class="time">上周</span></div></button>
+    <h3 style="margin-top:14px">说明</h3>
+    <p style="font-size:11px;color:var(--ink-3);padding:0 8px">侧栏只列主会话；step agent 子 run 不进列表，从 CommandCard 钻取。侧栏可折叠（240px）。</p>
+  </aside>
+
+  <main>
+    <div class="flow">
+
+      <!-- TurnProcess 折叠控件（上一 turn 已折叠） -->
+      <div class="tp">
+        <button onclick="alert('展开后显示该 turn 的推理与工具过程行（默认折叠）')">▸ 思考过程 · 3 次工具调用 · 2 条消息</button>
+        <hr><span>142s · 8.2k tok</span>
+      </div>
+
+      <div class="row u"><div class="b">我想深度研究下BE这家公司，是否值得投资</div></div>
+
+      <div class="row a"><div class="b"><strong>BE = Bloom Energy（NYSE: BE）</strong>，固体氧化物燃料电池（SOFC）厂商。
+
+我先查了档案：现有 <span class="chip">stock:BE</span> 完整度 34%，最近研究在 45 天前，营收与在建产能数据已偏旧。
+
+建议先跑 <span class="chip">/research BE</span> 补齐档案（约 2–3 轮、几美元 token），研究完我给你结论摘要；<strong>要不要出投资建议由你决定</strong>，不会自动出决策卡。确认吗？</div></div>
+
+      <div class="row u"><div class="b">确认，开始研究</div></div>
+
+      <div class="row a"><div class="b">好，启动 <span class="chip">/research BE</span>：S1 研究（轮次制，gap 驱动）→ 过程评估。过程在下面卡片里实时可见。</div></div>
+
+      <!-- ToolCard 示例（主 agent 轻量工具调用，配对折叠） -->
+      <div class="card tool" id="tool1">
+        <button class="hd" onclick="toggle('tool1')">
+          <span class="arrow">▸</span><span class="name">query_kb</span>
+          <span class="tag">{entity: "stock:BE"} → 12 字段 · 完整度 34%</span>
+        </button>
+        <div class="bd">
+          <div class="lbl">arguments · event #418</div>
+          <pre>{ "entity_kind": "stock", "entity_id": "BE" }</pre>
+          <div class="lbl">result · event #421</div>
+          <pre>{ "fields": 12, "completeness": 0.34, "stale": ["revenue", "capacity"], "conflicts": 0 }</pre>
+        </div>
+      </div>
+
+      <!-- CommandCard：/research 运行中，嵌套 step agent -->
+      <div class="card cmd open" id="cmd1">
+        <button class="hd" onclick="toggle('cmd1')">
+          <span class="arrow">▾</span>
+          <span class="slash">/research</span><span class="mono" style="font-size:12.5px">BE · 目标：评估是否值得投资</span>
+          <span class="spacer"></span><span class="badge b-run">运行中</span>
+        </button>
+        <div class="steps">
+          <div class="prog"><i style="width:58%"></i></div>
+
+          <div class="step open" id="st1">
+            <button class="hd" onclick="toggle('st1')">
+              <span class="arrow">▾</span><span class="dot dot-run"></span>
+              <b>S1 研究</b><span class="tag">第 2/3 轮 · 完整度 34% → 61%</span>
+              <span class="meter"><i style="width:61%"></i></span>
+              <span class="spacer"></span><span class="tag">$1.83 · 74s</span>
+            </button>
+            <div class="bd">
+              <div class="lbl" style="font-size:11px;color:var(--ink-3)">子 run live-be-r2 · 点击可钻取完整子事件流（工具调用/证据登记/冲突裁决）</div>
+              <pre style="font-family:var(--mono);font-size:11.5px;background:#fafafa;border-radius:6px;padding:8px 10px">round 2: gap=[capacity, customers, cash_flow]
+  ✓ evidence ev-7f2a 10-Q 2025Q2 (available 2025-08-06, PIT-A)
+  ✓ fact capacity.manufacturing = 2GW → v3
+  ⚠ counter-evidence: 反方假设「AI 数据中心需求不及预期」已采集 2 条反对证据</pre>
+            </div>
+          </div>
+
+          <div class="step">
+            <button class="hd" onclick="this.parentElement.classList.toggle('open')">
+              <span class="arrow">▸</span><span class="dot" style="background:#d4d4d4"></span>
+              <b>过程评估</b><span class="tag">等待 S1 完成</span>
+            </button>
+            <div class="bd">rubric / coverage-check / source-independence / counter-evidence 软反馈 + 硬门禁汇总。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ResearchFoldCard：研究长文默认折叠 -->
+      <div class="card fold" id="fold1">
+        <button class="hd" onclick="toggle('fold1')">
+          <span class="arrow">▸</span>
+          <b style="font-size:13px">📄 Bloom Energy (BE) 深度研究 · 第 1 轮报告</b>
+          <span class="spacer"></span><span class="tag">report/published · #512</span>
+        </button>
+        <div class="sum">摘要：SOFC 主业受益 AI 数据中心供电缺口，在手订单 $14B（+38% YoY）；但毛利率承压、现金流为负，估值隐含较高执行预期。完整度 34% → 52%。</div>
+        <div class="flags">
+          <span class="flag ok">证据绑定 100%</span>
+          <span class="flag warn">evidence-gap: 一致预期无 PIT 源</span>
+          <span class="flag warn">low-confidence: 产能爬坡</span>
+        </div>
+        <div class="full">
+          <h4>1. 商业模式</h4>
+          <p>能源服务器（Energy Server）租赁 + 电力售卖双轮……（全文为 Markdown artifact：data/reports/live-be-r1/round-1.md，此处点击后按需加载，不进事件流刷屏）</p>
+          <h4>2. 财务透视</h4>
+          <p>FY2024 营收 <span class="ev" title="证据 ev-71c0 · 10-K 2024：'Total revenue was $1.47 billion' · available 2025-02-27">$14.7 亿</span>，同比 +10.5%……</p>
+          <h4>3. 反方证据</h4>
+          <p>替代解释：订单增长或为客户锁定补贴的提前下单……</p>
+        </div>
+      </div>
+
+      <!-- ApprovalCard：/evaluate 内联审批 -->
+      <div class="card appr">
+        <div class="in">
+          <div class="t">审批 · /evaluate 需要确认</div>
+          <div class="d">walk-forward 2023Q1–2024Q4 · 12 个决策点 · 预计成本 ~$4.2 / 9 min。<br>
+            默认强制审批；只有你在指令里明确「不用审批」才会豁免（落 approval/waived 可审计）。</div>
+          <div class="ops">
+            <button class="btn primary" onclick="alert('allowed-once → approval/decided 落库，评估开始')">允许一次</button>
+            <button class="btn danger" onclick="alert('rejected → 不执行，事件落库')">拒绝</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ErrorCard -->
+      <div class="err">
+        <div class="t">✕ step_agent/end · status=error（S1 研究 · live-be-r2）</div>
+        <div class="d">EDGAR adapter 限流 429：已重试 3 次。子流 #477 · 日志同步输出。可续跑，已完成的轮次不丢。</div>
+      </div>
+
+      <div class="row a"><div class="b">研究完成。一句话：<strong>基本面改善是真实的，但当前估值已经把 AI 叙事 priced in 了大半</strong>；完整结论在上面报告卡。
+
+档案已更新到 61%。需要我基于档案出一张投资建议卡吗（<span class="chip">/decide BE</span>）？也可以先看 <a href="#" onclick="showPage('kb');return false">BE 的档案</a>。</div></div>
+
+      <div style="height:12px"></div>
+    </div>
+
+    <!-- composer -->
+    <div class="composer">
+      <div class="in">
+        <div class="slash-menu" id="slashMenu">
+          <button class="it on"><span class="n">/research</span><span class="d">S1 深度研究 + 过程评估</span></button>
+          <button class="it"><span class="n">/profile</span><span class="d">S1 研究 → S2 档案更新 + 过程评估</span></button>
+          <button class="it"><span class="n">/decide</span><span class="d">S1 → S2 → S3 决策卡 + 过程评估</span></button>
+          <button class="it"><span class="n">/evaluate</span><span class="d">S4 独立效果评估（默认需审批）</span></button>
+        </div>
+        <textarea rows="2" id="ta" placeholder="输入消息，或 / 唤起 command…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <div class="bar">
+          <span class="hint">运行中：Enter = 排队 · 也可直接 Stop</span>
+          <span class="spacer"></span>
+          <button class="stop" onclick="alert('中断当前 turn / command run（事件落库，可恢复）')">■ Stop</button>
+          <button class="send" onclick="alert('发送：先落 user/message 事件 → turn 认领')">发送</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ================= Knowledge 页 ================= -->
+<div class="hidden" id="page-kb">
+  <main style="overflow-y:auto;height:calc(100vh - 44px)">
+  <div class="kb">
+    <h2>Knowledge · 全部档案</h2>
+    <table class="list">
+      <thead><tr><th>实体</th><th>名称/行业</th><th>完整度</th><th>新鲜度</th><th>冲突</th><th>最近研究</th><th>HTML 存档</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="mono">stock:BE</td><td>Bloom Energy · 燃料电池</td>
+          <td><span class="meter"><i style="width:61%"></i></span> 61%</td>
+          <td>2 字段陈旧</td><td>0</td><td>今天</td>
+          <td class="arch"><a href="archive-sample-BE.html" target="_blank">latest.html</a> · 7 个版本</td>
+        </tr>
+        <tr>
+          <td class="mono">stock:600519</td><td>贵州茅台 · 白酒</td>
+          <td><span class="meter"><i style="width:88%"></i></span> 88%</td>
+          <td>新鲜</td><td>1</td><td>昨天</td>
+          <td class="arch">latest.html · 23 个版本</td>
+        </tr>
+        <tr>
+          <td class="mono">stock:TSLA</td><td>Tesla · 电动车</td>
+          <td><span class="meter"><i style="width:74%"></i></span> 74%</td>
+          <td>新鲜</td><td>2</td><td>3 天前</td>
+          <td class="arch">latest.html · 15 个版本</td>
+        </tr>
+        <tr style="color:var(--ink-3)">
+          <td class="mono">stock:GPS</td><td>Gap Inc. · 服装零售 <span class="badge" style="background:#f0f0f0">已剔除关注</span></td>
+          <td><span class="meter"><i style="width:40%"></i></span> 40%</td>
+          <td>陈旧</td><td>0</td><td>90 天前</td>
+          <td class="arch">latest.html · 4 个版本</td>
+        </tr>
+        <tr>
+          <td class="mono">industry:sofc</td><td>固体氧化物燃料电池行业</td>
+          <td><span class="meter"><i style="width:45%"></i></span> 45%</td>
+          <td>—</td><td>0</td><td>今天</td>
+          <td class="arch">latest.html · 3 个版本</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="kv">
+      <div class="panel">
+        <h3>stock:BE · facts（as_of <input type="date" value="2026-08-29" style="font:inherit;font-size:12px"> · 时光机）</h3>
+        <div class="row2"><span class="k">revenue.fy2024</span><span class="v"><span class="ev" title="证据 ev-71c0 · 10-K：'Total revenue was $1.47 billion' · available 2025-02-27 · PIT-A">$1.47B</span> · v3</span></div>
+        <div class="row2"><span class="k">backlog</span><span class="v"><span class="ev" title="证据 ev-7f2a · 10-Q 2025Q2 · available 2025-08-06 · PIT-A">$14B</span> · v2</span></div>
+        <div class="row2"><span class="k">capacity.manufacturing</span><span class="v">2GW · v3</span></div>
+        <div class="row2"><span class="k">margins.gross</span><span class="v">28.4% · v2</span></div>
+        <div class="row2"><span class="k">cash_flow.operating</span><span class="v" style="color:var(--red)">-$0.21B · v1</span></div>
+        <div class="row2"><span class="k">thesis 版本</span><span class="v">v5 · <a href="archive-sample-BE.html" target="_blank">打开 HTML 存档</a></span></div>
+      </div>
+      <div class="panel">
+        <h3>HTML 存档版本（knowledge/stocks/BE/archive/）</h3>
+        <div class="row2"><span class="k">latest →</span><span class="v">9f3c…e1 · 今天 09:52</span></div>
+        <div class="row2"><span class="k">v7</span><span class="v">9f3c…e1 · 今天 09:52</span></div>
+        <div class="row2"><span class="k">v6</span><span class="v">77ab…42 · 3 天前</span></div>
+        <div class="row2"><span class="k">v5</span><span class="v">c01d…9b · 上周</span></div>
+        <p style="font-size:11px;color:var(--ink-3);margin-top:10px">
+          自包含单文件 HTML（内联 SVG 图表、无外部依赖），S2 写入后按 kb_snapshot 版本化生成；
+          历史版本永不删除。点版本号可看该版档案原貌，与 as_of 时光机互为磁盘对应物。</p>
+        <iframe src="archive-sample-BE.html" style="width:100%;height:300px;border:1px solid var(--line);border-radius:8px;margin-top:10px" title="HTML 存档预览"></iframe>
+      </div>
+    </div>
+  </div>
+  </main>
+</div>
+
+<script>
+  function showPage(p) {
+    document.getElementById('page-chat').classList.toggle('hidden', p !== 'chat');
+    document.getElementById('page-kb').classList.toggle('hidden', p !== 'kb');
+    document.getElementById('nav-chat').classList.toggle('on', p === 'chat');
+    document.getElementById('nav-kb').classList.toggle('on', p === 'kb');
+  }
+  function toggle(id) {
+    const el = document.getElementById(id);
+    el.classList.toggle('open');
+    const a = el.querySelector('.arrow');
+    if (a) a.textContent = el.classList.contains('open') ? '▾' : '▸';
+  }
+  // slash 菜单：输入框首字符为 / 时出现
+  const ta = document.getElementById('ta'), menu = document.getElementById('slashMenu');
+  function syncMenu() { menu.style.display = ta.value.startsWith('/') && !ta.value.includes(' ') ? 'block' : 'none'; }
+  ta.addEventListener('input', syncMenu); syncMenu();
+  menu.querySelectorAll('.it').forEach(b => b.addEventListener('click', () => {
+    ta.value = b.querySelector('.n').textContent + ' '; ta.focus(); syncMenu();
+  }));
+</script>
+</body>
+</html>
