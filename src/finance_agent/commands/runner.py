@@ -36,8 +36,15 @@ from .steps import STEP_TITLES, STEPS, StepContext, StepDeps, StepResult
 
 logger = logging.getLogger("finance_agent.commands")
 
-#: 子流里桥接到父流进度的事件类型 → 摘要函数
-_BRIDGE_TYPES = {RESEARCH_ROUND_END, DECISION_CARD, "eval/report", "research/error", "decision/error"}
+#: 子流里桥接到父流进度的事件类型（Q：研究过程进度可见——粒度到每次工具调用）
+_BRIDGE_TYPES = {
+    RESEARCH_ROUND_END,
+    DECISION_CARD,
+    "eval/report",
+    "research/error",
+    "decision/error",
+    "tool/call",
+}
 
 WakeFn = Callable[[str, str], None]  # (session_run_id, content) —— command/done 唤醒主 agent
 
@@ -261,6 +268,9 @@ def _progress_summary(e: StoredEvent) -> str:
         )
     if e.type == DECISION_CARD:
         return f"决策卡出具：{str(p.get('action', '')).upper()}（{p.get('card_id')}）"
+    if e.type == "tool/call":
+        args = json.dumps(p.get("arguments", {}), ensure_ascii=False)
+        return f"调用 {p.get('name')}({args[:80]})"
     if e.type in ("research/error", "decision/error"):
         return f"出错：{p.get('reason', '')}"
     if e.type == "eval/report":

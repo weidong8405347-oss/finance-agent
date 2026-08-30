@@ -11,13 +11,34 @@ from typing import Any
 from .gateway import DataGateway
 
 
-def make_gateway_tool(gateway: DataGateway, source_id: str):
-    """生成一个工具函数：query(source 固定, request=arguments) → ToolResult dict。"""
+def make_gateway_tool(gateway: DataGateway, source_id: str, chunk_store=None):
+    """生成一个工具函数：query(source 固定, request=arguments) → ToolResult dict。
+
+    传入 chunk_store 时，每条记录同时落检索台账（EvidenceDesk）：返回项带 chunk_id，
+    供 register_evidence 引用——「模型可见的记录才可引为证据」由此闭环。
+    """
 
     def tool(arguments: dict[str, Any]) -> dict[str, Any]:
         records = gateway.query(source_id, arguments)
+        items = []
+        for r in records:
+            item = {**r.payload, "url": r.url, "available_at": r.available_at.isoformat()
+                    if r.available_at else None}
+            if chunk_store is not None:
+                from ..knowledge.models import PitGrade
+
+                # chunk 文本必须与模型所见逐项一致（子串校验的基准）
+                item_text = json.dumps(item, ensure_ascii=False, default=str)
+                item["chunk_id"] = chunk_store.add(
+                    source_id=r.source_id,
+                    text=item_text,
+                    url=r.url,
+                    available_at=r.available_at,
+                    pit_grade=PitGrade(gateway_grade(gateway, r.source_id)),
+                )
+            items.append(item)
         return {
-            "content": json.dumps([r.payload for r in records], ensure_ascii=False, default=str),
+            "content": json.dumps(items, ensure_ascii=False, default=str),
             "provenance": [
                 {
                     "source_id": r.source_id,

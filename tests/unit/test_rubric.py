@@ -27,7 +27,16 @@ def run_two_rounds(tmp_path, judge_llm):
 
     research_llm = MockLLM(
         [
-            # round 1：写一个字段
+            # round 1：query → read 正文 → register（chunk 逐字摘录）→ 写一个字段
+            AssistantReply(
+                content="",
+                tool_calls=[ToolCall(call_id="c0", name="query_edgar", arguments={"ticker": "AAPL"})],
+            ),
+            AssistantReply(
+                content="",
+                tool_calls=[ToolCall(call_id="c0b", name="read_edgar_filing",
+                                     arguments={"chunk_id": "chk-0001", "query": "revenue"})],
+            ),
             AssistantReply(
                 content="",
                 tool_calls=[
@@ -36,10 +45,8 @@ def run_two_rounds(tmp_path, judge_llm):
                         name="register_evidence",
                         arguments={
                             "evidence_id": "ev-1",
-                            "source_id": "edgar",
+                            "chunk_id": "chk-0002",
                             "verbatim_quote": "revenue 100",
-                            "available_at": "2024-03-01T00:00:00+00:00",
-                            "pit_grade": "A",
                         },
                     )
                 ],
@@ -59,6 +66,17 @@ def run_two_rounds(tmp_path, judge_llm):
             AssistantReply(content="r2: no progress"),
         ]
     )
+    from finance_agent.gateway.adapters.fixture import FixtureAdapter
+    from finance_agent.gateway.models import DataRecord, SourceCapability
+    from finance_agent.knowledge.models import PitGrade
+
+    gateway.register(FixtureAdapter(
+        SourceCapability(source_id="edgar", pit_grade=PitGrade.A, description="夹具"),
+        records=[DataRecord(
+            source_id="edgar", payload={"form": "10-K"},
+            available_at=datetime(2024, 3, 1, tzinfo=UTC), url="demo://10k",
+        )],
+    ))
     loop = ResearchLoop(
         store=kb,
         events=events,
@@ -69,6 +87,8 @@ def run_two_rounds(tmp_path, judge_llm):
         max_rounds=3,
         completeness_target=1.0,
         judge_llm=judge_llm,
+        gateway_sources=["edgar"],
+        fetch_document=lambda url: "revenue 100 in fy2024.",
     )
     loop.run("stock", "AAPL", objective="研究", now=NOW)
     return events, research_llm

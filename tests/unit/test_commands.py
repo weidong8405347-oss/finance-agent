@@ -57,10 +57,20 @@ def test_parse_evaluate_with_waiver_flag():
 
 
 def make_deps(tmp_path: Path, scripts: dict[str, list], *, eval_runner=None):
+    from finance_agent.gateway.adapters.fixture import FixtureAdapter
+    from finance_agent.gateway.models import DataRecord, SourceCapability
+    from finance_agent.knowledge.models import PitGrade
+
     events = EventStore(tmp_path / "e.db")
     kb = BitemporalStore(tmp_path / "kb.db")
     writer = ProfileWriter(store=kb, events=events)
-    gateway = DataGateway(mode="live", events=events, run_id="live-test")  # 空数据源
+    gateway = DataGateway(mode="live", events=events, run_id="live-test")
+    gateway.register(FixtureAdapter(
+        SourceCapability(source_id="demo", pit_grade=PitGrade.C,
+                         server_side_asof=False, description="夹具演示源"),
+        records=[DataRecord(source_id="demo", payload={"form": "10-K", "accession": "demo-1"},
+                            url="demo://filing")],
+    ))
     approvals = ApprovalService(events)
     calls = {"research": 0, "fast": 0}
 
@@ -81,6 +91,7 @@ def make_deps(tmp_path: Path, scripts: dict[str, list], *, eval_runner=None):
         evals_dir=tmp_path / "evals",
         reports_dir=tmp_path / "reports",
         eval_runner=eval_runner,
+        fetch_document=lambda url: "产能 2GW 公告。demo 正文。",
         max_rounds=3,
         completeness_target=0.8,
     )
@@ -101,12 +112,15 @@ def run_command(deps, events, text, *, waiver_basis=None, wake=None):
     return done
 
 
-# 研究 step 脚本：round1 登记证据+写事实+收尾；round2 无进展 → stalled
+# 研究 step 脚本（verified binding 路径）：query 拿记录（chk-0001）→ read 正文（chk-0002）
+# → register 逐字摘录 → propose 落库；round2 无进展 → stalled
 RESEARCH_SCRIPT = [
-    AssistantReply(content="", tool_calls=[ToolCall(call_id="c1", name="register_evidence", arguments={
-        "evidence_id": "ev-1", "source_id": "demo", "verbatim_quote": "产能 2GW 公告",
-        "pit_grade": "C"})]),
-    AssistantReply(content="", tool_calls=[ToolCall(call_id="c2", name="propose_fact", arguments={
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c0", name="query_demo", arguments={})]),
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c1", name="read_edgar_filing",
+                                               arguments={"chunk_id": "chk-0001", "query": "产能"})]),
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c2", name="register_evidence", arguments={
+        "evidence_id": "ev-1", "chunk_id": "chk-0002", "verbatim_quote": "产能 2GW 公告"})]),
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c3", name="propose_fact", arguments={
         "field": "capacity", "value": "2GW", "evidence_ids": ["ev-1"]})]),
     AssistantReply(content="round1 done"),
     AssistantReply(content="no new findings"),

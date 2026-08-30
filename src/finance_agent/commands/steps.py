@@ -97,6 +97,7 @@ class StepDeps:
     reports_dir: Path
     judge_llm: LLM | None = None
     eval_runner: Callable[..., dict[str, Any]] | None = None  # (config_name, child_run_id) → summary dict
+    fetch_document: Callable[[str], str] | None = None  # 文档正文抓取（live 研究用；eval 禁用）
     max_rounds: int = 3
     max_steps_per_round: int = 16
     completeness_target: float = 0.8
@@ -144,6 +145,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         max_steps_per_round=deps.max_steps_per_round,
         judge_llm=deps.judge_llm,
         should_stop=ctx.should_cancel,
+        fetch_document=deps.fetch_document,
     )
     reports = loop.run("stock", ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}")
     if loop.stop_reason == "cancelled":

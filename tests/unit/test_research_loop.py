@@ -25,91 +25,69 @@ def tc(i: int, name: str, args: dict) -> ToolCall:
 
 
 def scripted_llm() -> MockLLM:
-    """3 轮研究脚本：r1 写 2 字段，r2 写 2 字段，r3 写 1 字段（达 1.0 收敛）。"""
+    """3 轮研究脚本（verified binding 纪律：read 正文 → register 摘录 → propose 落库）。
+
+    chunk 序：chk-0001 = query_edgar 的 filing 记录；之后每次 read_edgar_filing
+    产生一个正文窗口 chunk（chk-0002 起递增）。evidence_id 显式指定（脚本静态可预测）。
+    """
     f1, f2, f3, f4, f5 = FIELDS
-    replies = [
-        # ---- round 1
-        AssistantReply(
-            content="",
-            tool_calls=[tc(1, "register_evidence", {
-                "evidence_id": "ev-rev", "source_id": "edgar",
-                "verbatim_quote": "Total revenue 100", "available_at": "2024-03-01T00:00:00+00:00",
-                "pit_grade": "A",
-            })],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[tc(2, "propose_fact", {"field": f1, "value": 100, "evidence_ids": ["ev-rev"]})],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[tc(3, "register_evidence", {
-                "evidence_id": "ev-ni", "source_id": "edgar",
-                "verbatim_quote": "Net income 25", "available_at": "2024-03-01T00:00:00+00:00",
-                "pit_grade": "A",
-            })],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[tc(4, "propose_fact", {"field": f2, "value": 25, "evidence_ids": ["ev-ni"]})],
-        ),
-        AssistantReply(content="round1 done"),
-        # ---- round 2
-        AssistantReply(
-            content="",
-            tool_calls=[tc(5, "register_evidence", {
-                "evidence_id": "ev-bm", "source_id": "edgar",
-                "verbatim_quote": "sells phones and services", "available_at": "2024-03-01T00:00:00+00:00",
-                "pit_grade": "A",
-            })],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[
-                tc(6, "propose_fact", {"field": f3, "value": "硬件+服务", "evidence_ids": ["ev-bm"]})
-            ],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[tc(7, "register_evidence", {
-                "evidence_id": "ev-moat", "source_id": "substack",
-                "verbatim_quote": "ecosystem lock-in", "available_at": "2024-02-01T00:00:00+00:00",
-                "pit_grade": "B",
-            })],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[
-                tc(8, "propose_fact", {"field": f4, "value": "生态锁定", "evidence_ids": ["ev-moat"]})
-            ],
-        ),
-        AssistantReply(content="round2 done"),
-        # ---- round 3
-        AssistantReply(
-            content="",
-            tool_calls=[tc(9, "register_evidence", {
-                "evidence_id": "ev-risk", "source_id": "edgar",
-                "verbatim_quote": "competition may intensify", "available_at": "2024-03-01T00:00:00+00:00",
-                "pit_grade": "A",
-            })],
-        ),
-        AssistantReply(
-            content="",
-            tool_calls=[
-                tc(10, "propose_fact", {"field": f5, "value": "竞争加剧", "evidence_ids": ["ev-risk"]})
-            ],
-        ),
-        AssistantReply(content="round3 done"),
+    facts = [
+        (f1, "Total revenue 100", 100),
+        (f2, "Net income 25", 25),
+        (f3, "sells phones and services", "硬件+服务"),
+        (f4, "ecosystem lock-in", "生态锁定"),
+        (f5, "competition may intensify", "竞争加剧"),
     ]
+    replies = [
+        # round 1 开头：先拿 filing 记录（→ chk-0001）
+        AssistantReply(content="", tool_calls=[tc(0, "query_edgar", {"ticker": "AAPL"})]),
+    ]
+    i = 1
+    for n, (field, quote, value) in enumerate(facts):
+        chk = f"chk-{n + 2:04d}"
+        ev = f"ev-{n}"
+        replies += [
+            AssistantReply(content="", tool_calls=[
+                tc(i, "read_edgar_filing", {"chunk_id": "chk-0001", "query": quote.split()[0]}),
+            ]),
+            AssistantReply(content="", tool_calls=[
+                tc(i + 1, "register_evidence",
+                   {"chunk_id": chk, "verbatim_quote": quote, "evidence_id": ev}),
+            ]),
+            AssistantReply(content="", tool_calls=[
+                tc(i + 2, "propose_fact", {"field": field, "value": value, "evidence_ids": [ev]}),
+            ]),
+        ]
+        i += 3
+        if n in (1, 3):  # round1 写 2 字段、round2 写 2 字段
+            replies.append(AssistantReply(content="round done"))
+    replies.append(AssistantReply(content="round3 done"))
     return MockLLM(replies)
 
 
 def make_loop(tmp_path, llm, *, max_rounds=5):
+    from finance_agent.gateway.adapters.fixture import FixtureAdapter
+    from finance_agent.gateway.models import DataRecord, SourceCapability
+    from finance_agent.knowledge.models import PitGrade
+
     kb = BitemporalStore(tmp_path / "kb.db")
     events = EventStore(tmp_path / "e.db")
     writer = ProfileWriter(store=kb, events=events)
     gateway = DataGateway(mode="live", events=events, run_id="live-1")
+    gateway.register(FixtureAdapter(
+        SourceCapability(source_id="edgar", pit_grade=PitGrade.A, description="夹具 filing 源"),
+        records=[DataRecord(
+            source_id="edgar",
+            payload={"form": "10-K", "accession": "000-1"},
+            available_at=datetime(2024, 3, 1, tzinfo=UTC),
+            url="demo://10k",
+        )],
+    ))
     manifest = RunManifest(run_id="live-1", mode=RunMode.LIVE)
+    fake_fetch = lambda url: (  # noqa: E731 - 夹具正文：含全部脚本 quote
+        "Total revenue 100. Net income 25. sells phones and services. "
+        "ecosystem lock-in. competition may intensify."
+    )
     loop = ResearchLoop(
         store=kb,
         events=events,
@@ -119,6 +97,8 @@ def make_loop(tmp_path, llm, *, max_rounds=5):
         manifest=manifest,
         max_rounds=max_rounds,
         completeness_target=1.0,
+        gateway_sources=["edgar"],
+        fetch_document=fake_fetch,
     )
     return loop, kb, events
 
@@ -164,18 +144,21 @@ def test_rejected_fact_does_not_block_loop(tmp_path):
     f1 = FIELDS[0]
     llm = MockLLM(
         [
+            AssistantReply(content="", tool_calls=[tc(0, "query_edgar", {"ticker": "AAPL"})]),
+            AssistantReply(content="", tool_calls=[
+                tc(1, "read_edgar_filing", {"chunk_id": "chk-0001", "query": "Net"}),
+            ]),
+            # 登记「Net income 25」作为证据（合法：quote 是 chunk 逐珠子串）
+            AssistantReply(content="", tool_calls=[
+                tc(2, "register_evidence", {
+                    "chunk_id": "chk-0002", "verbatim_quote": "Net income 25",
+                    "evidence_id": "ev-bad",
+                }),
+            ]),
+            # 但拿它去支撑「revenue=100」→ 数字不在摘录里 → numeric-guard 拒绝
             AssistantReply(
                 content="",
-                tool_calls=[tc(1, "register_evidence", {
-                    "evidence_id": "ev-bad", "source_id": "edgar",
-                    "verbatim_quote": "revenue was 90", "available_at": "2024-03-01T00:00:00+00:00",
-                    "pit_grade": "A",
-                })],
-            ),
-            AssistantReply(
-                content="",
-                # 价值 100 与摘录 90 不符 → 拒绝
-                tool_calls=[tc(2, "propose_fact", {"field": f1, "value": 100, "evidence_ids": ["ev-bad"]})],
+                tool_calls=[tc(3, "propose_fact", {"field": f1, "value": 100, "evidence_ids": ["ev-bad"]})],
             ),
             AssistantReply(content="done"),
         ]
@@ -185,3 +168,34 @@ def test_rejected_fact_does_not_block_loop(tmp_path):
     assert loop.stop_reason == "stalled"  # 无成功写入 → 停滞
     assert reports[0].facts_written == [] and len(reports[0].rejected) == 1
     assert kb.as_of("stock", "AAPL", NOW) == {}
+
+
+def test_fabricated_quote_is_rejected(tmp_path):
+    """自编自引防线（2026-08-30 验收事故回归）：模型凭记忆编的摘录不是 chunk
+    逐珠子串 → register_evidence 拒绝，证据不落库。"""
+    llm = MockLLM(
+        [
+            AssistantReply(content="", tool_calls=[tc(0, "query_edgar", {"ticker": "AAPL"})]),
+            AssistantReply(content="", tool_calls=[
+                tc(1, "read_edgar_filing", {"chunk_id": "chk-0001", "query": "revenue"}),
+            ]),
+            # 模型编造：正文里根本没有「1.47 billion」
+            AssistantReply(content="", tool_calls=[
+                tc(2, "register_evidence", {
+                    "chunk_id": "chk-0002",
+                    "verbatim_quote": "Total revenue was $1.47 billion",
+                }),
+            ]),
+            AssistantReply(content="done"),
+        ]
+    )
+    loop, kb, _ = make_loop(tmp_path, llm, max_rounds=1)
+    reports = loop.run("stock", "AAPL", objective="研究", now=NOW)
+    assert reports[0].facts_written == []
+    assert any("逐珠子串" in r["reason"] for r in reports[0].rejected)
+    # 未登记任何证据
+    import pytest as _pytest
+
+    from finance_agent.knowledge.errors import MissingEvidenceError
+    with _pytest.raises(MissingEvidenceError):
+        kb.get_evidence("ev-0")

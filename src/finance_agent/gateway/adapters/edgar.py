@@ -9,12 +9,33 @@ PIT 语义：filingDate → available_at（何时可知）；reportDate（报告
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from html import unescape
 
 from ...knowledge.models import PitGrade
 from ..models import DataRecord, SourceCapability
 
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+
+
+def fetch_filing_text(
+    url: str, *, user_agent: str = "finance-agent research (contact: local@example.com)"
+) -> str:
+    """抓取 filing 正文并剥离 HTML（read_edgar_filing 工具的抓取函数）。
+
+    PIT 语义：Archives 下的 filing 文档自发布起不可变，available_at 由
+    filing 记录（filingDate）继承——抓取动作本身不产生新的时间线。
+    """
+    import httpx  # lazy：核心与测试不依赖网络库
+
+    resp = httpx.get(url, headers={"User-Agent": user_agent}, timeout=60, follow_redirects=True)
+    resp.raise_for_status()
+    html = resp.text
+    html = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", html)
+    text = unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 class EdgarAdapter:

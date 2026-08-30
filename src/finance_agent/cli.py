@@ -23,7 +23,7 @@ from .research.loop import ResearchLoop
 
 
 def _build(
-    tmp: Path, llm, *, sources: list[str], register_adapters: bool = False
+    tmp: Path, llm, *, sources: list[str], register_adapters: bool = False, fetch_document=None
 ) -> tuple[ResearchLoop, BitemporalStore, EventStore]:
     events = EventStore(tmp / "events.db")
     kb = BitemporalStore(tmp / "kb.db")
@@ -46,6 +46,7 @@ def _build(
         max_rounds=3,
         completeness_target=0.8,
         gateway_sources=sources,
+        fetch_document=fetch_document,
     )
     return loop, kb, events
 
@@ -112,7 +113,7 @@ def build_orchestrator(data_dir: Path):
     from .commands.steps import StepDeps
     from .decision.service import DecisionService
     from .decision.store import DecisionStore
-    from .gateway.adapters.edgar import EdgarAdapter
+    from .gateway.adapters.edgar import EdgarAdapter, fetch_filing_text
     from .gateway.adapters.prices import YFinancePricesAdapter
     from .harness.approvals import ApprovalService
     from .main_agent import MainAgent
@@ -179,6 +180,7 @@ def build_orchestrator(data_dir: Path):
         evals_dir=evals_dir,
         reports_dir=data_dir / "reports",
         eval_runner=eval_runner,
+        fetch_document=fetch_filing_text,
     )
     command_runner = CommandRunner(deps)  # wake 在 chat_service 建成后接线
 
@@ -265,21 +267,21 @@ def main(argv: list[str] | None = None) -> int:
             from .llm.base import AssistantReply, ToolCall
             from .llm.mock import MockLLM
 
+            # mock：query_demo 返回一条 filing 记录（chunk chk-0001），read_edgar_filing
+            # 抓回正文窗口（chk-0002），证据从窗口逐字摘录——与真实路径同一纪律。
             llm = MockLLM(
                 [
-                    # round 1：登记证据 + 写入一个非数值字段
+                    AssistantReply(
+                        content="",
+                        tool_calls=[ToolCall(call_id="c0", name="query_demo", arguments={})],
+                    ),
                     AssistantReply(
                         content="",
                         tool_calls=[
                             ToolCall(
                                 call_id="c1",
-                                name="register_evidence",
-                                arguments={
-                                    "evidence_id": "ev-demo",
-                                    "source_id": "demo",
-                                    "verbatim_quote": "demo evidence",
-                                    "pit_grade": "C",
-                                },
+                                name="read_edgar_filing",
+                                arguments={"chunk_id": "chk-0001", "query": "revenue"},
                             )
                         ],
                     ),
@@ -288,10 +290,24 @@ def main(argv: list[str] | None = None) -> int:
                         tool_calls=[
                             ToolCall(
                                 call_id="c2",
+                                name="register_evidence",
+                                arguments={
+                                    "evidence_id": "ev-demo",
+                                    "chunk_id": "chk-0002",
+                                    "verbatim_quote": "demo revenue 100 in fy2024",
+                                },
+                            )
+                        ],
+                    ),
+                    AssistantReply(
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                call_id="c3",
                                 name="propose_fact",
                                 arguments={
                                     "field": "business_model",
-                                    "value": "demo 商业模式",
+                                    "value": "demo revenue 100 in fy2024",
                                     "evidence_ids": ["ev-demo"],
                                 },
                             )
@@ -302,7 +318,8 @@ def main(argv: list[str] | None = None) -> int:
                     AssistantReply(content="no new findings"),
                 ]
             )
-            sources: list[str] = []
+            sources = ["demo"]
+            fetch_document = lambda url: "demo revenue 100 in fy2024. demo business model."  # noqa: E731
         else:
             from .llm.router import ProviderConfigError
 
@@ -316,9 +333,40 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 2
             sources = ["edgar", "prices"]
+            from .gateway.adapters.edgar import fetch_filing_text
+
+            fetch_document = fetch_filing_text
 
         data_dir = Path(args.data_dir or tempfile.mkdtemp(prefix="finance-agent-"))
-        loop, kb, _events = _build(data_dir, llm, sources=sources, register_adapters=not args.mock)
+        if args.mock:
+            from .gateway.adapters.fixture import FixtureAdapter
+            from .gateway.models import DataRecord, SourceCapability
+            from .knowledge.models import PitGrade
+
+            loop, kb, _events = _build(
+                data_dir, llm, sources=sources, register_adapters=False,
+                fetch_document=fetch_document,
+            )
+            loop._gateway.register(  # noqa: SLF001 - mock 演示夹具
+                FixtureAdapter(
+                    SourceCapability(
+                        source_id="demo", pit_grade=PitGrade.C,
+                        server_side_asof=False, description="mock 演示源",
+                    ),
+                    records=[
+                        DataRecord(
+                            source_id="demo",
+                            payload={"form": "10-K", "accession": "demo-1"},
+                            url="demo://filing",
+                        )
+                    ],
+                )
+            )
+        else:
+            loop, kb, _events = _build(
+                data_dir, llm, sources=sources, register_adapters=True,
+                fetch_document=fetch_document,
+            )
         reports = loop.run("stock", args.ticker.upper(), objective=f"深度研究 {args.ticker.upper()}")
         gaps = GapAnalyzer(kb).analyze("stock", args.ticker.upper(), datetime.now(UTC))
         print(json.dumps({

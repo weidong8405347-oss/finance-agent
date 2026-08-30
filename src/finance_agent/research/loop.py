@@ -51,6 +51,7 @@ class ResearchLoop:
         hooks: list[Hook] | None = None,
         judge_llm: LLM | None = None,  # research-rubric 软反馈（advisory，D4）
         should_stop: Callable[[], bool] | None = None,  # 取消闸（轮次边界检查）
+        fetch_document: Callable[[str], str] | None = None,  # 文档正文抓取（live 才有）
     ):
         self._store = store
         self._events = events
@@ -66,6 +67,7 @@ class ResearchLoop:
         self._hooks = hooks or []
         self._judge_llm = judge_llm
         self._should_stop = should_stop
+        self._fetch_document = fetch_document
         self.stop_reason: str | None = None
 
     def run(
@@ -76,7 +78,10 @@ class ResearchLoop:
         *,
         now: datetime | None = None,
     ) -> list[IterationReport]:
+        from .evidence_desk import ChunkStore
+
         analyzer = GapAnalyzer(self._store)
+        chunk_store = ChunkStore()  # 检索台账：本 run 的证据验证基准（跨轮共享）
         reports: list[IterationReport] = []
         # 评估时刻：显式传入（评估回放）则固定；否则每次 gap 分析取当前真实时间，
         # 避免 run 内新写入的事实因 knowledge_time 晚于「起跑线时刻」而不可见。
@@ -103,9 +108,13 @@ class ResearchLoop:
                 entity_kind=entity_kind,
                 entity_id=entity_id,
                 namespace=self._namespace,
+                chunk_store=chunk_store,
+                fetch_document=self._fetch_document,
             )
             for source_id in self._gateway_sources:
-                tools[f"query_{source_id}"] = make_gateway_tool(self._gateway, source_id)
+                tools[f"query_{source_id}"] = make_gateway_tool(
+                    self._gateway, source_id, chunk_store
+                )
 
             if round_no == 1:  # system 契约只注入一次（稳定前缀）
                 self._emit(CONTEXT_INJECT, {"role": "system", "content": GROUNDING_CONTRACT})

@@ -73,6 +73,8 @@ def agent_script(*, cite_canary: bool) -> MockLLM:
         ),
     ]
     if cite_canary:
+        # query_canary 返回的记录落检索台账为 chk-0001；引用者把摘录登记为证据
+        # （verified binding：quote 必须是 chunk 逐珠子串，available_at 由记录推导）
         replies.append(
             AssistantReply(
                 content="",
@@ -82,10 +84,8 @@ def agent_script(*, cite_canary: bool) -> MockLLM:
                         name="register_evidence",
                         arguments={
                             "evidence_id": "ev-canary",
-                            "source_id": CANARY_SOURCE,
+                            "chunk_id": "chk-0001",
                             "verbatim_quote": quote,
-                            "available_at": "2023-03-30T00:00:00+00:00",
-                            "pit_grade": "A",
                         },
                     )
                 ],
