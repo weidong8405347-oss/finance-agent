@@ -2,13 +2,18 @@
 
 所有读端点都是 EventStore / BitemporalStore / DecisionStore 的投影——
 「UI 不拥有状态」（DESIGN.md §4.4），每个字段可回指 event id / fact 版本。
+
+交互模型（redesign §3）：/api/chat 是唯一写入口——
+- 以 / 开头 → command 确定性派发（CommandRunner）；
+- 否则 → 主 agent 对话 turn（ChatService 串行认领）。
+意图理解在主 agent（LLM），没有正则路由层。
 """
 
 from __future__ import annotations
 
-import threading
+import json
+import logging
 import uuid
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -18,24 +23,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..chat.service import ChatService
+from ..commands.registry import catalog as command_catalog
+from ..commands.registry import parse_command
+from ..commands.runner import CommandRequest, CommandRunner
 from ..decision.store import DecisionStore
-from ..eventstore.events import Event
+from ..eventstore.events import (
+    COMMAND_DONE,
+    COMMAND_RUN,
+    RUN_CREATED,
+    SESSION_TITLE,
+    TURN_END,
+    TURN_START,
+    USER_MESSAGE,
+    Event,
+)
 from ..eventstore.store import EventStore
 from ..harness.approvals import ApprovalService
 from ..knowledge.store import BitemporalStore
 from .sse import iter_sse_events
 
-# research_runner(run_id, ticker, objective, events) —— 命令入口的注入点（测试用假 runner）
-ResearchRunner = Callable[[str, str, str, EventStore], None]
-
-
-class ResearchRequest(BaseModel):
-    """模块级定义：函数内局部类在 `from __future__ import annotations` 下
-    无法被 FastAPI 解析为请求体模型（会被误当 query 参数）。"""
-
-    ticker: str
-    objective: str = ""
-    require_approval: bool = False  # milestone 档：高成本操作先审批
+logger = logging.getLogger("finance_agent.api")
 
 
 class ChatRequest(BaseModel):
@@ -49,13 +57,12 @@ def create_app(
     events: EventStore,
     decisions: DecisionStore,
     evals_dir: str | Path,
-    research_runner: ResearchRunner | None = None,
-    decision_runner: Callable[[str, str, EventStore], None] | None = None,
-    research_preflight: Callable[[], str | None] | None = None,
-    approval_timeout_s: float = 600.0,
+    chat_service: ChatService | None = None,
+    command_runner: CommandRunner | None = None,
+    approvals: ApprovalService | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="finance-agent", version="0.1.0")
+    app = FastAPI(title="finance-agent", version="0.2.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],  # vite dev
@@ -63,30 +70,63 @@ def create_app(
         allow_headers=["*"],
     )
     evals_path = Path(evals_dir)
-    approvals = ApprovalService(events)
+    approvals = approvals or ApprovalService(events)
 
     # ---------------- Sessions ----------------
 
     @app.get("/api/sessions")
     def list_sessions() -> list[dict[str, Any]]:
         rows = events._conn.execute(  # noqa: SLF001 - 投影层只读聚合
-            "SELECT run_id, COUNT(*), MIN(ts) FROM events GROUP BY run_id ORDER BY MIN(ts) DESC"
+            "SELECT run_id, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY run_id"
+            " ORDER BY MAX(ts) DESC"
         ).fetchall()
-        return [_session_summary(events, r[0], r[1], r[2]) for r in rows]
+        child_ids = _child_run_ids(events)
+        return [
+            _session_summary(events, r[0], r[2], r[3])
+            for r in rows
+            if r[0] not in child_ids
+        ]
 
     @app.get("/api/sessions/{run_id}/events")
     def session_events(run_id: str) -> list[dict[str, Any]]:
-        return [
-            {
-                "seq": e.seq,
-                "type": e.type,
-                "turn": e.turn,
-                "step": e.step,
-                "payload": e.payload,
-                "ts": e.ts.isoformat(),
-            }
-            for e in events.read(run_id)
-        ]
+        return [_event_json(e) for e in events.read(run_id)]
+
+    @app.get("/api/sessions/{run_id}/children")
+    def session_children(run_id: str) -> list[dict[str, Any]]:
+        """子 run 目录（step agent 钻取）：run/created 里 parent_run_id 指向本会话者。"""
+        rows = events._conn.execute(  # noqa: SLF001
+            "SELECT run_id, payload, MIN(ts) FROM events WHERE type = ?"
+            " AND json_extract(payload, '$.parent_run_id') = ? GROUP BY run_id",
+            (RUN_CREATED, run_id),
+        ).fetchall()
+        out = []
+        for child_id, payload, started in rows:
+            meta = json.loads(payload)
+            out.append(
+                {
+                    "run_id": child_id,
+                    "step": meta.get("step"),
+                    "kind": meta.get("kind"),
+                    "command_id": meta.get("command_id"),
+                    "started_at": started,
+                    "status": _child_status(events, child_id),
+                }
+            )
+        return out
+
+    @app.get("/api/sessions/{run_id}/stream")
+    def stream_events(run_id: str) -> StreamingResponse:
+        return StreamingResponse(
+            iter_sse_events(events, run_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ---------------- Commands ----------------
+
+    @app.get("/api/commands")
+    def list_commands() -> list[dict[str, Any]]:
+        return command_catalog()  # composer 补全 + 帮助
 
     # ---------------- Knowledge（as_of 时光机） ----------------
 
@@ -120,50 +160,66 @@ def create_app(
                     "knowledge_time": rec.knowledge_time.isoformat(),
                     "version": rec.version,
                     "conflict": rec.conflict_flag,
-                    "evidence": [
-                        _evidence_json(kb, eid) for eid in rec.evidence_ids
-                    ],
+                    "evidence": [_evidence_json(kb, eid) for eid in rec.evidence_ids],
                 }
                 for field, rec in sorted(profile.items())
             },
         }
 
-    @app.get("/api/sessions/{run_id}/stream")
-    def stream_events(run_id: str) -> StreamingResponse:
-        return StreamingResponse(
-            iter_sse_events(events, run_id),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+    # ---------------- Chat（唯一写入口） ----------------
 
-    # ---------------- 命令入口（写操作经审批闸） ----------------
+    @app.post("/api/chat")
+    def chat(req: ChatRequest) -> dict[str, Any]:
+        text = req.message.strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="消息为空")
+        run_id = req.session_id or f"live-{uuid.uuid4().hex[:8]}"
+        is_new = events.head_seq(run_id) == 0
+        if is_new:
+            events.append(Event(run_id=run_id, type=SESSION_TITLE, payload={"title": text[:30]}))
 
-    @app.post("/api/research")
-    def start_research(req: ResearchRequest) -> dict[str, Any]:
-        if research_runner is None:
-            raise HTTPException(status_code=503, detail="研究功能未装配")
-        if research_preflight is not None:
-            problem = research_preflight()
-            if problem is not None:
-                raise HTTPException(status_code=422, detail=problem)
-        run_id = f"live-{uuid.uuid4().hex[:8]}"
+        parsed = parse_command(text)
+        if parsed is not None:
+            if command_runner is None:
+                command_id = f"cmd-{uuid.uuid4().hex[:8]}"
+                events.append(Event(run_id=run_id, type=COMMAND_RUN, payload={
+                    "command_id": command_id, "name": parsed.name, "args": {},
+                    "raw_input": parsed.raw_input,
+                }))
+                events.append(Event(run_id=run_id, type=COMMAND_DONE, payload={
+                    "command_id": command_id, "outcome": "error",
+                    "summary": "command 执行器未装配（command_runner 缺失）",
+                }))
+                return {"run_id": run_id, "command_id": command_id}
+            command_id = command_runner.start(
+                CommandRequest(session_run_id=run_id, parsed=parsed)
+            )
+            return {"run_id": run_id, "command_id": command_id}
 
-        def work() -> None:
-            if req.require_approval:
-                approval_id = approvals.request(
-                    run_id,
-                    {"op": "research", "ticker": req.ticker, "objective": req.objective},
-                )
-                if not approvals.wait(approval_id, timeout=approval_timeout_s):
-                    events.append(
-                        Event(run_id=run_id, type="research/cancelled", payload={"reason": "rejected"})
-                    )
-                    return
-            if research_runner is not None:
-                research_runner(run_id, req.ticker, req.objective, events)
+        # 主 agent 路径：新会话先落 system 契约（模型上下文首条 = 契约）。
+        # provider 未配置 → 对话式报错（可见、可操作），不落垃圾 turn。
+        if is_new and chat_service is not None:
+            from ..llm.router import ProviderConfigError
 
-        threading.Thread(target=work, daemon=True).start()
-        return {"run_id": run_id, "status": "started"}
+            try:
+                chat_service.begin_session(run_id)
+            except ProviderConfigError as e:
+                logger.warning("provider 未配置，对话降级为指引：%s", e)  # 通道二：日志
+                events.append(Event(run_id=run_id, type=USER_MESSAGE, payload={"content": text}))
+                events.append(Event(run_id=run_id, type="assistant/message", payload={
+                    "content": f"⚠ 未配置 LLM provider：{e}",
+                }))
+                return {"run_id": run_id}
+        events.append(Event(run_id=run_id, type=USER_MESSAGE, payload={"content": text}))
+        if chat_service is None:
+            events.append(Event(run_id=run_id, type="assistant/message", payload={
+                "content": "⚠ 主 agent 未装配（chat_service 缺失）。",
+            }))
+        else:
+            chat_service.submit_message(run_id)
+        return {"run_id": run_id}
+
+    # ---------------- 审批 ----------------
 
     @app.get("/api/approvals/pending")
     def list_pending_approvals() -> list[dict[str, Any]]:
@@ -185,52 +241,6 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown approval_id") from None
         return {"ok": True}
 
-    # ---------------- Chat（对话式主交互，参考 dsh） ----------------
-
-    @app.post("/api/chat")
-    def chat(req: ChatRequest) -> dict[str, Any]:
-        from .intent import classify_intent, extract_tickers
-
-        run_id = req.session_id or f"live-{uuid.uuid4().hex[:8]}"
-        events.append(
-            Event(run_id=run_id, type="user/message", payload={"content": req.message})
-        )
-        intent = classify_intent(req.message)
-        tickers = extract_tickers(req.message)
-
-        def assistant(text: str) -> None:
-            events.append(
-                Event(run_id=run_id, type="assistant/message", payload={"content": text})
-            )
-
-        if not tickers:
-            if intent == "decide":
-                assistant("想让我出投资建议的话，请带上标的代码（如 AAPL、600519）。")
-            else:
-                assistant(
-                    "请告诉我要研究的具体标的（如 AAPL、600519），"
-                    "或说明你想做什么：深度研究 / 投资建议。"
-                )
-            return {"run_id": run_id}
-
-        ticker = tickers[0]
-        if research_preflight is not None:
-            problem = research_preflight()
-            if problem is not None:
-                assistant(f"⚠ 配置缺失：{problem}")  # 对话式报错（可见、可复制）
-                return {"run_id": run_id}
-
-        def work() -> None:
-            if intent == "decide" and decision_runner is not None:
-                decision_runner(run_id, ticker, events)
-            elif research_runner is not None:
-                research_runner(run_id, ticker, req.message, events)
-            else:
-                assistant("⚠ 后端未装配研究/决策 runner。")
-
-        threading.Thread(target=work, daemon=True).start()
-        return {"run_id": run_id}
-
     # ---------------- Decisions ----------------
 
     @app.get("/api/decisions")
@@ -247,8 +257,6 @@ def create_app(
         for d in sorted(evals_path.iterdir()):
             report_file = d / "report.json"
             if report_file.exists():
-                import json
-
                 report = json.loads(report_file.read_text())
                 out.append(
                     {
@@ -264,8 +272,6 @@ def create_app(
 
     @app.get("/api/evaluations/{eval_run_id}")
     def evaluation_report(eval_run_id: str) -> dict[str, Any]:
-        import json
-
         report_file = evals_path / eval_run_id / "report.json"
         if not report_file.exists():
             return {"error": "not found"}
@@ -275,6 +281,85 @@ def create_app(
     _mount_static(app, static_dir)
 
     return app
+
+
+# ---------------- 投影辅助 ----------------
+
+
+def _event_json(e: Any) -> dict[str, Any]:
+    return {
+        "seq": e.seq,
+        "type": e.type,
+        "turn": e.turn,
+        "step": e.step,
+        "payload": e.payload,
+        "ts": e.ts.isoformat(),
+    }
+
+
+def _child_run_ids(events: EventStore) -> set[str]:
+    rows = events._conn.execute(  # noqa: SLF001
+        "SELECT DISTINCT run_id FROM events WHERE type = ?"
+        " AND json_extract(payload, '$.parent_run_id') IS NOT NULL",
+        (RUN_CREATED,),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _child_status(events: EventStore, run_id: str) -> str:
+    types = [e.type for e in events.read(run_id)]
+    if any(t.endswith("/error") for t in types):
+        return "error"
+    opens = sum(1 for t in types if t == TURN_START) - sum(1 for t in types if t == TURN_END)
+    return "running" if opens > 0 else "done"
+
+
+def _session_summary(events: EventStore, run_id: str, started_at: str, last_active: str) -> dict[str, Any]:
+    """会话状态投影：error > running > cancelled > done/idle；错误原因直接带出。"""
+    evs = events.read(run_id)
+    title = next(
+        (e.payload.get("title") for e in evs if e.type == SESSION_TITLE),
+        None,
+    )
+    status, detail = "idle", None
+    open_turns = 0
+    open_commands: set[str] = set()
+    saw_done = False
+    for e in evs:
+        if e.type == TURN_START:
+            open_turns += 1
+        elif e.type == TURN_END:
+            open_turns = max(0, open_turns - 1)
+        elif e.type == COMMAND_RUN:
+            open_commands.add(e.payload.get("command_id", ""))
+        elif e.type == COMMAND_DONE:
+            open_commands.discard(e.payload.get("command_id", ""))
+            oc = e.payload.get("outcome")
+            if oc == "completed":
+                saw_done = True
+            elif oc in ("error", "blocked"):
+                status, detail = "error", e.payload.get("summary")
+            elif oc in ("cancelled", "rejected"):
+                status = "cancelled"  # 用户拒绝/主动停：可见但不算错误
+        elif e.type in ("research/error", "decision/error", "turn/error"):
+            status, detail = "error", e.payload.get("reason")
+        elif e.type in ("research/completed", "decision/completed"):
+            saw_done = True
+        elif e.type == "research/cancelled":
+            status = "cancelled"
+    if status != "error":
+        if open_turns > 0 or open_commands:
+            status = "running"
+        elif saw_done:
+            status = "done"
+    return {
+        "run_id": run_id,
+        "title": title,
+        "started_at": started_at,
+        "last_active": last_active,
+        "status": status,
+        "status_detail": detail,
+    }
 
 
 def _evidence_json(kb: BitemporalStore, evidence_id: str) -> dict[str, Any]:
@@ -317,39 +402,3 @@ def _mount_static(app: FastAPI, static_dir: str | Path | None) -> None:
         if path and candidate.is_file() and candidate.is_relative_to(dist):
             return FileResponse(candidate)
         return FileResponse(dist / "index.html")
-
-
-def _session_summary(events: EventStore, run_id: str, count: int, started_at: str) -> dict[str, Any]:
-    """会话状态投影：error > cancelled > done > running；错误原因直接带出。"""
-    rows = events._conn.execute(  # noqa: SLF001
-        "SELECT type, payload FROM events WHERE run_id = ? AND"
-        " type IN ('research/error', 'research/cancelled', 'research/completed',"
-        " 'decision/error', 'decision/completed')",
-        (run_id,),
-    ).fetchall()
-    types = {r[0] for r in rows}
-    status = "running"
-    detail = None
-    if "research/error" in types or "decision/error" in types:
-        status = "error"
-        import json
-
-        detail = next(
-            (
-                json.loads(r[1]).get("reason")
-                for r in rows
-                if r[0] in ("research/error", "decision/error")
-            ),
-            None,
-        )
-    elif "research/cancelled" in types:
-        status = "cancelled"
-    elif "research/completed" in types or "decision/completed" in types:
-        status = "done"
-    return {
-        "run_id": run_id,
-        "event_count": count,
-        "started_at": started_at,
-        "status": status,
-        "status_detail": detail,
-    }

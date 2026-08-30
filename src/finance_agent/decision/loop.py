@@ -29,6 +29,41 @@ DECISION_CONTRACT = """\
 3. 证据不足时不要强行出卡——watch/avoid 或直接说明不出卡都是合法结论。
 """
 
+DECISION_TOOL_SCHEMAS: dict[str, dict] = {
+    "query_kb": {
+        "name": "query_kb",
+        "description": "查询当前标的档案（as_of 决策时刻的投影）",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "propose_decision": {
+        "name": "propose_decision",
+        "description": "提交投资卡（risk-review 硬门禁：证据链/失效条件/仓位上限，不过不出卡）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["buy", "hold", "sell", "avoid", "watch"]},
+                "conviction": {"type": "integer", "minimum": 1, "maximum": 5},
+                "horizon": {"type": "string", "enum": ["3m", "6m", "12m"]},
+                "rationale": {"type": "array", "items": {"type": "string"},
+                              "description": "证据 id 列表（只接受证据引用）"},
+                "thesis_points": {"type": "array", "items": {"type": "string"},
+                                  "description": "档案字段名列表"},
+                "invalidation": {"type": "array", "items": {"type": "string"},
+                                 "description": "失效条件（必填，至少一条）"},
+                "position": {
+                    "type": "object",
+                    "properties": {
+                        "sizing_pct": {"type": "number", "description": "组合占比上限"},
+                        "max_loss_pct": {"type": "number", "description": "最大亏损预算"},
+                    },
+                },
+                "quality_flags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["action", "conviction", "horizon", "rationale", "invalidation"],
+        },
+    },
+}
+
 
 class DecisionLoop:
     def __init__(
@@ -51,6 +86,9 @@ class DecisionLoop:
         self._namespace = namespace
         self._max_steps = max_steps
         self._hooks = hooks or []
+        # 结果归因（Q7：区分「模型主动不出卡」与「硬门禁打回」，决定 pipeline 是否重试）
+        self.last_outcome: str | None = None  # issued | declined | rejected
+        self.last_rejection: str | None = None
 
     def run(self, entity_kind: str, entity_id: str, *, now: datetime | None = None) -> str | None:
         """跑一次决策，返回 card_id；被拒或模型选择不出卡 → None。"""
@@ -112,6 +150,7 @@ class DecisionLoop:
             try:
                 card_id = self._svc.issue(card, self._manifest, namespace=self._namespace)
             except RiskReviewRejected as e:
+                self._rejection = str(e)
                 return {"content": f"rejected: {e}", "provenance": self._rationale_provenance(card)}
             issued["card_id"] = card_id
             return {
@@ -134,8 +173,12 @@ class DecisionLoop:
             hooks=self._hooks,
             max_steps=self._max_steps,
         )
+        self._rejection: str | None = None
         kernel.run_turn(f"请基于 {entity_kind}:{entity_id} 的档案给出投资建议。")
-        return issued.get("card_id")
+        card_id = issued.get("card_id")
+        self.last_outcome = "issued" if card_id else ("rejected" if self._rejection else "declined")
+        self.last_rejection = self._rejection
+        return card_id
 
     def _rationale_provenance(self, card: DecisionCard) -> list[dict[str, Any]]:
         """决策卡结果携带 rationale 证据的 provenance（eval 模式 leakage-audit 的审计锚点）。"""

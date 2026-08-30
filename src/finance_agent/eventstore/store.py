@@ -93,6 +93,11 @@ class EventStore:
         """订阅新事件（append 提交后同步回调）。订阅者异常绝不反噬落库。"""
         self._subscribers.append(fn)
 
+    def unsubscribe(self, fn: Callable[[StoredEvent], None]) -> None:
+        """退订（command 进度桥接等临时订阅的清理）。"""
+        with contextlib.suppress(ValueError):
+            self._subscribers.remove(fn)
+
     # ---------------- 读 ----------------
 
     def head_seq(self, run_id: str) -> int:

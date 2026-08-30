@@ -1,8 +1,9 @@
-"""审批服务：milestone 档的人工闸（D3——扩预算/高风险操作需人工批准）。
+"""审批服务：milestone 档的人工闸（扩预算/高风险操作需人工批准）。
 
-- request() 挂起请求并落 approval/requested 事件；
-- 后台线程 wait() 阻塞等待；UI 轮询 pending 列表弹审批框；
-- decide() 落 approval/resolved 事件并放行/取消。
+- request() 挂起请求并落 approval/asked 事件；
+- 后台线程 wait() 阻塞等待；UI 经 SSE 看到 asked 事件后内联呈现审批卡；
+- decide() 落 approval/decided 事件并放行/取消；超时 = rejected（fail-closed）；
+- 豁免走 approval/waived（当次有效，带用户原话/flag 依据，可审计）——由调用方落。
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from ..eventstore.events import Event
+from ..eventstore.events import APPROVAL_ASKED, APPROVAL_DECIDED, Event
 from ..eventstore.store import EventStore
 
-APPROVAL_REQUESTED = "approval/requested"
-APPROVAL_RESOLVED = "approval/resolved"
+APPROVAL_REQUESTED = APPROVAL_ASKED  # 兼容别名（统一词汇：asked/decided）
+APPROVAL_RESOLVED = APPROVAL_DECIDED
 
 
 @dataclass

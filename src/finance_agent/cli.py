@@ -13,7 +13,6 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .eventstore.events import Event
 from .eventstore.store import EventStore
 from .gateway.gateway import DataGateway
 from .harness.manifest import RunManifest, RunMode
@@ -51,35 +50,6 @@ def _build(
     return loop, kb, events
 
 
-GATEWAY_TOOL_SCHEMAS = {
-    "query_edgar": {
-        "name": "query_edgar",
-        "description": "查询 SEC EDGAR 披露（filingDate 为 PIT 可知时刻）",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "forms": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["ticker"],
-        },
-    },
-    "query_prices": {
-        "name": "query_prices",
-        "description": "查询日线行情（available_at = 交易日 +1d）",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "start": {"type": "string"},
-                "end": {"type": "string"},
-            },
-            "required": ["ticker"],
-        },
-    },
-}
-
-
 def _router():
     """provider 配置来源（可测试接缝）：pi 配置优先，.env 兜底。"""
     from .llm.router import LLMRouter
@@ -90,39 +60,25 @@ def _router():
     return LLMRouter.from_env()
 
 
+def _all_tool_schemas() -> dict:
+    """全部工具的 schema 合集（真实 provider 的 function calling 下发用）。"""
+    from .commands.steps import PROFILE_TOOL_SCHEMAS
+    from .decision.loop import DECISION_TOOL_SCHEMAS
+    from .gateway.tools import GATEWAY_TOOL_SCHEMAS
+    from .main_agent import MAIN_AGENT_TOOL_SCHEMAS
+    from .research.tools import TOOL_SCHEMAS as RESEARCH_TOOL_SCHEMAS
+
+    return {
+        **RESEARCH_TOOL_SCHEMAS,
+        **GATEWAY_TOOL_SCHEMAS,
+        **MAIN_AGENT_TOOL_SCHEMAS,
+        **PROFILE_TOOL_SCHEMAS,
+        **DECISION_TOOL_SCHEMAS,
+    }
+
+
 def _real_llm(role: str = "research"):
-    from .research.tools import TOOL_SCHEMAS
-
-    return _router().get(role, tool_schemas={**TOOL_SCHEMAS, **GATEWAY_TOOL_SCHEMAS})
-
-
-def make_decision_runner(data_dir: Path):
-    """生产决策 runner（真实装配）。失败三通道：事件 + 日志 +（API 投影）。"""
-
-    def decision_runner(run_id, ticker, events):
-        from .decision.loop import DecisionLoop
-        from .decision.service import DecisionService
-        from .decision.store import DecisionStore
-        from .logging_setup import setup_logging
-
-        logger = setup_logging()
-        try:
-            kb = BitemporalStore(data_dir / "kb.db")
-            svc = DecisionService(
-                kb=kb, decisions=DecisionStore(data_dir / "decisions.db"), events=events
-            )
-            manifest = RunManifest(run_id=run_id, mode=RunMode.LIVE)
-            card_id = DecisionLoop(
-                kb=kb, events=events, decision_service=svc, llm=_real_llm(), manifest=manifest
-            ).run("stock", ticker.upper())
-            events.append(
-                Event(run_id=run_id, type="decision/completed", payload={"card_id": card_id})
-            )
-        except Exception as e:
-            logger.error("decision failed run=%s: %s", run_id, e)
-            events.append(Event(run_id=run_id, type="decision/error", payload={"reason": str(e)}))
-
-    return decision_runner
+    return _router().get(role, tool_schemas=_all_tool_schemas())
 
 
 def _ensure_frontend_built(dist: Path) -> bool:
@@ -144,74 +100,111 @@ def _ensure_frontend_built(dist: Path) -> bool:
     return (dist / "index.html").exists()
 
 
-def make_research_runner(data_dir: Path):
-    """生产研究 runner（真实装配）。LLM 与网络是唯一外部边界。
+def build_orchestrator(data_dir: Path):
+    """真实装配（serve 与测试共用同一条路径——规矩 2）：
+    EventStore/KB/Gateway/DecisionService + ChatService（主 agent）+ CommandRunner（command 派发）。
 
-    失败纪律（RCA 规矩 1 三通道）：事件落库 + 日志输出 +（由 API 层投影）用户可见。
+    LLM 与网络是唯一外部边界；provider 缺失在 turn/step 执行时以
+    turn/error + step_agent/end(error) 三通道浮出（不静默）。
     """
-    from .logging_setup import setup_logging
+    from .chat.service import ChatService
+    from .commands.runner import CommandRunner
+    from .commands.steps import StepDeps
+    from .decision.service import DecisionService
+    from .decision.store import DecisionStore
+    from .gateway.adapters.edgar import EdgarAdapter
+    from .gateway.adapters.prices import YFinancePricesAdapter
+    from .harness.approvals import ApprovalService
+    from .main_agent import MainAgent
 
-    logger = setup_logging()
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    events = EventStore(data_dir / "events.db")
+    kb = BitemporalStore(data_dir / "kb.db")
+    writer = ProfileWriter(store=kb, events=events)
+    gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
+    gateway.register(EdgarAdapter())
+    gateway.register(YFinancePricesAdapter())
+    decisions = DecisionService(kb=kb, decisions=DecisionStore(data_dir / "decisions.db"), events=events)
+    approvals = ApprovalService(events)
+    evals_dir = data_dir / "evals"
 
-    def research_runner(run_id, ticker, objective, events):
-        from .gateway.adapters.edgar import EdgarAdapter
-        from .gateway.adapters.prices import YFinancePricesAdapter
+    def llm_for(role: str):
+        return _router().get(role, tool_schemas=_all_tool_schemas())
 
-        kb = BitemporalStore(data_dir / "kb.db")
-        writer = ProfileWriter(store=kb, events=events)
-        gateway = DataGateway(mode="live", events=events, run_id=run_id)
-        gateway.register(EdgarAdapter())
-        gateway.register(YFinancePricesAdapter())
-        manifest = RunManifest(run_id=run_id, mode=RunMode.LIVE)
-        try:
-            llm = _real_llm()
-            loop = ResearchLoop(
-                store=kb, events=events, writer=writer, gateway=gateway, llm=llm,
-                manifest=manifest, max_rounds=3, completeness_target=0.8,
-                gateway_sources=gateway.source_ids(),
+    def eval_runner(*, config_name: str, child_run_id: str):
+        """S4 独立效果评估的真实装配（mandate 文件 → ReplayEngine）。"""
+        from .evaluation.config import EvalConfig
+        from .evaluation.prices import PriceBook
+        from .evaluation.replay import ReplayEngine
+
+        cfg = EvalConfig.from_json(evals_dir / "mandates" / f"{config_name}.json")
+        records = []
+        for t in cfg.tickers:
+            records += [
+                r.payload
+                for r in gateway.query("prices", {"ticker": t, "start": "2000-01-01", "end": "2100-01-01"})
+            ]
+
+        def gateway_factory(as_of, run_id):
+            g = DataGateway(
+                mode="eval", eval_as_of=as_of, allow_pit_b=cfg.allow_pit_b,
+                events=events, run_id=run_id,
             )
-            reports = loop.run("stock", ticker.upper(), objective or f"深度研究 {ticker.upper()}")
-        except Exception as e:  # 失败不得静默：事件 + 日志（API 层负责状态投影）
-            logger.error("research failed run=%s: %s", run_id, e)
-            events.append(
-                Event(run_id=run_id, type="research/error", payload={"reason": str(e)})
-            )
-            return
-        events.append(
-            Event(
-                run_id=run_id,
-                type="research/completed",
-                payload={
-                    "rounds": len(reports),
-                    "stop_reason": loop.stop_reason,
-                    "completeness": reports[-1].completeness_after if reports else 0.0,
-                },
-            )
+            g.register(EdgarAdapter())
+            g.register(YFinancePricesAdapter())
+            return g
+
+        engine = ReplayEngine(
+            kb=kb,
+            events=events,
+            decision_service=decisions,
+            llm_agent=llm_for("research"),
+            llm_baseline=llm_for("fast"),
+            price_book=PriceBook.from_records(records),
+            artifacts_dir=evals_dir,
+            gateway_factory=gateway_factory,
         )
-        logger.info("research completed run=%s rounds=%d", run_id, len(reports))
+        report = engine.run(cfg, eval_run_id=child_run_id)
+        return {"verdict": report.verdict, "eval_run_id": report.eval_run_id}
 
-    return research_runner
+    deps = StepDeps(
+        events=events,
+        kb=kb,
+        writer=writer,
+        gateway=gateway,
+        decisions=decisions,
+        llm_for=llm_for,
+        approvals=approvals,
+        evals_dir=evals_dir,
+        reports_dir=data_dir / "reports",
+        eval_runner=eval_runner,
+    )
+    command_runner = CommandRunner(deps)  # wake 在 chat_service 建成后接线
 
-
-def _research_preflight() -> str | None:
-    """研究前置校验：无 provider → 返回可操作指引（422 快速失败，不静默）。"""
-    from .llm.router import ProviderConfigError
-
-    try:
-        _real_llm()
-    except ProviderConfigError as e:
-        return (
-            f"未配置 LLM provider（{e}）。请在项目根目录 .env 配置三件套，"
-            "例如：OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL"
+    def make_main_agent(run_id: str) -> MainAgent:
+        return MainAgent(
+            run_id=run_id, events=events, kb=kb, gateway=gateway,
+            llm=llm_for("research"), commands=command_runner,
         )
-    return None
+
+    chat_service = ChatService(events=events, make_main_agent=make_main_agent)
+    command_runner.set_wake(chat_service.wake)
+    return {
+        "events": events,
+        "kb": kb,
+        "decisions": decisions,
+        "approvals": approvals,
+        "chat_service": chat_service,
+        "command_runner": command_runner,
+        "evals_dir": evals_dir,
+    }
 
 
 def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_build: bool) -> int:
     import uvicorn
 
     from .api.app import create_app
-    from .decision.store import DecisionStore
     from .logging_setup import mirror_events_to_logging, setup_logging
 
     logger = setup_logging()
@@ -229,19 +222,17 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
 
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    events = EventStore(data_dir / "events.db")
-    mirror_events_to_logging(events, logger)  # 错误类事件自动镜像到日志（规矩 1 通道 2）
+    orch = build_orchestrator(data_dir)
+    mirror_events_to_logging(orch["events"], logger)  # 错误类事件自动镜像到日志（规矩 1 通道 2）
 
     app = create_app(
-        kb=BitemporalStore(data_dir / "kb.db"),
-        events=events,
-        decisions=DecisionStore(data_dir / "decisions.db"),
-        evals_dir=data_dir / "evals",
-        research_runner=make_research_runner(data_dir),
-        decision_runner=make_decision_runner(data_dir),
-        research_preflight=_research_preflight,
+        kb=orch["kb"],
+        events=orch["events"],
+        decisions=orch["decisions"].decisions,
+        evals_dir=orch["evals_dir"],
+        chat_service=orch["chat_service"],
+        command_runner=orch["command_runner"],
+        approvals=orch["approvals"],
         static_dir=dist,
     )
     uvicorn.run(app, host=host, port=port)
@@ -313,11 +304,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             sources: list[str] = []
         else:
-            problem = _research_preflight()
-            if problem is not None:
-                print(problem, file=sys.stderr)
+            from .llm.router import ProviderConfigError
+
+            try:
+                llm = _real_llm()
+            except ProviderConfigError as e:
+                print(
+                    f"未配置 LLM provider：{e}。请在项目根目录 .env 配置三件套"
+                    "（OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL），或配置 pi 的 ~/.pi/agent/",
+                    file=sys.stderr,
+                )
                 return 2
-            llm = _real_llm()
             sources = ["edgar", "prices"]
 
         data_dir = Path(args.data_dir or tempfile.mkdtemp(prefix="finance-agent-"))

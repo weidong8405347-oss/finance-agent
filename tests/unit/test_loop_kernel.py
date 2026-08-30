@@ -108,3 +108,37 @@ def test_max_steps_guard(tmp_path):
     kernel.run_turn("loop")
     steps = store.read("run-1", types={"step/start"})
     assert len(steps) == 3
+
+
+def test_tool_exception_is_elastic_not_turn_fatal(tmp_path):
+    """Tool 弹性（原则 4 + 真实事故回归）：工具抛错 → tool/result 带错误内容，
+    turn 继续，模型下一步可自我修正；不得整 turn 崩溃。"""
+    from finance_agent.harness.manifest import RunManifest, RunMode
+    from finance_agent.llm.base import AssistantReply, ToolCall
+    from finance_agent.llm.mock import MockLLM
+    from finance_agent.loop.kernel import AgentKernel
+
+    def bad_tool(args):
+        raise KeyError("entity_kind")
+
+    llm = MockLLM([
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="c1", name="bad", arguments={})]),
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="c2", name="ok", arguments={})]),
+        AssistantReply(content="已修正"),
+    ])
+
+    def ok_tool(args):
+        return {"content": "ok", "provenance": []}
+
+    store = EventStore(tmp_path / "e.db")
+    kernel = AgentKernel(
+        store=store,
+        llm=llm,
+        manifest=RunManifest(run_id="r1", mode=RunMode.LIVE),
+        tools={"bad": bad_tool, "ok": ok_tool},
+    )
+    out = kernel.run_turn("go")
+    assert out == "已修正"
+    results = [e for e in store.read("r1") if e.type == "tool/result"]
+    assert "entity_kind" in results[0].payload["content"]  # 错误内容回给模型
+    assert not [e for e in store.read("r1") if e.type == "turn/error"]

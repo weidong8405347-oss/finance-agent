@@ -32,6 +32,23 @@ RESEARCH_ROUND_START = "research/round_start"
 RESEARCH_ROUND_END = "research/round_end"
 RESEARCH_RUBRIC = "research/rubric"
 
+# ---- 编排层（command 制交互，redesign-interaction-orchestration.md §3.5） ----
+COMMAND_RUN = "command/run"            # {command_id, name, args, raw_input}
+COMMAND_DONE = "command/done"          # {command_id, outcome, summary}
+STEP_AGENT_START = "step_agent/start"  # {command_id, child_run_id, step, title}
+STEP_AGENT_PROGRESS = "step_agent/progress"  # {child_run_id, step, summary}（子流摘要桥接）
+STEP_AGENT_END = "step_agent/end"      # {command_id, child_run_id, step, status, summary}
+APPROVAL_ASKED = "approval/asked"      # {approval_id, op, detail}
+APPROVAL_DECIDED = "approval/decided"  # {approval_id, approved}
+APPROVAL_WAIVED = "approval/waived"    # {op, basis}（豁免当次有效，可审计）
+SESSION_TITLE = "session/title"        # {title}
+REPORT_PUBLISHED = "report/published"  # {child_run_id, kind, title, summary, artifact_path}
+
+#: command/done 的终态集合
+COMMAND_OUTCOMES = frozenset(
+    {"completed", "blocked", "cancelled", "error", "rejected", "usage_error", "unknown", "needs_config"}
+)
+
 #: 可投影进模型上下文的事件类型（白名单）
 MODEL_VISIBLE_TYPES: frozenset[str] = frozenset(
     {USER_MESSAGE, ASSISTANT_MESSAGE, TOOL_RESULT, CONTEXT_INJECT}

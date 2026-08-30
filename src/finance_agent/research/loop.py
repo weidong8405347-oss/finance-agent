@@ -3,10 +3,12 @@
 一轮 = gap 分析 → LLM turn（工具：登记证据/写事实/查档案/查数据）
      → 过程评估（coverage 软反馈 + writer 硬门禁）→ IterationReport。
 收敛：完整度达标；停滞：一轮无成功写入；预算：max_rounds。
+取消：should_stop 在轮次边界被检查（stop_command 的落点），已落库事实保留。
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from ..eventstore.events import (
@@ -48,6 +50,7 @@ class ResearchLoop:
         max_steps_per_round: int = 16,
         hooks: list[Hook] | None = None,
         judge_llm: LLM | None = None,  # research-rubric 软反馈（advisory，D4）
+        should_stop: Callable[[], bool] | None = None,  # 取消闸（轮次边界检查）
     ):
         self._store = store
         self._events = events
@@ -62,6 +65,7 @@ class ResearchLoop:
         self._max_steps = max_steps_per_round
         self._hooks = hooks or []
         self._judge_llm = judge_llm
+        self._should_stop = should_stop
         self.stop_reason: str | None = None
 
     def run(
@@ -83,6 +87,9 @@ class ResearchLoop:
             return fixed_now or datetime.now(UTC)
 
         for round_no in range(1, self._max_rounds + 1):
+            if self._should_stop is not None and self._should_stop():
+                self.stop_reason = "cancelled"
+                break
             gaps_before = analyzer.analyze(entity_kind, entity_id, _now(), namespace=self._namespace)
             if gaps_before.completeness >= self._target:
                 self.stop_reason = "converged"

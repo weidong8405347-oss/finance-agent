@@ -51,12 +51,19 @@ class AgentKernel:
         self._max_steps = max_steps
         self._turn = 0
 
-    def run_turn(self, user_input: str) -> str:
+    def run_turn(self, user_input: str | None = None) -> str:
+        """跑一个 turn。user_input=None：输入已由调用方落库（inbox 语义），
+        kernel 只从 derive_messages 投影取上下文，不重复记录。
+
+        turn 编号从 store 派生（已有 turn/start 数 + 1）——kernel 本身无状态，
+        上下文永远来自投影（「模型可见 = 已记录」，D1 无状态重建）。
+        """
         run_id = self._manifest.run_id
-        self._turn += 1
-        turn = self._turn
+        turn = len(self._store.read(run_id, types={TURN_START})) + 1
+        self._turn = turn
         self._emit(TURN_START, turn=turn)
-        self._emit(USER_MESSAGE, payload={"content": user_input}, turn=turn)
+        if user_input is not None:
+            self._emit(USER_MESSAGE, payload={"content": user_input}, turn=turn)
 
         final_content = ""
         for step in range(1, self._max_steps + 1):
@@ -104,8 +111,12 @@ class AgentKernel:
         fn = self._tools.get(name)
         if fn is None:
             return {"content": f"error: 未注册的工具 {name}", "provenance": []}
+        # Tool 弹性（原则 4）：工具异常 → 错误内容回给模型自我修正，不熔断整个 turn。
         # 注意：不兜底 provenance 键——缺失正是 leakage-audit 要捕获的信号
-        return fn(arguments)
+        try:
+            return fn(arguments)
+        except Exception as e:
+            return {"content": f"error: 工具 {name} 执行失败：{type(e).__name__}: {e}"}
 
     def _emit(self, type_: str, payload: dict | None = None, *, turn: int = 0, step: int = 0) -> int:
         return self._store.append(

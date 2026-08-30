@@ -83,8 +83,9 @@ def test_sessions_list_and_events(tmp_path):
     assert runs == [
         {
             "run_id": "run-1",
-            "event_count": 3,
+            "title": None,
             "started_at": runs[0]["started_at"],
+            "last_active": runs[0]["last_active"],
             "status": "running",
             "status_detail": None,
         }

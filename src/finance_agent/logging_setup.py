@@ -22,9 +22,14 @@ from .eventstore.store import EventStore
 MIRROR_LEVELS: dict[str, int] = {
     "research/error": logging.ERROR,
     "research/cancelled": logging.WARNING,
+    "decision/error": logging.ERROR,
+    "turn/error": logging.ERROR,
     LEAKAGE_ATTEMPT: logging.WARNING,
     HOOK_VERDICT: logging.WARNING,  # 门禁拒绝（含 numeric-guard / risk-review）
 }
+
+#: 载荷条件镜像：command/step 的非成功终态也要进日志（失败三通道之通道二）
+_BAD_COMMAND_OUTCOMES = {"error", "blocked", "rejected", "cancelled"}
 
 
 def setup_logging(name: str = "finance_agent", level: int = logging.INFO) -> logging.Logger:
@@ -48,6 +53,10 @@ def mirror_events_to_logging(store: EventStore, logger: logging.Logger | None = 
 
     def _mirror(event: Event | StoredEvent) -> None:
         level = MIRROR_LEVELS.get(event.type)
+        if event.type == "command/done" and event.payload.get("outcome") in _BAD_COMMAND_OUTCOMES:
+            level = logging.ERROR
+        if event.type == "step_agent/end" and event.payload.get("status") == "error":
+            level = logging.ERROR
         if level is None:
             return
         log.log(level, "%s run=%s %s", event.type, event.run_id, _brief(event.payload))
