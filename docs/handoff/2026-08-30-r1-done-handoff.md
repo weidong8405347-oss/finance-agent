@@ -1,16 +1,40 @@
-# Handoff：重设计 R1 完成（2026-08-30）
+# Handoff：重设计 R1+R1.5+R2 完成（2026-08-30）
 
 > 接上篇：docs/handoff/2026-08-29-redesign-handoff.md（归因与方向）+
 > docs/redesign-interaction-orchestration.md（v4 定稿，§5 决策记录全）。
-> 本文件固化 R1 完成状态与 R2 开工所需上下文。
 
 ---
 
 ## 0. 一句话现状
 
-**R1（编排层）已完成并验收**：command 制交互（`/research` `/profile` `/decide` `/evaluate`）+
-主 agent（自然语言自主调用 command）+ step agent 子 run 管道全部落地，测试 158 passed，
-真实 BE 场景端到端跑通。**等用户确认后进 R2（对话流 UI 重构）**。
+**R1（编排层）+ R1.5（证据完整性防线）+ R2（对话流 UI + streaming）已完成**，
+160 passed + 前端构建通过 + 真实 BE 场景全链路验证（研究真正读取 10-K 正文产出证据绑定事实）。
+**等用户确认 R2 后进 R3（档案 UI + HTML 存档）与 R4（usage 成本仪表）**（混合模式：R3/R4 连续做）。
+
+## R1.5（验收事故整改，commit e7fc344）
+
+用户在 R1 验收中发现「研究质量差几个数量级」——根因是**证据完整性漏洞**：
+旧 register_evidence 信任模型自报的 quote/来源/available_at，参数记忆可自编自引。
+修复（verified binding）：
+
+- `research/evidence_desk.py`：ChunkStore（run 级检索台账，chunk_id 递增 chk-0001…）+
+  verify_and_build（quote 必须是 chunk 逐珠子串；元数据全部从 chunk 推导，模型自报不信）
+- `read_edgar_filing` 工具：filing 记录 chunk → 抓正文（edgar.fetch_filing_text）→
+  关键词窗口切块；PIT 元数据从 filing 记录继承
+- 网关工具返回项带 chunk_id：「模型可见的记录才可引为证据」闭环
+- 进度桥接加密：子 run 每次 tool/call 都桥到父流 step_agent/progress
+- **回归**：test_fabricated_quote_is_rejected（编造摘录被拒）
+- 验证：真实 BE run 读 10-K 正文，FY2025 营收 20.24 亿(+37.3%) 等事实带证据落库
+
+## R2（对话流 UI，commit b815fcf）
+
+- 前端装配层 `lib/assemble.ts`（事件→节点）+ 八类节点渲染器（`components/nodes.tsx`）
+- Composer：slash 补全 + Send⇄Stop + 运行中排队；侧栏 240px 可折叠；删 ApprovalsBanner
+- streaming：`assistant/chunk` 落库（白名单不变）；OpenAICompatLLM.stream_complete
+  （SSE 解析含无 choices 帧容错——真实 provider 抓出的 bug）；MockLLM 流式替身
+- `POST /api/sessions/{id}/stop` 停 command
+- 已知欠账：前端无组件级测试（L4）；ResearchFoldCard 的全文暂时只指向磁盘 artifact
+  （R3 档案 UI 时补在线阅读）
 
 ## 1. R1 交付物（commit ecc8202）
 
