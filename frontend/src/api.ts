@@ -56,6 +56,35 @@ export interface ArchiveRow {
   is_latest: boolean;
 }
 
+export interface Capabilities {
+  main_agent: { tools: string[]; model: string };
+  gateway_sources: string[];
+  models: Record<string, string>;
+  commands: {
+    name: string; summary: string; usage: string; needs_approval: boolean;
+    steps: {
+      step: string; title?: string; model_role?: string | null;
+      tools?: string[]; plugins?: string[]; hooks?: string[];
+      budget?: Record<string, number>;
+    }[];
+  }[];
+}
+
+export interface SeriesPoint {
+  event_time: string | null;
+  knowledge_time: string;
+  value: unknown;
+  version: number;
+  conflict: boolean;
+}
+
+export interface CompareItem {
+  id: string;
+  value: unknown;
+  knowledge_time: string;
+  conflict: boolean;
+}
+
 export interface EvidenceJson {
   evidence_id: string;
   source_id?: string;
@@ -120,6 +149,15 @@ export const api = {
     get<ArchiveRow[]>(`/api/knowledge/${kind}/${id}/archives`),
   archiveUrl: (kind: string, id: string, name: string) =>
     `/api/knowledge/${kind}/${id}/archives/${name}`,
+  capabilities: () => get<Capabilities>("/api/capabilities"),
+  series: (kind: string, id: string, fields: string[]) =>
+    get<{ fields: Record<string, SeriesPoint[]> }>(
+      `/api/knowledge/${kind}/${id}/series?fields=${fields.join(",")}`,
+    ),
+  compare: (field: string, kind = "stock") =>
+    get<{ field: string; items: CompareItem[] }>(
+      `/api/knowledge/compare?field=${encodeURIComponent(field)}&kind=${kind}`,
+    ),
   reportText: async (ref: string) => {
     const resp = await fetch(`/api/reports/${ref}`);
     if (!resp.ok) throw new Error(`reportText: ${resp.status}`);

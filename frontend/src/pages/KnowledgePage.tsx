@@ -1,7 +1,15 @@
 // Knowledge 页（R3 重做）：全部档案列表（点击选中 → 摘要联动）+ 详情页
 // （facts 证据锚点 / thesis / as_of 时光机 / HTML 存档版本查看器）。
 import { useEffect, useState } from "react";
-import { api, ArchiveRow, EntityProfile, EntityRow } from "../api";
+import { api, ArchiveRow, CompareItem, EntityProfile, EntityRow, SeriesPoint } from "../api";
+import { BarCompare, LineChart } from "../components/MiniChart";
+
+// 值 → 数值（图表用）：取首个数字片段（去逗号）；非数值字段返回 null
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number") return v;
+  const m = String(v).replace(/,/g, "").match(/-?\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
 
 function fmtDate(iso: string | null): string {
   return iso ? iso.slice(0, 10) : "—";
@@ -142,6 +150,57 @@ function EntitySummary({ kind, id, onDetail }: { kind: string; id: string; onDet
   );
 }
 
+// ---------- 图表区（详情页）：字段时序走势 + 跨实体对比 ----------
+function FactCharts({ kind, id, facts }: { kind: string; id: string; facts: string[] }) {
+  const numericFields = facts.filter((f) => /revenue|income|margin|growth|size|rate|backlog|capacity/i.test(f));
+  const [field, setField] = useState<string>("");
+  const [series, setSeries] = useState<SeriesPoint[]>([]);
+  const [peers, setPeers] = useState<CompareItem[]>([]);
+
+  useEffect(() => {
+    setField(numericFields[0] ?? "");
+  }, [id, facts.length]);
+
+  useEffect(() => {
+    if (!field) return;
+    api.series(kind, id, [field]).then((r) => setSeries(r.fields[field] ?? [])).catch(() => setSeries([]));
+    if (kind === "stock") {
+      api.compare(field).then((r) => setPeers(r.items)).catch(() => setPeers([]));
+    } else {
+      setPeers([]);
+    }
+  }, [kind, id, field]);
+
+  if (numericFields.length === 0) return null;
+
+  const linePoints = series
+    .map((p) => ({ x: (p.event_time ?? p.knowledge_time).slice(0, 10), y: toNumber(p.value) }))
+    .filter((p): p is { x: string; y: number } => p.y !== null);
+  const bars = peers
+    .map((p) => ({ label: p.id, value: toNumber(p.value) ?? 0, warn: p.conflict }))
+    .filter((b) => b.value !== 0);
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h3 className="text-sm font-semibold">图表</h3>
+        <select value={field} onChange={(e) => setField(e.target.value)}
+          className="rounded border border-neutral-200 px-1.5 py-0.5 font-mono text-xs">
+          {numericFields.map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+      </div>
+      <div className="mb-1 text-[10px] text-neutral-400">时序（按 event_time / 版本演进）</div>
+      <LineChart points={linePoints} />
+      {kind === "stock" && bars.length > 0 && (
+        <>
+          <div className="mb-1 mt-3 text-[10px] text-neutral-400">同字段跨标的对比（最新版本，琥珀色 = 有冲突）</div>
+          <BarCompare items={bars} />
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------- 详情页 ----------
 function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: () => void }) {
   const [profile, setProfile] = useState<EntityProfile | null>(null);
@@ -213,6 +272,7 @@ function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: 
           </div>
         </div>
 
+        <FactCharts kind={kind} id={id} facts={Object.keys(profile?.facts ?? {})} />
         <div className="rounded-lg border border-neutral-200 bg-white p-4">
           <h3 className="mb-2 text-sm font-semibold">HTML 存档</h3>
           <div className="mb-2 flex flex-wrap gap-1">

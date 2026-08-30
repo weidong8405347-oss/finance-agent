@@ -194,6 +194,22 @@ def build_orchestrator(data_dir: Path):
 
     chat_service = ChatService(events=events, make_main_agent=make_main_agent)
     command_runner.set_wake(chat_service.wake)
+
+    def capabilities_info() -> dict:
+        """能力目录的动态部分：模型名与数据源（装配时已知，查询时读最新配置）。"""
+        models: dict[str, str] = {}
+        try:
+            router = _router()
+            for role in ("research", "fast"):
+                try:
+                    llm = router.get(role)
+                    models[role] = getattr(llm, "model_name", "?")
+                except Exception:
+                    models[role] = "未配置"
+        except Exception:
+            pass
+        return {"models": models, "gateway_sources": gateway.source_ids()}
+
     return {
         "events": events,
         "kb": kb,
@@ -204,6 +220,7 @@ def build_orchestrator(data_dir: Path):
         "evals_dir": evals_dir,
         "knowledge_dir": knowledge_dir,
         "reports_dir": data_dir / "reports",
+        "capabilities_info": capabilities_info,
     }
 
 
@@ -242,6 +259,7 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
         static_dir=dist,
         knowledge_dir=orch["knowledge_dir"],
         reports_dir=orch["reports_dir"],
+        capabilities_info=orch["capabilities_info"],
     )
     uvicorn.run(app, host=host, port=port)
     return 0

@@ -390,3 +390,47 @@ STEP_TITLES: dict[str, str] = {
     "process_eval": "过程评估",
     "evaluate": "S4 效果评估",
 }
+
+#: step agent 能力清单（GET /api/capabilities 的数据源；新增能力 = 在这里登记）
+STEP_MANIFEST: dict[str, dict[str, Any]] = {
+    "research": {
+        "title": "S1 研究（轮次制：gap 分析 → 采集 → 证据验证 → 落库）",
+        "model_role": "research",
+        "tools": ["query_kb", "read_edgar_filing", "register_evidence", "propose_fact"],
+        "plugins": ["gap 分析（完整度+新鲜度驱动）", "rubric 评审（judge）", "停滞/预算收敛"],
+        "hooks": ["evidence-binding（服务端子串校验）", "numeric-guard", "ProfileWriter 单写者"],
+        "budget": {"max_rounds": 3, "max_steps_per_round": 16},
+    },
+    "profile_update": {
+        "title": "S2 档案更新（thesis 修订）",
+        "model_role": "research",
+        "tools": ["query_kb", "propose_thesis"],
+        "plugins": ["thesis 版本化"],
+        "hooks": ["evidence-binding", "ProfileWriter 单写者"],
+        "budget": {"max_steps": 6},
+    },
+    "decide": {
+        "title": "S3 决策（DecisionCard）",
+        "model_role": "research",
+        "tools": ["query_kb", "propose_decision"],
+        "plugins": ["打回有界重试 ×2"],
+        "hooks": ["risk-review（失效条件/仓位上限/证据链）", "kb_snapshot 绑定校验"],
+        "budget": {"max_steps": 8, "max_attempts": 2},
+    },
+    "process_eval": {
+        "title": "过程评估（软反馈聚合）",
+        "model_role": None,
+        "tools": ["gap 分析器（确定性）"],
+        "plugins": [],
+        "hooks": ["coverage-check"],
+        "budget": {},
+    },
+    "evaluate": {
+        "title": "S4 效果评估（walk-forward 回放 + 基线对照）",
+        "model_role": "research(+fast 基线)",
+        "tools": ["ReplayEngine", "PriceBook", "LeakageAuditHook"],
+        "plugins": ["LLM-only 基线", "deflated Sharpe", "holdout 预算"],
+        "hooks": ["时间锁网关", "穿越审计", "审批闸（默认强制）"],
+        "budget": {"holdout_budget": 10},
+    },
+}

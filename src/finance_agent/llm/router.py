@@ -92,6 +92,11 @@ class OpenAICompatLLM:
         self._tool_schemas = tool_schemas or {}
         self._timeout = timeout
 
+    @property
+    def model_name(self) -> str:
+        """模型标识（过程透明：事件与 UI 展示用）。"""
+        return self.spec.model
+
     def complete(self, messages: list[dict[str, Any]], tools: list[str]) -> AssistantReply:
         body: dict[str, Any] = {"model": self.spec.model, "messages": to_openai_messages(messages)}
         if tools:

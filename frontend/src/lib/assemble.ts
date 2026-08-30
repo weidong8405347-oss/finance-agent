@@ -12,14 +12,14 @@ export interface EventRow {
 
 export type ChatNode =
   | { kind: "user"; key: string; content: string; ts: string; turn: number }
-  | { kind: "assistant"; key: string; content: string; live: boolean; turn: number }
+  | { kind: "assistant"; key: string; content: string; live: boolean; turn: number; model?: string }
   | { kind: "tool"; key: string; callId: string; name: string; args: unknown; result?: string; resultError: boolean; turn: number; profileCard?: ProfileCardData }
   | { kind: "command"; key: string; commandId: string; name: string; raw: string; outcome?: string; summary?: string; steps: StepNode[]; reports: ReportCard[] }
   | { kind: "report"; key: string; title: string; summary: string; flags: string[]; artifact: string }
   | { kind: "approval"; key: string; approvalId: string; op: string; detail: string; state: "pending" | "approved" | "rejected" | "waived"; basis?: string }
   | { kind: "error"; key: string; label: string; reason: string }
   | { kind: "debug"; key: string; type: string; payload: string; seq: number }
-  | { kind: "turnfold"; key: string; turn: number; tools: Extract<ChatNode, { kind: "tool" }>[]; tokens: number | null };
+  | { kind: "turnfold"; key: string; turn: number; tools: Extract<ChatNode, { kind: "tool" }>[]; tokens: number | null; model?: string };
 
 export interface StepNode {
   childRunId: string;
@@ -73,6 +73,7 @@ export function assemble(events: EventRow[]): ChatNode[] {
   let liveAssistant: Extract<ChatNode, { kind: "assistant" }> | null = null;
   const closedTurns = new Set<number>();
   const turnTokens = new Map<number, number>();
+  const turnModels = new Map<number, string>();
 
   for (const e of events) {
     const p = e.payload ?? {};
@@ -94,12 +95,14 @@ export function assemble(events: EventRow[]): ChatNode[] {
       case "assistant/message": {
         finalizedSteps.add(stepKey);
         const content = String(p.content ?? "");
+        const model = p.model ? String(p.model) : undefined;
         if (liveAssistant && liveAssistant.key === `live-${e.turn}-${e.step}`) {
           liveAssistant.content = content;
           liveAssistant.live = false;
+          liveAssistant.model = model;
           liveAssistant = null;
         } else if (content) {
-          nodes.push({ kind: "assistant", key: `a${e.seq}`, content, live: false, turn: e.turn });
+          nodes.push({ kind: "assistant", key: `a${e.seq}`, content, live: false, turn: e.turn, model });
         }
         break;
       }
@@ -207,6 +210,7 @@ export function assemble(events: EventRow[]): ChatNode[] {
           closedTurns.add(e.turn);
           const total = (p.usage as { total_tokens?: number } | undefined)?.total_tokens;
           if (total) turnTokens.set(e.turn, (turnTokens.get(e.turn) ?? 0) + total);
+          if (p.model) turnModels.set(e.turn, String(p.model));
         }
         break;
       default: {
@@ -228,7 +232,10 @@ export function assemble(events: EventRow[]): ChatNode[] {
   const flush = (turn: number) => {
     const buf = foldBuffer.get(turn);
     if (buf && buf.length) {
-      out.push({ kind: "turnfold", key: `tf-${turn}`, turn, tools: buf, tokens: turnTokens.get(turn) ?? null });
+      out.push({
+        kind: "turnfold", key: `tf-${turn}`, turn, tools: buf,
+        tokens: turnTokens.get(turn) ?? null, model: turnModels.get(turn),
+      });
     }
     foldBuffer.delete(turn);
   };

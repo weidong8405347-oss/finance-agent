@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -63,6 +64,7 @@ def create_app(
     static_dir: str | Path | None = None,
     knowledge_dir: str | Path = "knowledge",
     reports_dir: str | Path = "data/reports",
+    capabilities_info: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.2.0")
     app.add_middleware(
@@ -287,6 +289,82 @@ def create_app(
         if not candidate.is_relative_to(base) or not candidate.is_file():
             raise HTTPException(status_code=404, detail="report not found")
         return PlainTextResponse(candidate.read_text(encoding="utf-8"), media_type="text/markdown")
+
+    @app.get("/api/capabilities")
+    def capabilities() -> dict[str, Any]:
+        """能力目录：主 agent + 每个 command 的 step 分解（工具/插件/hook/预算/模型角色）。
+
+        过程透明与可扩展性的入口：新增 tools/skills/MCP 后在 STEP_MANIFEST 登记即可见。
+        """
+        from ..commands.registry import COMMANDS
+        from ..commands.steps import STEP_MANIFEST
+        from ..main_agent import MAIN_AGENT_TOOL_SCHEMAS
+
+        dynamic: dict[str, Any] = capabilities_info() if capabilities_info else {}
+        return {
+            "main_agent": {
+                "tools": sorted(MAIN_AGENT_TOOL_SCHEMAS),
+                "model": (dynamic.get("models") or {}).get("research", "未配置"),
+            },
+            "gateway_sources": dynamic.get("gateway_sources", []),
+            "models": dynamic.get("models", {}),
+            "commands": [
+                {
+                    "name": spec.name,
+                    "summary": spec.summary,
+                    "usage": spec.usage,
+                    "needs_approval": spec.needs_approval,
+                    "steps": [
+                        {"step": s, **STEP_MANIFEST.get(s, {})} for s in spec.steps
+                    ],
+                }
+                for spec in COMMANDS.values()
+            ],
+        }
+
+    @app.get("/api/knowledge/{kind}/{entity_id}/series")
+    def fact_series(
+        kind: str, entity_id: str, fields: str = "", namespace: str = "prod"
+    ) -> dict[str, Any]:
+        """字段时序（图表数据源）：每字段的全部版本（event_time/knowledge_time/值）。"""
+        out: dict[str, list[dict[str, Any]]] = {}
+        for field in [f for f in fields.split(",") if f]:
+            history = kb.history(kind, entity_id, field, namespace=namespace)
+            out[field] = [
+                {
+                    "event_time": r.event_time.isoformat() if r.event_time else None,
+                    "knowledge_time": r.knowledge_time.isoformat(),
+                    "value": r.value,
+                    "version": r.version,
+                    "conflict": r.conflict_flag,
+                }
+                for r in history
+            ]
+        return {"kind": kind, "id": entity_id, "fields": out}
+
+    @app.get("/api/knowledge/compare")
+    def compare_entities(field: str, kind: str = "stock", namespace: str = "prod") -> dict[str, Any]:
+        """跨实体同字段对比（竞对条形图数据源）：每实体该字段的最新版本值。"""
+        rows = kb._conn.execute(  # noqa: SLF001
+            "SELECT entity_id FROM facts WHERE namespace = ? AND entity_kind = ? AND field = ?"
+            " GROUP BY entity_id",
+            (namespace, kind, field),
+        ).fetchall()
+        now = datetime.now(UTC)
+        items = []
+        for (eid,) in rows:
+            view = kb.view(kind, eid, now, namespace=namespace)
+            rec = view.get(field)
+            if rec is not None:
+                items.append(
+                    {
+                        "id": eid,
+                        "value": rec.value,
+                        "knowledge_time": rec.knowledge_time.isoformat(),
+                        "conflict": rec.conflict_flag,
+                    }
+                )
+        return {"field": field, "kind": kind, "items": items}
 
     # ---------------- 审批 ----------------
 

@@ -8,6 +8,8 @@ from .base import AssistantReply
 
 
 class MockLLM:
+    model_name = "mock"
+
     def __init__(self, replies: list[AssistantReply]):
         self._replies = list(replies)
         self.received: list[list[dict[str, Any]]] = []  # 每次调用的消息快照

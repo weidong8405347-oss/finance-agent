@@ -22,9 +22,14 @@ function UserNode({ node }: { node: Extract<ChatNode, { kind: "user" }> }) {
 function AssistantNode({ node }: { node: Extract<ChatNode, { kind: "assistant" }> }) {
   return (
     <div className="flex justify-start">
-      <div className="max-w-[88%] select-text rounded-2xl border border-neutral-200 bg-white px-4 py-2.5 text-sm leading-relaxed">
-        <Markdown text={node.content} />
-        {node.live && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-neutral-400" />}
+      <div className="max-w-[88%]">
+        <div className="select-text rounded-2xl border border-neutral-200 bg-white px-4 py-2.5 text-sm leading-relaxed">
+          <Markdown text={node.content} />
+          {node.live && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-neutral-400" />}
+        </div>
+        {node.model && (
+          <div className="mt-0.5 pl-2 font-mono text-[10px] text-neutral-400">{node.model}</div>
+        )}
       </div>
     </div>
   );
@@ -244,7 +249,11 @@ function TurnFold({ node }: { node: Extract<ChatNode, { kind: "turnfold" }> }) {
     <div>
       <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 py-0.5 font-mono text-[11px] text-neutral-400 hover:text-neutral-600">
         <Arrow open={open} />
-        <span>{node.tools.length} 次工具调用{node.tokens != null ? ` · ${(node.tokens / 1000).toFixed(1)}k tok` : ""}</span>
+        <span>
+          {node.tools.length} 次工具调用
+          {node.tokens != null ? ` · ${(node.tokens / 1000).toFixed(1)}k tok` : ""}
+          {node.model ? ` · ${node.model}` : ""}
+        </span>
         <span className="flex-1 border-t border-neutral-200" />
       </button>
       {open && <div className="space-y-1.5 pb-1">{node.tools.map((t) => <ToolNode key={t.key} node={t} />)}</div>}

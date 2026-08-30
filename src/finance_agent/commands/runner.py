@@ -24,6 +24,8 @@ from ..eventstore.events import (
     COMMAND_DONE,
     COMMAND_RUN,
     DECISION_CARD,
+    FACT_ASSERTED,
+    FACT_CONFLICT,
     RESEARCH_ROUND_END,
     STEP_AGENT_END,
     STEP_AGENT_PROGRESS,
@@ -36,10 +38,12 @@ from .steps import STEP_TITLES, STEPS, StepContext, StepDeps, StepResult
 
 logger = logging.getLogger("finance_agent.commands")
 
-#: 子流里桥接到父流进度的事件类型（Q：研究过程进度可见——粒度到每次工具调用）
+#: 子流里桥接到父流进度的事件类型（过程透明：工具调用 + 知识库写入 + 决策出具）
 _BRIDGE_TYPES = {
     RESEARCH_ROUND_END,
     DECISION_CARD,
+    FACT_ASSERTED,
+    FACT_CONFLICT,
     "eval/report",
     "research/error",
     "decision/error",
@@ -306,6 +310,14 @@ def _progress_summary(e: StoredEvent) -> str:
     if e.type == "tool/call":
         args = json.dumps(p.get("arguments", {}), ensure_ascii=False)
         return f"调用 {p.get('name')}({args[:80]})"
+    if e.type == FACT_ASSERTED:
+        # 知识库写入可见性：哪个字段、什么版本、几条证据
+        return (
+            f"✎ 档案写入 {p.get('field')}（v{p.get('version')}，"
+            f"证据 {len(p.get('evidence_ids') or [])} 条）"
+        )
+    if e.type == FACT_CONFLICT:
+        return f"⚠ 档案冲突：{p.get('field')} 产生竞争版本，待裁决"
     if e.type in ("research/error", "decision/error"):
         return f"出错：{p.get('reason', '')}"
     if e.type == "eval/report":

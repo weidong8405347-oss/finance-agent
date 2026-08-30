@@ -95,6 +95,7 @@ class AgentKernel:
                 payload={
                     "content": reply.content,
                     "tool_calls": [tc.model_dump() for tc in reply.tool_calls],
+                    "model": getattr(self._llm, "model_name", None),  # 过程透明：哪个模型在说
                 },
                 turn=turn,
                 step=step,
@@ -120,11 +121,14 @@ class AgentKernel:
             if not reply.tool_calls:
                 break
 
-        self._emit(
-            TURN_END,
-            payload={"usage": usage_acc, "llm_calls": n_calls} if n_calls else {},
-            turn=turn,
-        )
+        end_payload: dict[str, Any] = {}
+        if n_calls:
+            end_payload["usage"] = usage_acc
+            end_payload["llm_calls"] = n_calls
+        model_name = getattr(self._llm, "model_name", None)
+        if model_name:
+            end_payload["model"] = model_name
+        self._emit(TURN_END, payload=end_payload, turn=turn)
         return final_content
 
     def _execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -199,3 +199,32 @@ def test_fabricated_quote_is_rejected(tmp_path):
     from finance_agent.knowledge.errors import MissingEvidenceError
     with _pytest.raises(MissingEvidenceError):
         kb.get_evidence("ev-0")
+
+
+def test_stale_fields_force_refresh_even_when_complete(tmp_path):
+    """档案「完整但陈旧」→ 必须触发研究刷新（不得「无需研究」）。
+
+    回归：2026-08-30 BNTX 实测——stale 字段占权重分让完整度达标，研究假收敛。
+    """
+    from finance_agent.knowledge.models import Evidence, Fact, PitGrade
+
+    llm = MockLLM([AssistantReply(content="没有新发现")])
+    loop, kb, _ = make_loop(tmp_path, llm, max_rounds=1)
+    # 预置：五个必填字段全部填满，但 knowledge_time 很旧（stale）
+
+    old = datetime(2020, 1, 1, tzinfo=UTC)
+    kb.add_evidence(Evidence(
+        evidence_id="ev-old", source_id="demo", verbatim_quote="old data",
+        retrieved_at=old, available_at=old, pit_grade=PitGrade.A))
+    from finance_agent.harness.manifest import RunManifest, RunMode
+    from finance_agent.knowledge.writer import ProfileWriter
+    writer = ProfileWriter(store=kb, events=None)
+    for f in FIELDS:
+        writer.write_fact(
+            Fact(entity_kind="stock", entity_id="AAPL", field=f, value="old",
+                 knowledge_time=old, evidence_ids=["ev-old"]),
+            run=RunManifest(run_id="seed", mode=RunMode.LIVE),
+        )
+    reports = loop.run("stock", "AAPL", objective="刷新", now=NOW)
+    assert reports, "有 stale 字段就必须跑研究轮（不得零轮收敛）"
+    assert loop.stop_reason != "converged" or reports

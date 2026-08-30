@@ -96,7 +96,9 @@ class ResearchLoop:
                 self.stop_reason = "cancelled"
                 break
             gaps_before = analyzer.analyze(entity_kind, entity_id, _now(), namespace=self._namespace)
-            if gaps_before.completeness >= self._target:
+            # 收敛 = 完整度达标 且 无陈旧字段（stale 必须触发刷新研究——
+            # 2026-08-30 用户实测：旧档案「完整但过时」被误判「无需研究」）
+            if gaps_before.completeness >= self._target and not gaps_before.stale:
                 self.stop_reason = "converged"
                 break
             self._emit(RESEARCH_ROUND_START, {"round": round_no, "gaps": gaps_before.model_dump(mode="json")})
@@ -151,7 +153,7 @@ class ResearchLoop:
 
             judge_feedback = self._judge_round(report)
 
-            if gaps_after.completeness >= self._target:
+            if gaps_after.completeness >= self._target and not gaps_after.stale:
                 self.stop_reason = "converged"
                 break
             if not report.progress:
