@@ -1,7 +1,10 @@
 # 交互与编排层重设计（归因 + 对齐稿）
 
 > 来源：docs/handoff/2026-08-29-redesign-handoff.md 的归因作业与方案细化。
-> 状态：**v3 待最终确认**（§5 剩余决策点）。
+> 状态：**v4 已定稿待开工**（2026-08-29 grill-me 九轮裁决全部落稿，§5）。
+> v4（grill-me 裁决）：Q1 command 异步唤醒；Q2 宽松调用 + decide 闸；Q3 slash 缺参报错卡
+> + evaluate 命名配置；Q4 豁免当次有效；Q5 轮次硬预算 + 扩额审批；Q6 stop_command R1 / steer 后置；
+> Q7 门禁打回有界重试；Q8 档案内联 ProfileCard；Q9 多标的主 agent 并行编排。
 > v2（2026-08-29 用户输入）：交互主体改为 **command 制**——四个 step +
 > 独立评估系统做成 `/command`；无 command 走主 agent 对话；主 agent 也可自主调用 command；
 > command 内每个 step = 一个 step agent（可挂 plugin 提升能力）。
@@ -93,6 +96,12 @@
 3. **step agent 可挂 plugin**：plugin 挂在 step agent 上（dsh 的 per-agent scoped 能力思路），
    提升该 step 的能力与效果——新增优化 = 写 plugin，不动主干（原则 2 不变）。
 
+**Q1 裁决：异步唤醒**。`run_command` 立即返回（`{started, child_run_id}`），主 agent 当前 turn
+正常结束，用户可以马上继续对话；command 完成/失败/被停时，`command/done` 事件作为 inbox 输入
+唤醒主 agent 一个新 turn 来做汇报。RunStatus 启用 `waiting_external` 态（DESIGN.md §3.3 本有）。
+主 agent 另持 `stop_command` 工具：应用户要求中断当前会话的 command run——子 loop 在轮次/步骤
+边界检查取消标记安全停下，已落库事实保留。steer（中途改方向注入子 run）后置，不进 R1。
+
 ### 3.2 Command 目录（名字即设计：复用四个 step + 独立评估）
 
 | command | step pipeline | 说明 |
@@ -100,10 +109,21 @@
 | `/research <标的> [目标]` | S1 研究 → 过程评估 | 只调研不出档案重组；过程评估给质量反馈 |
 | `/profile <标的>` | S1 研究 → S2 档案更新 → 过程评估 | 调研并落库/修订档案（thesis/facts） |
 | `/decide <标的>` | S1 研究 → S2 档案 → S3 决策卡 → 过程评估 | 全链路到出卡（risk-review 硬门禁不变） |
-| `/evaluate <配置>` | S4 独立效果评估 | eval 模式隔离环境；**默认强制审批**，仅当 prompt 中明确「不用审批」才豁免（豁免落 `approval/waived` 事件，可审计） |
+| `/evaluate <配置>` | S4 独立效果评估 | eval 模式隔离环境；**默认强制审批**，豁免见下 |
 
 - **幂等性由 gap 分析保证**：`/decide` 每次都含 S1，但档案新鲜完整时 S1 零轮收敛
   （gap 分析输出「无需研究」），不会重复花钱。
+- **参数收集（Q3 裁决）**：slash 缺参 = 确定性报错卡给用法（不猜不追问）；裸 `/evaluate`
+  → 返回配置选择卡（列 `evals/` 命名配置 + 摘要）；`/evaluate <配置名>` → 配置摘要 + 审批卡。
+  自然语言入口由主 agent 负责理解与补全（「理解归模型，分发归代码」）。
+- **审批豁免（Q4 裁决）**：仅当次有效。slash 用显式 `--no-approval` flag；自然语言由主 agent
+  摘录用户原话作 `basis`；两者都落 `approval/waived {op, basis}`。「以后都不用审批」不生效。
+- **硬门禁打回（Q7 裁决）**：有界自动重试（2 次，失败原因进 brief）；耗尽 →
+  `command/done(outcome=blocked)` + 主 agent 汇报原因与建议。模型主动不出卡（watch/avoid/证据不足）
+  是合法结论，不算失败。
+- **预算（Q5 裁决）**：轮次/步数结构化预算是唯一硬顶（进 step agent 定义）；超限 →
+  `stop_reason=budget` + 主 agent 请示扩预算（审批卡）。金额不做硬控，审批卡/CommandCard 显示
+  预估与累计成本；turn usage 落库在 R4 做准。
 - **数据接力不走对话上下文**：step agent 之间的输入输出经 KB / DecisionStore /
   结构化 handoff payload（事件载荷），不经共享消息列表——各 step 上下文隔离
   （DESIGN.md 独立视角隔离原则的自然延伸）。
@@ -139,23 +159,29 @@ StepAgentDef = {
 你是 finance-agent 的主 agent，一个投研对话伙伴。纪律：
 1. 标的识别：用户提到公司（中文名/英文名/代码/别名/描述）时，先确定标的代码。
    能确定就直接说明（如「BE = Bloom Energy，NYSE」）；不能确定就追问，绝不猜。
-2. 按需调用，绝不套餐：用户只想了解/研究 → 最多调 /research；
-   只有用户明确要投资建议时才考虑 /decide；研究完成 ≠ 自动出决策。
-3. 先查档案再建议：调用 command 前先 query_kb 看现有档案完整度与新鲜度，
-   告知用户现状并确认要做什么（milestone 档：高成本操作先请示）。
-4. /evaluate 高成本：永远先说明成本并经审批卡确认。
-5. 一切事实性断言引用证据 id；没有证据就说「我不知道」。
-6. 你能调用的 command 目录（以 run_command 工具调用）：
-   /research /profile /decide /evaluate —— 各自语义见 catalog。
-7. 长任务启动前，用一句话告知用户接下来会发生什么、大约多久。
+2. 自主调用（Q2 裁决·宽松）：判断需要研究/建档就直接 run_command 调用 /research 或 /profile，
+   调用时用一句话预告将发生什么；不做二次确认。
+3. decide 闸（Q2.1 裁决）：只有用户明确要投资建议时才考虑 /decide；且调用前必须把
+   最新研究结论摘要摆出来问「要出决策卡吗」，用户说要才调。研究完成 ≠ 自动出决策。
+4. /evaluate 高成本：说明成本 + 配置摘要，走审批卡；用户明确说「不用审批」才带豁免原话调用。
+5. 多标的（Q9 裁决）：对比/批量类输入 → 每个标的各自独立 command run（可并行发起），
+   全部完成后由你综合对比；command 本身只接受单标的。
+6. 先查档案：调用 command 前先 query_kb 看完整度与新鲜度，把现状告诉用户。
+7. 一切事实性断言引用证据 id；没有证据就说「我不知道」。
+8. 用户要看档案 → 调 show_profile（内联 ProfileCard）；要停任务 → stop_command。
+9. 长任务启动时，用一句话告知用户接下来会发生什么、大约多久；完成后 command/done
+   会唤醒你，由你向用户汇报结论摘要。
 ```
+
+主 agent 工具面：`query_kb` / `query_edgar` / `query_prices`（轻量只读，经 DataGateway）
++ `run_command` / `stop_command` / `show_profile`（编排与展示）。
 
 ### 3.5 事件词汇扩展（入 EventStore；标注模型可见性）
 
 | 事件 | 载荷要点 | 模型可见 |
 | --- | --- | --- |
 | `command/run` | `{command_id, name, args, raw_input}`（dsh 同款） | 否 |
-| `command/done` | `{command_id, outcome, summary}` | 否 |
+| `command/done` | `{command_id, outcome: completed|blocked|cancelled|error, summary}` | 否 |
 | `step_agent/start` | `{call_id?, child_run_id, step, command_id}` | 否 |
 | `step_agent/progress` | `{child_run_id, summary}`（轮次级轻量摘要桥接到父流） | 否 |
 | `step_agent/end` | `{child_run_id, status, summary}` | 否 |
@@ -196,6 +222,8 @@ UI 钻取细节时打开子流。`derive_messages` 白名单不变（§2 行 2�
 │          │   ApprovalCard（内联：说明 + 允许/拒绝）          │
 │          │   ResearchFoldCard（研究结论：默认只显标题+摘要+ │
 │          │     质量旗标，点击展开全文；长文不刷屏）          │
+│          │   ProfileCard（show_profile 内联档案摘要卡，      │
+│          │     可跳 Knowledge 详情页）                        │
 │          │   TurnProcess 折叠控件（turn 结束默认折叠）       │
 │          │   ErrorCard（失败三通道的用户可见通道）           │
 ├──────────┴─────────────────────────────────────────────────┤
@@ -265,9 +293,9 @@ approval 事件化；事件词汇扩展；children 端点。
 
 验收（真实装配 + MockLLM 脚本化）：
 
-1. 「我想深度研究下BE这家公司，是否值得投资」→ 主 agent 识别 BE=Bloom Energy
-   并确认 → 用户「确认」→ 主 agent 调 `/research` → step agent 子 run 运行 →
-   完成后主 agent 摘要 + **询问是否需要投资建议，不自动出卡**。
+1. 「我想深度研究下BE这家公司，是否值得投资」→ 主 agent 识别 BE=Bloom Energy →
+   查档案报现状 + 预告后**直接**启动 `/research`（Q2 宽松）→ command/done 唤醒主 agent
+   汇报研究结论摘要 + **询问是否出决策卡（decide 闸，不自动出卡）**。
 2. `/decide BE`（显式 slash）→ 确定性派发，不经主 agent 理解；
    S1→S2→S3→过程评估依次运行，父流可见 step 进度。
 3. 闲聊（无标的）→ 直接答，不调任何 command。
@@ -303,15 +331,24 @@ LLM 抽象加 stream；`assistant/chunk` 落库 + SSE；turn usage 落库 + 折�
 
 ---
 
-## 5. 待确认决策点（对齐后再动工）
+## 5. 决策记录（全部已定稿）
 
-| # | 决策点 | 建议 | 备选 |
-| --- | --- | --- | --- |
-| D1 | 主 agent 上下文模型 | 无状态重建：每 turn 从 EventStore 投影；per-run 串行锁 + 消息排队 | 常驻内存上下文（多一条上下文通道，违背铁律精神） |
-| D2 | command 命名 | **已定**：`/research` `/profile` `/decide` `/evaluate`（2026-08-29 用户确认） | — |
-| D3 | command 审批策略 | **已定**：research/profile/decide 主 agent 口头确认即调；`/evaluate` **默认强制审批，仅 prompt 明确「不用审批」才豁免**，豁免落 `approval/waived` 事件可审计（2026-08-29 用户确认） | — |
-| D8 | 档案 HTML 存档方案 | 自包含单文件 HTML + 服务端渲染内联 SVG 图表（无 JS/无外部依赖，可审计可 diff） | ECharts 等 JS 运行时库（交互强但依赖外部、不可审计） |
-| D4 | `assistant/chunk` 是否落库 | **落库**（dsh 同款：保 replay/UI 保真；可定期清理老 run 的 chunk） | 只走 SSE 不落库（省存储，live 与 reload 渲染不一致） |
-| D5 | step agent 进度呈现 | 父流 step_agent/progress 轻量桥接 + 子流钻取 | 只靠子流（父流活动卡无实时进度） |
-| D6 | 会话标题 | 首条用户消息截断 30 字 | LLM 生成（dsh 做法，多一次调用，后置） |
-| D7 | 分期 | R1 → R2 → R3 → R4 分四期（档案 UI+HTML 存档独立成 R3） | 合并分期（改动面大，回归风险高） |
+| # | 决策 | 结论（2026-08-29） |
+| --- | --- | --- |
+| D1 | 主 agent 上下文模型 | **无状态重建**：每 turn 从 EventStore 投影；per-run 串行锁 + 消息排队 |
+| D2 | command 命名 | `/research` `/profile` `/decide` `/evaluate` |
+| D3 | 审批策略 | research/profile/decide 主 agent 自主直调；`/evaluate` 默认强制审批 |
+| Q1 | command 执行期 turn 模型 | **异步唤醒**：run_command 立即返回，command/done 唤醒主 agent 新 turn；RunStatus 加 `waiting_external` |
+| Q2 | 主 agent 确认纪律 | **宽松 + decide 闸**：research/profile 判断即调不确认；decide 必须先摆摘要问用户（显式 slash 除外） |
+| Q3 | 参数收集 | slash 缺参 = 确定性报错卡；`/evaluate` 用 evals/ 命名配置（裸命令列配置选择卡）；自然语言主 agent 兜底 |
+| Q4 | 审批豁免粒度 | **当次有效**；slash `--no-approval` flag / 自然语言原话摘录作 basis；落 `approval/waived` |
+| Q5 | 预算 | 轮次/步数唯一硬顶；超限 → budget 停止 + 审批扩额；金额只展示不硬控（R4 落 usage） |
+| Q6 | 中断 | R1 = `stop_command`（轮次边界安全停）+ 排队；steer 后置 backlog |
+| Q7 | 门禁打回 | 有界自动重试 ×2 → blocked + 汇报建议；模型主动不出卡 = 合法结论 |
+| Q8 | 档案呈现 | 对话内联 ProfileCard（显式 `show_profile` 工具，结构化可回指） |
+| Q9 | 多标的 | command 单标的；主 agent 并行发起多个 command，done 后综合对比 |
+| D4 | chunk 落库 | 落库（dsh 同款；不进模型可见白名单；可定期清理） |
+| D5 | step 进度呈现 | 父流 step_agent/progress 轻量桥接 + 子流钻取 |
+| D6 | 会话标题 | 首条用户消息截断 30 字 |
+| D8 | HTML 存档 | 自包含单文件 HTML + 服务端渲染内联 SVG（无 JS/外部依赖） |
+| D7 | 分期 | R1→R2→R3→R4 四期；衔接模式待用户选：逐期确认 / R1·R2 确认 + R3·R4 连续（推荐后者） |
