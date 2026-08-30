@@ -39,6 +39,7 @@ def make_client(tmp_path, *, eval_runner):
         approvals=approvals,
         evals_dir=tmp_path / "evals",
         reports_dir=tmp_path / "reports",
+        knowledge_dir=tmp_path / "knowledge",
         eval_runner=eval_runner,
     )
     runner = CommandRunner(deps, approval_timeout_s=10.0)

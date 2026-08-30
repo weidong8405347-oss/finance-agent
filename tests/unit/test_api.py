@@ -98,7 +98,12 @@ def test_sessions_list_and_events(tmp_path):
 def test_knowledge_entities_and_as_of_time_machine(tmp_path):
     client = make_client(tmp_path)
     entities = client.get("/api/knowledge/entities").json()
-    assert entities == [{"kind": "stock", "id": "AAPL", "field_count": 1}]
+    assert len(entities) == 1
+    e0 = entities[0]
+    assert e0["kind"] == "stock" and e0["id"] == "AAPL" and e0["field_count"] == 1
+    # 列表投影带档案健康度（完整度/陈旧/冲突/最近可知时刻）
+    assert 0.0 <= e0["completeness"] <= 1.0 and e0["last_knowledge_time"].startswith("2023-03-01")
+    assert "stale_count" in e0 and "conflict_count" in e0
 
     # 时光机：事实 knowledge_time=2023-03-01 → 之前不可见，之后可见
     before = client.get(

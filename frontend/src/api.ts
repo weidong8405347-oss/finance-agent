@@ -44,6 +44,16 @@ export interface EntityRow {
   kind: string;
   id: string;
   field_count: number;
+  completeness: number;
+  stale_count: number;
+  conflict_count: number;
+  last_knowledge_time: string | null;
+}
+
+export interface ArchiveRow {
+  name: string;
+  mtime: string;
+  is_latest: boolean;
 }
 
 export interface EvidenceJson {
@@ -106,6 +116,15 @@ export const api = {
   sessions: () => get<SessionRow[]>("/api/sessions"),
   sessionEvents: (runId: string) => get<EventRow[]>(`/api/sessions/${runId}/events`),
   entities: () => get<EntityRow[]>("/api/knowledge/entities"),
+  archives: (kind: string, id: string) =>
+    get<ArchiveRow[]>(`/api/knowledge/${kind}/${id}/archives`),
+  archiveUrl: (kind: string, id: string, name: string) =>
+    `/api/knowledge/${kind}/${id}/archives/${name}`,
+  reportText: async (ref: string) => {
+    const resp = await fetch(`/api/reports/${ref}`);
+    if (!resp.ok) throw new Error(`reportText: ${resp.status}`);
+    return resp.text();
+  },
   entityProfile: (kind: string, id: string, asOf?: string) =>
     get<EntityProfile>(
       `/api/knowledge/${kind}/${id}` + (asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""),

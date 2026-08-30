@@ -179,10 +179,12 @@ def build_orchestrator(data_dir: Path):
         approvals=approvals,
         evals_dir=evals_dir,
         reports_dir=data_dir / "reports",
+        knowledge_dir=data_dir / "knowledge",  # 档案 HTML 存档（自包含于数据目录）
         eval_runner=eval_runner,
         fetch_document=fetch_filing_text,
     )
     command_runner = CommandRunner(deps)  # wake 在 chat_service 建成后接线
+    knowledge_dir = data_dir / "knowledge"
 
     def make_main_agent(run_id: str) -> MainAgent:
         return MainAgent(
@@ -200,6 +202,8 @@ def build_orchestrator(data_dir: Path):
         "chat_service": chat_service,
         "command_runner": command_runner,
         "evals_dir": evals_dir,
+        "knowledge_dir": knowledge_dir,
+        "reports_dir": data_dir / "reports",
     }
 
 
@@ -236,6 +240,8 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
         command_runner=orch["command_runner"],
         approvals=orch["approvals"],
         static_dir=dist,
+        knowledge_dir=orch["knowledge_dir"],
+        reports_dir=orch["reports_dir"],
     )
     uvicorn.run(app, host=host, port=port)
     return 0

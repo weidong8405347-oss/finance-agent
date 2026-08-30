@@ -19,7 +19,7 @@ export type ChatNode =
   | { kind: "approval"; key: string; approvalId: string; op: string; detail: string; state: "pending" | "approved" | "rejected" | "waived"; basis?: string }
   | { kind: "error"; key: string; label: string; reason: string }
   | { kind: "debug"; key: string; type: string; payload: string; seq: number }
-  | { kind: "turnfold"; key: string; turn: number; tools: Extract<ChatNode, { kind: "tool" }>[] };
+  | { kind: "turnfold"; key: string; turn: number; tools: Extract<ChatNode, { kind: "tool" }>[]; tokens: number | null };
 
 export interface StepNode {
   childRunId: string;
@@ -37,6 +37,7 @@ export interface ReportCard {
   summary: string;
   flags: string[];
   artifact: string;
+  artifactRef?: string;  // /api/reports/<child_run_id>/<file> —— 在线阅读全文
 }
 
 export interface ProfileCardData {
@@ -71,6 +72,7 @@ export function assemble(events: EventRow[]): ChatNode[] {
   const finalizedSteps = new Set<string>();
   let liveAssistant: Extract<ChatNode, { kind: "assistant" }> | null = null;
   const closedTurns = new Set<number>();
+  const turnTokens = new Map<number, number>();
 
   for (const e of events) {
     const p = e.payload ?? {};
@@ -160,6 +162,7 @@ export function assemble(events: EventRow[]): ChatNode[] {
         const card: ReportCard = {
           title: String(p.title ?? "研究报告"), summary: String(p.summary ?? ""),
           flags: (p.quality_flags as string[]) ?? [], artifact: String(p.artifact_path ?? ""),
+          artifactRef: p.artifact_ref ? String(p.artifact_ref) : undefined,
         };
         const cmd = p.command_id ? commandById.get(String(p.command_id)) : undefined;
         if (cmd) cmd.reports.push(card);
@@ -200,7 +203,11 @@ export function assemble(events: EventRow[]): ChatNode[] {
         nodes.push({ kind: "error", key: `e${e.seq}`, label: "turn/error", reason: String(p.reason ?? "") });
         break;
       case "turn/end":
-        if (e.turn > 0) closedTurns.add(e.turn);
+        if (e.turn > 0) {
+          closedTurns.add(e.turn);
+          const total = (p.usage as { total_tokens?: number } | undefined)?.total_tokens;
+          if (total) turnTokens.set(e.turn, (turnTokens.get(e.turn) ?? 0) + total);
+        }
         break;
       default: {
         if (HIDDEN.has(e.type)) break;
@@ -221,7 +228,7 @@ export function assemble(events: EventRow[]): ChatNode[] {
   const flush = (turn: number) => {
     const buf = foldBuffer.get(turn);
     if (buf && buf.length) {
-      out.push({ kind: "turnfold", key: `tf-${turn}`, turn, tools: buf });
+      out.push({ kind: "turnfold", key: `tf-${turn}`, turn, tools: buf, tokens: turnTokens.get(turn) ?? null });
     }
     foldBuffer.delete(turn);
   };

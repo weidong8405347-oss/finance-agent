@@ -90,6 +90,7 @@ def make_deps(tmp_path: Path, scripts: dict[str, list], *, eval_runner=None):
         approvals=approvals,
         evals_dir=tmp_path / "evals",
         reports_dir=tmp_path / "reports",
+        knowledge_dir=tmp_path / "knowledge",  # 测试绝不写仓库工作树
         eval_runner=eval_runner,
         fetch_document=lambda url: "产能 2GW 公告。demo 正文。",
         max_rounds=3,
@@ -192,6 +193,14 @@ def test_report_published_with_artifact(tmp_path):
     assert pub, "研究完成应发布 report/published（ResearchFoldCard 数据源）"
     artifact = Path(pub[0].payload["artifact_path"])
     assert artifact.exists() and "第 1 轮" in artifact.read_text()
+    assert pub[0].payload["artifact_ref"].endswith("/research.md")
+
+    # R3：command 完成后档案 HTML 存档生成（版本化目录，写进 tmp 而非工作树）
+    archived = [e for e in events.read("live-s1") if e.type == "profile/archived"]
+    assert archived, "档案有变化应生成 HTML 存档"
+    archive_dir = tmp_path / "knowledge" / "stocks" / "BE" / "archive"
+    assert (archive_dir / "latest.html").exists()
+    assert any(f.suffix == ".html" and f.name != "latest.html" for f in archive_dir.iterdir())
 
 
 def test_usage_error_when_ticker_missing(tmp_path):

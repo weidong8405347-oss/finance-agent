@@ -114,11 +114,21 @@ function StepCard({ step }: { step: StepNode }) {
   );
 }
 
-function ReportFoldCard({ card }: { card: { title: string; summary: string; flags: string[]; artifact: string } }) {
+function ReportFoldCard({ card }: { card: import("../lib/assemble").ReportCard }) {
   const [open, setOpen] = useState(false);
+  const [full, setFull] = useState<string | null>(null);
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    // 展开时在线拉取报告全文（artifact_ref → /api/reports/<child_run>/<file>）
+    if (next && full === null) {
+      const ref = card.artifactRef;
+      if (ref) api.reportText(ref).then(setFull).catch(() => setFull("（读取失败：" + card.artifact + "）"));
+    }
+  };
   return (
     <div className="rounded-md border border-green-200 bg-green-50/40">
-      <button onClick={() => setOpen(!open)} className="flex w-full items-center px-2.5 py-1.5 text-left text-xs">
+      <button onClick={toggle} className="flex w-full items-center px-2.5 py-1.5 text-left text-xs">
         <Arrow open={open} />
         <span>📄 <b>{card.title}</b></span>
         <span className="ml-2 flex gap-1">
@@ -129,9 +139,8 @@ function ReportFoldCard({ card }: { card: { title: string; summary: string; flag
       </button>
       <div className="px-3 pb-2 text-xs text-neutral-600">{card.summary}</div>
       {open && (
-        <div className="border-t border-green-200 px-3 py-2 text-xs text-neutral-500">
-          全文 artifact：<span className="select-all font-mono">{card.artifact}</span>
-          （磁盘文件；R3 提供在线阅读）
+        <div className="max-h-72 overflow-auto border-t border-green-200 px-3 py-2 text-xs text-neutral-700">
+          {full === null ? <span className="text-neutral-400">加载中…</span> : <Markdown text={full} />}
         </div>
       )}
     </div>
@@ -235,7 +244,7 @@ function TurnFold({ node }: { node: Extract<ChatNode, { kind: "turnfold" }> }) {
     <div>
       <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 py-0.5 font-mono text-[11px] text-neutral-400 hover:text-neutral-600">
         <Arrow open={open} />
-        <span>{node.tools.length} 次工具调用</span>
+        <span>{node.tools.length} 次工具调用{node.tokens != null ? ` · ${(node.tokens / 1000).toFixed(1)}k tok` : ""}</span>
         <span className="flex-1 border-t border-neutral-200" />
       </button>
       {open && <div className="space-y-1.5 pb-1">{node.tools.map((t) => <ToolNode key={t.key} node={t} />)}</div>}

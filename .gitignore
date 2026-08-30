@@ -20,3 +20,4 @@ knowledge/
 *.db-journal
 *.sqlite3
 .DS_Store
+knowledge/

@@ -43,6 +43,7 @@ def make_client(tmp_path, scripts=None):
         approvals=approvals,
         evals_dir=tmp_path / "evals",
         reports_dir=tmp_path / "reports",
+        knowledge_dir=tmp_path / "knowledge",
         max_rounds=1,
     )
     runner = CommandRunner(deps)

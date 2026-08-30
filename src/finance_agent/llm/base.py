@@ -17,6 +17,8 @@ class ToolCall(BaseModel):
 class AssistantReply(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    # provider 的 usage 含嵌套明细（如 prompt_tokens_details），只保证顶层 *_tokens 为 int
+    usage: dict[str, Any] | None = None
 
 
 #: 流式增量回调：每个文本 delta 调一次（UI streaming / assistant/chunk 事件）

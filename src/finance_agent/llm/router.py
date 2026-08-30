@@ -119,7 +119,9 @@ class OpenAICompatLLM:
             )
             for tc in (msg.get("tool_calls") or [])
         ]
-        return AssistantReply(content=msg.get("content") or "", tool_calls=tool_calls)
+        return AssistantReply(
+            content=msg.get("content") or "", tool_calls=tool_calls, usage=resp.get("usage")
+        )
 
     def stream_complete(
         self, messages: list[dict[str, Any]], tools: list[str], *, on_delta: OnDelta
@@ -130,6 +132,7 @@ class OpenAICompatLLM:
             "model": self.spec.model,
             "messages": to_openai_messages(messages),
             "stream": True,
+            "stream_options": {"include_usage": True},  # 末尾 usage 帧（provider 不支持则略）
         }
         if tools:
             body["tools"] = [
@@ -146,6 +149,7 @@ class OpenAICompatLLM:
 
         content_parts: list[str] = []
         tc_acc: dict[int, dict[str, str]] = {}  # index → {id, name, arguments}
+        usage: dict[str, int] | None = None
         import httpx  # lazy
 
         try:
@@ -159,8 +163,11 @@ class OpenAICompatLLM:
                     data = line[5:].strip()
                     if data == "[DONE]":
                         break
-                    choices = json.loads(data).get("choices") or []
+                    frame = json.loads(data)
+                    choices = frame.get("choices") or []
                     if not choices:  # 心跳/usage-only 等无 choices 帧
+                        if frame.get("usage"):
+                            usage = frame["usage"]
                         continue
                     delta = choices[0].get("delta", {})
                     if delta.get("content"):
@@ -189,6 +196,7 @@ class OpenAICompatLLM:
                 for i, (idx, slot) in enumerate(sorted(tc_acc.items()))
                 if slot["name"]
             ],
+            usage=usage,
         )
 
     def _httpx_transport(self, url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:

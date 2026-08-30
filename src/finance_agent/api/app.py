@@ -61,6 +61,8 @@ def create_app(
     command_runner: CommandRunner | None = None,
     approvals: ApprovalService | None = None,
     static_dir: str | Path | None = None,
+    knowledge_dir: str | Path = "knowledge",
+    reports_dir: str | Path = "data/reports",
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.2.0")
     app.add_middleware(
@@ -70,6 +72,8 @@ def create_app(
         allow_headers=["*"],
     )
     evals_path = Path(evals_dir)
+    knowledge_path = Path(knowledge_dir)
+    reports_path = Path(reports_dir)
     approvals = approvals or ApprovalService(events)
 
     # ---------------- Sessions ----------------
@@ -132,12 +136,28 @@ def create_app(
 
     @app.get("/api/knowledge/entities")
     def list_entities(namespace: str = "prod") -> list[dict[str, Any]]:
+        """档案列表投影：完整度/陈旧/冲突/最近可知时刻（Knowledge 页的数据源）。"""
+        from ..knowledge.gaps import GapAnalyzer
+
         rows = kb._conn.execute(  # noqa: SLF001
-            "SELECT entity_kind, entity_id, COUNT(DISTINCT field) FROM facts"
+            "SELECT entity_kind, entity_id, COUNT(DISTINCT field), MAX(knowledge_time) FROM facts"
             " WHERE namespace = ? GROUP BY entity_kind, entity_id ORDER BY entity_kind, entity_id",
             (namespace,),
         ).fetchall()
-        return [{"kind": r[0], "id": r[1], "field_count": r[2]} for r in rows]
+        analyzer = GapAnalyzer(kb)
+        now = datetime.now(UTC)
+        return [
+            {
+                "kind": r[0],
+                "id": r[1],
+                "field_count": r[2],
+                "last_knowledge_time": r[3],
+                "completeness": (g := analyzer.analyze(r[0], r[1], now, namespace=namespace)).completeness,
+                "stale_count": len(g.stale),
+                "conflict_count": len(g.conflicts),
+            }
+            for r in rows
+        ]
 
     @app.get("/api/knowledge/{kind}/{entity_id}")
     def entity_profile(
@@ -225,6 +245,48 @@ def create_app(
         if command_runner is None:
             return {"stopped": None}
         return {"stopped": command_runner.cancel(run_id)}
+
+    @app.get("/api/knowledge/{kind}/{entity_id}/archives")
+    def list_archives(kind: str, entity_id: str) -> list[dict[str, Any]]:
+        """HTML 存档版本列表（最新在前；latest 软链副本除外）。"""
+        archive_dir = knowledge_path / f"{kind}s" / entity_id / "archive"
+        if not archive_dir.exists():
+            return []
+        files = sorted(
+            (f for f in archive_dir.glob("*.html") if f.name != "latest.html"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        return [
+            {
+                "name": f.name,
+                "mtime": datetime.fromtimestamp(f.stat().st_mtime, tz=UTC).isoformat(),
+                "is_latest": files[0] == f if files else False,
+            }
+            for f in files
+        ]
+
+    @app.get("/api/knowledge/{kind}/{entity_id}/archives/{name}")
+    def read_archive(kind: str, entity_id: str, name: str) -> Any:
+        """读取某个版本的 HTML 存档（路径穿越防护：必须落在 archive 目录内）。"""
+        from fastapi.responses import FileResponse
+
+        archive_dir = (knowledge_path / f"{kind}s" / entity_id / "archive").resolve()
+        candidate = (archive_dir / name).resolve()
+        if not name.endswith(".html") or not candidate.is_relative_to(archive_dir) or not candidate.is_file():
+            raise HTTPException(status_code=404, detail="archive not found")
+        return FileResponse(candidate, media_type="text/html")
+
+    @app.get("/api/reports/{child_run_id}/{name}")
+    def read_report(child_run_id: str, name: str) -> Any:
+        """研究报告 artifact 在线阅读（ResearchFoldCard 展开的数据源）。"""
+        from fastapi.responses import PlainTextResponse
+
+        base = reports_path.resolve()
+        candidate = (base / child_run_id / name).resolve()
+        if not candidate.is_relative_to(base) or not candidate.is_file():
+            raise HTTPException(status_code=404, detail="report not found")
+        return PlainTextResponse(candidate.read_text(encoding="utf-8"), media_type="text/markdown")
 
     # ---------------- 审批 ----------------
 

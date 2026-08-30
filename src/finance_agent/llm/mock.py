@@ -17,7 +17,10 @@ class MockLLM:
         self.received.append([dict(m) for m in messages])
         if not self._replies:
             raise RuntimeError("MockLLM 脚本耗尽")
-        return self._replies.pop(0)
+        reply = self._replies.pop(0)
+        if reply.usage is None:
+            reply.usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        return reply
 
     def stream_complete(self, messages, tools, *, on_delta) -> AssistantReply:
         """流式替身：把脚本 content 切成两段经 on_delta 吐出（可测 chunk 落库）。"""

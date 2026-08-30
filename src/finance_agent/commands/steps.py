@@ -95,6 +95,7 @@ class StepDeps:
     approvals: ApprovalService
     evals_dir: Path
     reports_dir: Path
+    knowledge_dir: Path  # 档案磁盘投影（HTML 存档）；必填——测试绝不许写进仓库工作树
     judge_llm: LLM | None = None
     eval_runner: Callable[..., dict[str, Any]] | None = None  # (config_name, child_run_id) → summary dict
     fetch_document: Callable[[str], str] | None = None  # 文档正文抓取（live 研究用；eval 禁用）
@@ -177,6 +178,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
                 "title": f"{ctx.ticker} 深度研究报告",
                 "summary": summary,
                 "artifact_path": str(artifact),
+                "artifact_ref": f"{ctx.child_run_id}/{artifact.name}",  # 在线阅读：/api/reports/{ref}
                 "quality_flags": flags,
                 "command_id": ctx.command_id,
             },

@@ -67,6 +67,8 @@ class AgentKernel:
             self._emit(USER_MESSAGE, payload={"content": user_input}, turn=turn)
 
         final_content = ""
+        usage_acc: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        n_calls = 0
         for step in range(1, self._max_steps + 1):
             self._emit(STEP_START, turn=turn, step=step)
             messages = self._store.derive_messages(run_id)
@@ -98,6 +100,11 @@ class AgentKernel:
                 step=step,
             )
             final_content = reply.content
+            if reply.usage:
+                n_calls += 1
+                for k in usage_acc:
+                    v = reply.usage.get(k)
+                    usage_acc[k] += v if isinstance(v, int) else 0  # 嵌套明细跳过
 
             for tc in reply.tool_calls:
                 self._emit(TOOL_CALL, payload=tc.model_dump(), turn=turn, step=step)
@@ -113,7 +120,11 @@ class AgentKernel:
             if not reply.tool_calls:
                 break
 
-        self._emit(TURN_END, turn=turn)
+        self._emit(
+            TURN_END,
+            payload={"usage": usage_acc, "llm_calls": n_calls} if n_calls else {},
+            turn=turn,
+        )
         return final_content
 
     def _execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
