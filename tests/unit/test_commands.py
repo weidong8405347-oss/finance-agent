@@ -210,6 +210,19 @@ def test_conflict_resolved_bridged_to_parent_stream(tmp_path):
     assert "以新公告为准" in resolved[0].payload["summary"]
 
 
+def test_stalled_research_outcome_visible_in_wake_message(tmp_path):
+    """stalled 停手纪律（MAIN_CONTRACT）的可观测前提：
+    stalled 必须出现在 command 完成的唤醒消息里，否则主 agent 无从执行该纪律。
+    （本条钉住的是既有行为——唤醒消息一直带 stop_reason；契约依赖它。）
+    """
+    woken: list[str] = []
+    deps, events, _, _ = make_deps(tmp_path, {"research": [RESEARCH_SCRIPT]})  # round2 无进展 → stalled
+    done = run_command(deps, events, "/research BE", wake=lambda sid, content: woken.append(content))
+    assert "stalled" in done.payload["summary"]
+    assert woken, "command/done 应唤醒主 agent"
+    assert "stalled" in woken[0]
+
+
 def test_report_published_with_artifact(tmp_path):
     deps, events, _, _ = make_deps(
         tmp_path, {"research": [RESEARCH_SCRIPT, SYNTHESIZE_SCRIPT]}

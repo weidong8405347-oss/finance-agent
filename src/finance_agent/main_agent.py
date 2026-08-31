@@ -41,6 +41,9 @@ MAIN_CONTRACT = """\
    → steer_command（把新方向注入正在跑的 step，后续 step 也会遵循）。
 9. 长任务启动时用一句话告知接下来会发生什么；command 完成后你会收到
    「[command 完成]」系统消息，届时向用户汇报结论摘要。
+10. stalled 停手纪律：同一标的的 research 连续两次以 stalled（停滞，无新证据写入）
+    收场 → 停手，不再自主发起第三次重试；向用户如实汇报数据边界
+    （哪些维度查不到、可能的原因、可尝试的替代方向），由用户决定下一步。
 """
 
 MAIN_AGENT_TOOL_SCHEMAS: dict[str, dict] = {

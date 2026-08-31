@@ -84,6 +84,20 @@ def wait_event(events, run_id, pred, timeout=5.0):
     raise AssertionError("等待事件超时")
 
 
+def test_contract_has_stalled_retry_discipline():
+    """同一标的研究连续两次 stalled → 停手并如实汇报数据边界（prompt 层纪律）。
+
+    背景：主 agent 曾在研究 stalled 时自主重试最多 3 次才停（观察项）。
+    契约是唯一杠杆（prompt 层），文本存在性断言防回归丢失。
+    """
+    from finance_agent.main_agent import MAIN_CONTRACT
+
+    assert "stalled" in MAIN_CONTRACT
+    assert "连续两次" in MAIN_CONTRACT
+    assert "数据边界" in MAIN_CONTRACT
+    assert "不再自主" in MAIN_CONTRACT
+
+
 def test_be_scenario_identify_and_launch_research(tmp_path):
     """验收场景 1：自然语言 → 识别 BE → run_command 启动研究（宽松直调）。"""
     script = [
