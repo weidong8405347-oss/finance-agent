@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable
 
 from .store import BitemporalStore
 

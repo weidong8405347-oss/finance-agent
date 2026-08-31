@@ -17,7 +17,8 @@ from pathlib import Path
 from .store import BitemporalStore
 
 _CSS = """
-body { font: 14px/1.7 Georgia, "Songti SC", serif; color: #1a1a1a; max-width: 760px; margin: 0 auto; padding: 32px 28px 80px; }
+body { font: 14px/1.7 Georgia, "Songti SC", serif; color: #1a1a1a;
+       max-width: 760px; margin: 0 auto; padding: 32px 28px 80px; }
 .mono { font-family: ui-monospace, Menlo, monospace; }
 header.doc { border-bottom: 2px solid #1a1a1a; padding-bottom: 14px; margin-bottom: 22px; }
 header.doc h1 { font-size: 22px; margin: 0 0 6px; }
@@ -30,10 +31,13 @@ th { font-size: 11px; color: #777; font-weight: 600; }
 .ev { border-bottom: 1px dotted #999; cursor: help; }
 .ev:hover { background: #fffbe6; }
 .neg { color: #b91c1c; }
-.cap { font-size: 11px; color: #777; font-family: ui-monospace, Menlo, monospace; margin-bottom: 14px; }
-.thesis { background: #fafaf7; border: 1px solid #e8e6df; border-radius: 8px; padding: 14px 18px; font-size: 13.5px; }
+.cap { font-size: 11px; color: #777; font-family: ui-monospace, Menlo, monospace;
+      margin-bottom: 14px; }
+.thesis { background: #fafaf7; border: 1px solid #e8e6df; border-radius: 8px;
+          padding: 14px 18px; font-size: 13.5px; }
 .conflict { color: #b45309; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
-footer.doc { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 12px; font-size: 11px; color: #888; font-family: ui-monospace, Menlo, monospace; }
+footer.doc { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 12px; font-size: 11px;
+             color: #888; font-family: ui-monospace, Menlo, monospace; }
 """
 
 
@@ -51,7 +55,7 @@ def _price_svg(prices: list[dict], width: int = 700, height: int = 200) -> str:
     n = len(closes)
     xs = [48 + i * (636 / (n - 1)) for i in range(n)]
     ys = [168 - (c - lo) / rng * 140 for c in closes]
-    poly = " ".join(f"{x:.0f},{y:.0f}" for x, y in zip(xs, ys))
+    poly = " ".join(f"{x:.0f},{y:.0f}" for x, y in zip(xs, ys, strict=True))
     first, last = prices[0].get("date", ""), prices[-1].get("date", "")
     e = html.escape
     return f"""<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
@@ -62,7 +66,8 @@ def _price_svg(prices: list[dict], width: int = 700, height: int = 200) -> str:
 <text x="52" y="184">{e(str(first))}</text><text x="620" y="184">{e(str(last))}</text></g>
 <polyline fill="none" stroke="#1a1a1a" stroke-width="1.4" points="{poly}"/>
 <circle cx="{xs[-1]:.0f}" cy="{ys[-1]:.0f}" r="3" fill="#1a1a1a"/>
-<text x="{max(xs[-1]-150,50):.0f}" y="{max(ys[-1]-8,12):.0f}" font-family="ui-monospace,Menlo,monospace" font-size="10">{closes[-1]:.2f}</text>
+<text x="{max(xs[-1]-150,50):.0f}" y="{max(ys[-1]-8,12):.0f}" font-family="ui-monospace,Menlo,monospace"
+      font-size="10">{closes[-1]:.2f}</text>
 </svg>"""
 
 
@@ -113,15 +118,23 @@ def render_profile_html(
         for eid in rec.evidence_ids:
             try:
                 ev = kb.get_evidence(eid)
+                available = (
+                    ev.available_at.date() if ev.available_at else "?"
+                )
                 tip = (
                     f"{eid} · {ev.source_id}\\A"
                     f"「{ev.verbatim_quote[:400]}」\\A"
-                    f"available {ev.available_at.date() if ev.available_at else '?'} · PIT-{ev.pit_grade.value}"
+                    f"available {available} · PIT-{ev.pit_grade.value}"
                 )
                 ev_cells.append((eid, tip))
             except Exception:
                 ev_cells.append((eid, f"{eid}（缺失）"))
-        value_html = f'<span class="ev" data-ev="{e(chr(10).join(t for _, t in ev_cells))}">{_esc(rec.value)}</span>' if ev_cells else _esc(rec.value)
+        tips = chr(10).join(t for _, t in ev_cells)
+        value_html = (
+            f'<span class="ev" data-ev="{e(tips)}">{_esc(rec.value)}</span>'
+            if ev_cells
+            else _esc(rec.value)
+        )
         neg = ""
         conflict = f' <span class="conflict">⚠冲突 v{rec.version}</span>' if rec.conflict_flag else ""
         rows.append(
@@ -133,7 +146,10 @@ def render_profile_html(
 
     thesis_html = ""
     if "thesis" in view:
-        thesis_html = f'<h2>投资论点（thesis v{view["thesis"].version}）</h2><div class="thesis">{e(str(view["thesis"].value))}</div>'
+        thesis_html = (
+            f'<h2>投资论点（thesis v{view["thesis"].version}）</h2>'
+            f'<div class="thesis">{e(str(view["thesis"].value))}</div>'
+        )
 
     # 时间线（按 knowledge_time 排序的事实首次/变更）
     timeline_rows = []

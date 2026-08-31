@@ -143,4 +143,8 @@ class ProfileWriter:
             self._events.append(Event(run_id=run_id, type=type_, payload=payload))
 
     def _verdict(self, run_id: str, hook: str, field: str, detail: str) -> None:
-        self._emit(HOOK_VERDICT, run_id, {"hook": hook, "verdict": "rejected", "field": field, "detail": detail})
+        self._emit(
+            HOOK_VERDICT,
+            run_id,
+            {"hook": hook, "verdict": "rejected", "field": field, "detail": detail},
+        )

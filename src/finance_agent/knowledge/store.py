@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_asof ON facts(namespace, entity_kind, entit
 """
 
 
-def _same_event_time(latest: "FactRecord", fact: "Fact") -> bool:
+def _same_event_time(latest: FactRecord, fact: Fact) -> bool:
     """同一事件时点：两者都有 event_time 且相等，或都无 event_time（同主题静态事实）。"""
     if latest.event_time is None or fact.event_time is None:
         return latest.event_time is None and fact.event_time is None
