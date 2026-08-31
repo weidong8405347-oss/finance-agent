@@ -7,7 +7,9 @@
 - step agent 跑在独立 child run（run/created 带 parent_run_id）；
 - 子流的轮次级摘要桥接为父流 step_agent/progress（D5）；
 - 完成后经 wake 回调唤醒主 agent 汇报（Q1 异步唤醒）；
-- 取消：stop_command 置 cancel flag，step 在轮次边界安全停下（Q6）。
+- 取消：stop_command 置 cancel flag，step 在轮次边界安全停下（Q6）；
+- 改向：steer 落 context/inject 到当前 step 的子 run（kernel 下一次模型调用重投影即见），
+  后续每个 step 启动时继承该 command 的全部改向（Q6 后置项）。
 """
 
 from __future__ import annotations
@@ -23,10 +25,12 @@ from ..eventstore.events import (
     APPROVAL_WAIVED,
     COMMAND_DONE,
     COMMAND_RUN,
+    CONTEXT_INJECT,
     DECISION_CARD,
     FACT_ASSERTED,
     FACT_CONFLICT,
     RESEARCH_ROUND_END,
+    STEER_REQUESTED,
     STEP_AGENT_END,
     STEP_AGENT_PROGRESS,
     STEP_AGENT_START,
@@ -75,6 +79,8 @@ class CommandRunner:
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._active_by_session: dict[str, list[str]] = {}
+        self._steers: dict[str, list[str]] = {}  # command_id → 累计改向（后续 step 启动时继承）
+        self._current_child: dict[str, str] = {}  # command_id → 当前正在跑的 child run
 
     def set_wake(self, wake: WakeFn) -> None:
         """接线 command/done → 主 agent 唤醒（装配期环依赖的晚绑定点）。"""
@@ -105,6 +111,70 @@ class CommandRunner:
                 return None
             self._cancel[target].set()
             return target
+
+    def steer(
+        self, session_run_id: str, message: str, command_id: str | None = None
+    ) -> list[dict]:
+        """向运行中的 command 注入改向指令（Q6 后置项，stop 的对偶）。
+
+        - 默认注入该会话**全部**活跃 command（改向是对当前工作的方向修正，Q9 并行研究都应遵循）；
+          指定 command_id 则只注入它；
+        - 当前 step 的子 run 立即落 context/inject（白名单类型——kernel 每次模型调用
+          从 store 重投影，下一次调用即见）；
+        - 同时登记到该 command 的改向累计，后续每个 step 启动时继承注入；
+        - 会话流落 steer/requested（UI 可见）；父流落 step_agent/progress（进度行）；
+        - 返回注入结果列表（空 = 无活跃 command）。
+        """
+        message = message.strip()
+        with self._lock:
+            active = [cid for cid in self._active_by_session.get(session_run_id, []) if cid in self._cancel]
+            targets = active if command_id is None else ([command_id] if command_id in active else [])
+            snapshot = {cid: self._current_child.get(cid) for cid in targets}
+            for cid in targets:
+                self._steers.setdefault(cid, []).append(message)
+        results = []
+        for cid in targets:
+            child = snapshot[cid]
+            if child is not None:
+                self._inject_steer(session_run_id, cid, child, message)
+                results.append({"command_id": cid, "child_run_id": child, "delivered": True})
+            else:
+                # step 切换窗口或审批等待：登记后由下一个 step 启动时继承
+                results.append({"command_id": cid, "child_run_id": None, "delivered": False})
+            self._deps.events.append(
+                Event(
+                    run_id=session_run_id,
+                    type=STEER_REQUESTED,
+                    payload={
+                        "command_id": cid,
+                        "child_run_id": child,
+                        "message": message,
+                        "delivered": child is not None,
+                    },
+                )
+            )
+        return results
+
+    def _inject_steer(self, session_run_id: str, command_id: str, child_run_id: str, message: str) -> None:
+        """把改向注入子 run（模型可见）+ 父流进度行（过程透明）。"""
+        self._deps.events.append(
+            Event(
+                run_id=child_run_id,
+                type=CONTEXT_INJECT,
+                payload={"role": "user", "content": f"[用户改方向] {message}"},
+            )
+        )
+        self._deps.events.append(
+            Event(
+                run_id=session_run_id,
+                type=STEP_AGENT_PROGRESS,
+                payload={
+                    "child_run_id": child_run_id,
+                    "step": "steer",
+                    "summary": f"🧭 用户改方向：{message[:80]}",
+                },
+            )
+        )
 
     # ---------------- 执行 ----------------
 
@@ -139,12 +209,17 @@ class CommandRunner:
         )
         with self._lock:
             self._cancel.pop(command_id, None)
+            self._current_child.pop(command_id, None)
+            steers = list(self._steers.pop(command_id, []))
             act = self._active_by_session.get(sid, [])
             if command_id in act:
                 act.remove(command_id)
         # Q1：执行过的终态唤醒主 agent 汇报（usage/unknown/needs_config/rejected/cancelled 不唤醒）
         if self._wake is not None and outcome in ("completed", "blocked", "error"):
-            self._wake(sid, f"[command 完成] /{p.name} → {outcome}：{summary}")
+            note = ""
+            if steers:  # 改向要进汇报上下文（主 agent 醒来能解释研究方向的变化）
+                note = f"（用户中途改向 ×{len(steers)}：最新「{steers[-1][:40]}」）"
+            self._wake(sid, f"[command 完成] /{p.name} → {outcome}：{summary}{note}")
 
     def _execute(self, command_id: str, req: CommandRequest, cancel: threading.Event) -> tuple[str, str]:
         deps, sid, p = self._deps, req.session_run_id, req.parsed
@@ -204,7 +279,24 @@ class CommandRunner:
                 should_cancel=cancel.is_set,
                 entity_kind=entity_kind,
             )
-            result = self._run_step(step_name, ctx)
+            # 继承改向：该 command 此前的全部 steer 注入本 step 子 run（模型可见）。
+            # 当前 step 运行中到达的 steer 由 steer() 直接注入，不在此重复。
+            with self._lock:
+                inherited = list(self._steers.get(command_id, []))
+                self._current_child[command_id] = child_run_id
+            for msg in inherited:
+                deps.events.append(
+                    Event(
+                        run_id=child_run_id,
+                        type=CONTEXT_INJECT,
+                        payload={"role": "user", "content": f"[用户改方向] {msg}"},
+                    )
+                )
+            try:
+                result = self._run_step(step_name, ctx)
+            finally:
+                with self._lock:
+                    self._current_child.pop(command_id, None)
             deps.events.append(
                 Event(
                     run_id=sid,

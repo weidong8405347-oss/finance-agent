@@ -37,7 +37,8 @@ MAIN_CONTRACT = """\
    全部完成后由你综合对比；command 只接受单标的。
 6. 先查档案：调用 command 前先 query_kb 看完整度与新鲜度，把现状告诉用户。
 7. 一切事实性断言引用证据 id；没有证据就说「我不知道」。
-8. 用户要看档案 → 调 show_profile；要停任务 → stop_command。
+8. 用户要看档案 → 调 show_profile；要停任务 → stop_command；command 运行中用户想改研究方向
+   → steer_command（把新方向注入正在跑的 step，后续 step 也会遵循）。
 9. 长任务启动时用一句话告知接下来会发生什么；command 完成后你会收到
    「[command 完成]」系统消息，届时向用户汇报结论摘要。
 """
@@ -83,6 +84,21 @@ MAIN_AGENT_TOOL_SCHEMAS: dict[str, dict] = {
         "parameters": {
             "type": "object",
             "properties": {"command_id": {"type": "string", "description": "可选；缺省停最近一个"}},
+        },
+    },
+    "steer_command": {
+        "name": "steer_command",
+        "description": (
+            "把用户新的研究方向注入本会话正在运行的 command（当前 step 下一次模型调用即见，"
+            "后续 step 启动时继承）。command 运行中用户说「换个重点/别看 X 了/优先看 Y」时用它。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "改向指令（用户意图的一句话转述）"},
+                "command_id": {"type": "string", "description": "可选；缺省注入全部运行中的 command"},
+            },
+            "required": ["message"],
         },
     },
     "show_profile": {
@@ -152,6 +168,7 @@ class MainAgent:
             "query_kb": self._query_kb,
             "run_command": self._run_command,
             "stop_command": self._stop_command,
+            "steer_command": self._steer_command,
             "show_profile": self._show_profile,
         }
         for source_id in self._gateway.source_ids():
@@ -238,6 +255,28 @@ class MainAgent:
         if stopped is None:
             return {"content": "本会话没有正在运行的 command。", "provenance": []}
         return {"content": f"已请求停止 {stopped}（将在当前轮次边界安全停下）。", "provenance": []}
+
+    def _steer_command(self, args: dict[str, Any]) -> dict[str, Any]:
+        message = str(args.get("message") or "").strip()
+        if not message:
+            return {
+                "content": "error: steer_command 需要 message（改向指令的一句话转述）。",
+                "provenance": [],
+            }
+        steered = self._commands.steer(self._run_id, message, args.get("command_id") or None)
+        if not steered:
+            return {
+                "content": "本会话没有正在运行的 command，无法注入改向（可先 run_command 启动）。",
+                "provenance": [],
+            }
+        targets = "、".join(
+            f"{r['command_id']}（{'已注入当前 step' if r['delivered'] else '将于下一 step 生效'}）"
+            for r in steered
+        )
+        return {
+            "content": f"已注入改向指令到 {len(steered)} 个运行中的 command：{targets}。",
+            "provenance": [],
+        }
 
     def _show_profile(self, args: dict[str, Any]) -> dict[str, Any]:
         """内联 ProfileCard 的数据源：结构化档案摘要（UI 按工具名特化渲染）。"""

@@ -361,6 +361,155 @@ def test_cancel_stops_command_between_rounds(tmp_path):
         pass
 
 
+# ---------------- 改向 steer（Q6 后置项） ----------------
+
+
+class GatedLLM:
+    """第一次调用挂起等 steer（返回一个工具调用），之后放行；记录每次调用收到的 messages。
+    第一次返回带 tool_call → 同一 turn 内还有第二次模型调用，可验证「注入后下一次调用即见」。"""
+
+    def __init__(self):
+        self.calls: list[list[dict]] = []
+        self.first_seen = threading.Event()
+        self.gate = threading.Event()
+
+    def complete(self, messages, tools):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            self.first_seen.set()
+            assert self.gate.wait(timeout=5), "等待 steer 超时"
+            return AssistantReply(
+                content="",
+                tool_calls=[ToolCall(call_id="g1", name="query_demo", arguments={})],
+            )
+        return AssistantReply(content="done")
+
+
+def test_steer_injects_into_running_child_run(tmp_path):
+    """运行中 steer：当前 step 的 child run 落 context/inject（白名单内），
+    kernel 下一次模型调用的投影里可见。"""
+    llm = GatedLLM()
+    deps, events, _, _ = make_deps(tmp_path, {})
+    deps = StepDeps(**{**deps.__dict__, "llm_for": lambda role: llm})
+    runner = CommandRunner(deps, approval_timeout_s=0.2)
+    parsed = parse_command("/research BE")
+    command_id = runner.start(CommandRequest(session_run_id="live-s1", parsed=parsed))
+    assert llm.first_seen.wait(timeout=5)
+
+    result = runner.steer("live-s1", "重点看竞争对手格局")
+    assert result, "应注入到运行中的 command"
+    assert result[0]["command_id"] == command_id
+    assert result[0]["delivered"] is True
+    llm.gate.set()  # 放行，让研究继续收敛
+    wait_for(events, "live-s1",
+             lambda e: e.type == "command/done" and e.payload["command_id"] == command_id)
+
+    # 1) 当前 child run 落了改向注入（模型可见白名单类型）
+    child = f"live-s1--{command_id}-1-research"
+    injects = [e for e in events.read(child) if e.type == "context/inject"
+               and "用户改方向" in str(e.payload.get("content", ""))]
+    assert injects and "竞争对手" in injects[0].payload["content"]
+    # 2) 下一次模型调用的投影包含改向（kernel 每步从 store 重投影）
+    assert any("用户改方向" in str(m.get("content", "")) for m in llm.calls[1])
+    # 3) 会话流落 steer/requested（UI 可见）；父流进度有改向行
+    steered = [e for e in events.read("live-s1") if e.type == "steer/requested"]
+    assert steered and steered[0].payload["message"] == "重点看竞争对手格局"
+    progress = [e for e in events.read("live-s1") if e.type == "step_agent/progress"
+                and "改方向" in str(e.payload.get("summary", ""))]
+    assert progress
+
+
+def test_steer_carried_to_subsequent_steps(tmp_path):
+    """steer 后续 step 继承：S1 期间改向 → 每个后续 child run 启动时各注入一次。"""
+    llm = GatedLLM()
+    deps, events, _, _ = make_deps(tmp_path, {})
+    counter = {"n": 0}
+    scripts = {2: PROFILE_SCRIPT, 3: SYNTHESIZE_SCRIPT}  # S2/S3 脚本；S1 用门控 LLM
+
+    def llm_for(role):
+        counter["n"] += 1
+        if counter["n"] == 1:
+            return llm
+        return MockLLM(scripts.get(counter["n"], [AssistantReply(content="done")]))
+
+    deps = StepDeps(**{**deps.__dict__, "llm_for": llm_for})
+    runner = CommandRunner(deps, approval_timeout_s=0.2)
+    parsed = parse_command("/profile BE")
+    command_id = runner.start(CommandRequest(session_run_id="live-s1", parsed=parsed))
+    assert llm.first_seen.wait(timeout=5)
+    assert runner.steer("live-s1", "优先补财务质量维度")
+    llm.gate.set()
+    wait_for(events, "live-s1",
+             lambda e: e.type == "command/done" and e.payload["command_id"] == command_id)
+
+    # 每个 step 的 child run：改向注入各恰好一条（S1=直接注入，S2+=启动继承）
+    children = [e.payload["child_run_id"] for e in events.read("live-s1")
+                if e.type == "step_agent/start"]
+    assert len(children) == 4  # research / profile_update / synthesize / process_eval
+    for child in children:
+        n = len([e for e in events.read(child) if e.type == "context/inject"
+                 and "用户改方向" in str(e.payload.get("content", ""))])
+        assert n == 1, f"{child} 应恰好一条改向注入，实际 {n}"
+
+
+def test_steer_wake_summary_mentions_redirect(tmp_path):
+    llm = GatedLLM()
+    wakes: list[tuple] = []
+    deps, events, _, _ = make_deps(tmp_path, {})
+    deps = StepDeps(**{**deps.__dict__, "llm_for": lambda role: llm})
+    runner = CommandRunner(deps, wake=lambda sid, c: wakes.append((sid, c)), approval_timeout_s=0.2)
+    parsed = parse_command("/research BE")
+    command_id = runner.start(CommandRequest(session_run_id="live-s1", parsed=parsed))
+    assert llm.first_seen.wait(timeout=5)
+    runner.steer("live-s1", "重点看竞对")
+    llm.gate.set()
+    wait_for(events, "live-s1",
+             lambda e: e.type == "command/done" and e.payload["command_id"] == command_id)
+    assert wakes and "改向" in wakes[0][1]
+
+
+def test_steer_no_active_command_returns_empty(tmp_path):
+    deps, events, _, _ = make_deps(tmp_path, {})
+    runner = CommandRunner(deps, approval_timeout_s=0.2)
+    assert runner.steer("live-none", "改个方向") == []
+
+
+def test_steer_targets_specific_command(tmp_path):
+    """多 command 并行：显式 command_id 只注入指定的那个。"""
+    llms: list[GatedLLM] = []
+
+    def llm_for(role):
+        g = GatedLLM()
+        llms.append(g)
+        return g
+
+    deps, events, _, _ = make_deps(tmp_path, {})
+    deps = StepDeps(**{**deps.__dict__, "llm_for": llm_for})
+    runner = CommandRunner(deps, approval_timeout_s=0.2)
+    cmd_a = runner.start(CommandRequest(session_run_id="live-s1", parsed=parse_command("/research BE")))
+    cmd_b = runner.start(CommandRequest(session_run_id="live-s1", parsed=parse_command("/research PLTR")))
+    deadline = time.time() + 5
+    while time.time() < deadline and len(llms) < 2:
+        time.sleep(0.02)
+    assert len(llms) == 2, "两个 command 都应进入研究 step"
+    assert llms[0].first_seen.wait(timeout=5)  # A 的第一次模型调用在飞
+    assert llms[1].first_seen.wait(timeout=5)  # B 也在飞
+
+    result = runner.steer("live-s1", "只改 A 的方向", command_id=cmd_a)
+    assert [r["command_id"] for r in result] == [cmd_a]
+    for g in llms:
+        g.gate.set()
+    for cid in (cmd_a, cmd_b):
+        wait_for(events, "live-s1",
+                 lambda e, c=cid: e.type == "command/done" and e.payload["command_id"] == c)
+    child_a = f"live-s1--{cmd_a}-1-research"
+    child_b = f"live-s1--{cmd_b}-1-research"
+    assert len([e for e in events.read(child_a) if e.type == "context/inject"
+                and "只改 A" in str(e.payload.get("content", ""))]) == 1
+    assert not [e for e in events.read(child_b) if e.type == "context/inject"
+                and "只改 A" in str(e.payload.get("content", ""))]
+
+
 # ---------------- 唤醒（Q1） ----------------
 
 

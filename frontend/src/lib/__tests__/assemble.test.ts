@@ -110,4 +110,23 @@ describe("assemble", () => {
     expect(nodes).toHaveLength(1);
     expect(nodes[0]).toMatchObject({ kind: "conflict", state: "raised" });
   });
+
+  it("steer/requested → 改向节点（注入确认卡）", () => {
+    const nodes = assemble([
+      ev("steer/requested", {
+        command_id: "cmd-1", child_run_id: "c1", message: "重点看竞对", delivered: true,
+      }),
+    ]);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      kind: "steer", message: "重点看竞对", commandId: "cmd-1", delivered: true,
+    });
+  });
+
+  it("steer 未送达当前 step（delivered=false）仍生成节点", () => {
+    const nodes = assemble([
+      ev("steer/requested", { command_id: "cmd-1", message: "改向", delivered: false }),
+    ]);
+    expect(nodes[0]).toMatchObject({ kind: "steer", delivered: false });
+  });
 });

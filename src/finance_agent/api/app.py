@@ -22,7 +22,7 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..chat.service import ChatService
 from ..commands.registry import catalog as command_catalog
@@ -53,6 +53,13 @@ logger = logging.getLogger("finance_agent.api")
 class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
+
+
+class SteerRequest(BaseModel):
+    """运行中改向（Q6 后置项）：注入到当前 step 的子 run，后续 step 继承。"""
+
+    message: str = Field(min_length=1, description="改向指令（如「重点看竞争对手格局」）")
+    command_id: str | None = Field(default=None, description="可选；缺省注入全部活跃 command")
 
 
 class ResolveConflictRequest(BaseModel):
@@ -261,6 +268,26 @@ def create_app(
             events.append(Event(run_id=run_id, type=SESSION_TITLE, payload={"title": text[:30]}))
 
         parsed = parse_command(text)
+        # /steer 是会话级控制动作（非 pipeline command）：确定性注入运行中的 command
+        if text.split(None, 1)[0].lower() == "/steer":
+            parts = text.split(None, 1)
+            message = parts[1].strip() if len(parts) > 1 else ""
+            if not message:
+                events.append(Event(run_id=run_id, type="assistant/message", payload={
+                    "content": "用法：/steer <改向内容>——在 command 运行中注入新方向"
+                               "（如 /steer 重点看竞对）。",
+                }))
+                return {"run_id": run_id, "steered": []}
+            steered = (
+                command_runner.steer(run_id, message)
+                if command_runner is not None
+                else []
+            )
+            if not steered:
+                events.append(Event(run_id=run_id, type="assistant/message", payload={
+                    "content": "当前没有正在运行的 command，/steer 仅在运行中生效（可先 /research 启动）。",
+                }))
+            return {"run_id": run_id, "steered": steered}
         if parsed is not None:
             if command_runner is None:
                 command_id = f"cmd-{uuid.uuid4().hex[:8]}"
@@ -307,6 +334,14 @@ def create_app(
         if command_runner is None:
             return {"stopped": None}
         return {"stopped": command_runner.cancel(run_id)}
+
+    @app.post("/api/sessions/{run_id}/steer")
+    def steer_session(run_id: str, req: SteerRequest) -> dict[str, Any]:
+        """改向注入（Stop 的对偶）：注入到运行中 command 的当前 step 子 run，
+        后续 step 启动时继承；会话流落 steer/requested（UI 可见）。"""
+        if command_runner is None:
+            return {"steered": []}
+        return {"steered": command_runner.steer(run_id, req.message, req.command_id)}
 
     @app.get("/api/knowledge/{kind}/{entity_id}/archives")
     def list_archives(kind: str, entity_id: str) -> list[dict[str, Any]]:

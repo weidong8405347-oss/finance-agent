@@ -280,6 +280,19 @@ function ConflictNode({ node }: { node: Extract<ChatNode, { kind: "conflict" }> 
   );
 }
 
+// ---------- 改向注入卡（steer/requested；运行中改方向注入子 run） ----------
+function SteerNode({ node }: { node: Extract<ChatNode, { kind: "steer" }> }) {
+  return (
+    <div className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs">
+      <span className="font-semibold text-sky-800">🧭 改向已注入</span>
+      <span className="ml-2 select-text text-neutral-700">{node.message}</span>
+      <span className="ml-2 font-mono text-[10px] text-neutral-400">
+        {node.delivered ? "当前 step 下一次模型调用即生效" : "将于下一 step 生效"}
+      </span>
+    </div>
+  );
+}
+
 // ---------- 其余 ----------
 function ErrorNode({ node }: { node: Extract<ChatNode, { kind: "error" }> }) {
   return (
@@ -330,6 +343,7 @@ export function ChatNodeView({ node }: { node: ChatNode }) {
     case "report": return <ReportFoldCard card={node} />;
     case "approval": return <ApprovalCard node={node} />;
     case "conflict": return <ConflictNode node={node} />;
+    case "steer": return <SteerNode node={node} />;
     case "error": return <ErrorNode node={node} />;
     case "turnfold": return <TurnFold node={node} />;
     default: return <DebugNode node={node} />;

@@ -6,6 +6,7 @@
 - 会话列表：排除子 run、带标题与 last_active；children 端点列出 step agent 子 run
 """
 
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -26,7 +27,7 @@ from finance_agent.llm.mock import MockLLM
 from finance_agent.main_agent import MainAgent
 
 
-def make_client(tmp_path, scripts=None):
+def make_client(tmp_path, scripts=None, step_llm_factory=None):
     """真实装配（API 层），LLM 为脚本化 Mock（唯一外部边界的替身）。"""
     events = EventStore(tmp_path / "e.db")
     kb = BitemporalStore(tmp_path / "kb.db")
@@ -35,12 +36,12 @@ def make_client(tmp_path, scripts=None):
     approvals = ApprovalService(events)
     main_llm = MockLLM(scripts or [AssistantReply(content="好的")])
     # 每个 step 独立实例（MockLLM 是一次性脚本，共享会被抽干）
-    step_llm_factory = lambda: MockLLM([AssistantReply(content="## 摘要\n完成。")])  # noqa: E731
+    factory = step_llm_factory or (lambda: MockLLM([AssistantReply(content="## 摘要\n完成。")]))
 
     deps = StepDeps(
         events=events, kb=kb, writer=writer, gateway=gateway,
         decisions=DecisionService(kb=kb, decisions=DecisionStore(tmp_path / "d.db"), events=events),
-        llm_for=lambda role: step_llm_factory(),
+        llm_for=lambda role: factory(),
         approvals=approvals,
         evals_dir=tmp_path / "evals",
         reports_dir=tmp_path / "reports",
@@ -149,3 +150,80 @@ def test_chat_continues_same_session(tmp_path):
     wait_event(events, r1, lambda e: e.type == "turn/end")
     titles = [e for e in events.read(r1) if e.type == "session/title"]
     assert len(titles) == 1, "title 只在首条消息生成"
+
+
+# ---------------- steer（Q6 后置项：运行中改方向注入子 run） ----------------
+
+
+def gated_factory(gate: threading.Event, first_seen: threading.Event):
+    """门控 step LLM：第一次模型调用挂起，直到主线程放行（steer 在此期间注入）。"""
+
+    class _Gated:
+        def complete(self, messages, tools):
+            first_seen.set()
+            assert gate.wait(timeout=5), "等待 steer 超时"
+            return AssistantReply(content="done")
+
+    return _Gated
+
+
+def test_steer_slash_injects_into_running_command(tmp_path):
+    gate, first_seen = threading.Event(), threading.Event()
+    client, events = make_client(tmp_path, step_llm_factory=gated_factory(gate, first_seen))
+    run_id = client.post("/api/chat", json={"message": "/research BE"}).json()["run_id"]
+    assert first_seen.wait(timeout=5)
+
+    resp = client.post("/api/chat", json={"session_id": run_id, "message": "/steer 重点看竞对"})
+    assert resp.status_code == 200
+    steered = resp.json()["steered"]
+    assert isinstance(steered, list) and len(steered) == 1
+    assert steered[0]["delivered"] is True
+
+    # 会话流落 steer/requested（UI 可见）；当前 child run 落改向注入
+    req = wait_event(events, run_id, lambda e: e.type == "steer/requested")[0]
+    assert req.payload["message"] == "重点看竞对"
+    child = steered[0]["child_run_id"]
+    assert any(
+        e.type == "context/inject" and "重点看竞对" in str(e.payload.get("content", ""))
+        for e in events.read(child)
+    )
+
+    gate.set()
+    wait_event(events, run_id, lambda e: e.type == "command/done")
+    # /steer 是会话级控制动作：不派发 command、不起主 agent turn
+    assert not [e for e in events.read(run_id) if e.type == "command/run"
+                and e.payload.get("name") == "steer"]
+
+
+def test_steer_endpoint_mirrors_stop(tmp_path):
+    gate, first_seen = threading.Event(), threading.Event()
+    client, events = make_client(tmp_path, step_llm_factory=gated_factory(gate, first_seen))
+    run_id = client.post("/api/chat", json={"message": "/research BE"}).json()["run_id"]
+    assert first_seen.wait(timeout=5)
+
+    resp = client.post(f"/api/sessions/{run_id}/steer", json={"message": "改看财务质量"})
+    assert resp.status_code == 200
+    assert len(resp.json()["steered"]) == 1
+    wait_event(events, run_id, lambda e: e.type == "steer/requested")
+    gate.set()
+    wait_event(events, run_id, lambda e: e.type == "command/done")
+
+
+def test_steer_without_active_command(tmp_path):
+    client, events = make_client(tmp_path)
+    # 端点：无活跃 → 空列表（镜像 /stop 的 {"stopped": None}）
+    r = client.post("/api/sessions/live-x/steer", json={"message": "改向"})
+    assert r.status_code == 200 and r.json()["steered"] == []
+    # 端点空消息 → 422
+    assert client.post("/api/sessions/live-x/steer", json={"message": ""}).status_code == 422
+    # chat /steer 无活跃 → 对话式警告（不静默）
+    r2 = client.post("/api/chat", json={"message": "/steer 改个方向"})
+    assert r2.status_code == 200
+    run_id = r2.json()["run_id"]
+    warned = wait_event(events, run_id, lambda e: e.type == "assistant/message")[0]
+    assert "没有" in warned.payload["content"]
+    # 裸 /steer → 用法提示
+    r3 = client.post("/api/chat", json={"message": "/steer"})
+    run_id3 = r3.json()["run_id"]
+    usage = wait_event(events, run_id3, lambda e: e.type == "assistant/message")[0]
+    assert "用法" in usage.payload["content"]

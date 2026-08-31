@@ -18,6 +18,7 @@ export type ChatNode =
   | { kind: "report"; key: string; title: string; summary: string; flags: string[]; artifact: string }
   | { kind: "approval"; key: string; approvalId: string; op: string; detail: string; state: "pending" | "approved" | "rejected" | "waived"; basis?: string }
   | { kind: "conflict"; key: string; entity?: string; field: string; state: "raised" | "resolved"; note?: string; cleared?: number; keepFactId?: string }
+  | { kind: "steer"; key: string; commandId: string; message: string; childRunId?: string; delivered: boolean }
   | { kind: "error"; key: string; label: string; reason: string }
   | { kind: "debug"; key: string; type: string; payload: string; seq: number }
   | { kind: "turnfold"; key: string; turn: number; tools: Extract<ChatNode, { kind: "tool" }>[]; tokens: number | null; model?: string };
@@ -246,6 +247,16 @@ export function assemble(events: EventRow[]): ChatNode[] {
           conflictByKey.set(key, node);
           nodes.push(node);
         }
+        break;
+      }
+      case "steer/requested": {
+        // 改向注入确认卡（Q6 后置项）：已注入运行中 command 的当前 step / 待下一 step 生效
+        nodes.push({
+          kind: "steer", key: `st${e.seq}`, commandId: String(p.command_id ?? ""),
+          message: String(p.message ?? ""),
+          childRunId: p.child_run_id ? String(p.child_run_id) : undefined,
+          delivered: Boolean(p.delivered),
+        });
         break;
       }
       case "turn/error":

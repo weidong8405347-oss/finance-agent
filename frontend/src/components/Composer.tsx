@@ -21,9 +21,14 @@ export default function Composer({
     api.commands().then(setCommands).catch(() => setCommands([]));
   }, []);
 
+  // /steer 是会话级控制动作（非 pipeline command）：本地登记进补全菜单
+  const LOCAL_ENTRIES: CommandSpec[] = [
+    { name: "steer", summary: "运行中改方向（注入正在执行的 step，后续 step 继承）", usage: "/steer <改向内容>", needs_approval: false },
+  ];
+
   const menuOpen = draft.startsWith("/") && !draft.includes(" ") && draft.length > 0;
   const filtered = menuOpen
-    ? commands.filter((c) => `/${c.name}`.startsWith(draft.toLowerCase()))
+    ? [...commands, ...LOCAL_ENTRIES].filter((c) => `/${c.name}`.startsWith(draft.toLowerCase()))
     : [];
 
   const send = () => {

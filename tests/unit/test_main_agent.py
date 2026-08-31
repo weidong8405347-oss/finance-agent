@@ -58,6 +58,11 @@ def make_stack(tmp_path, scripts: list, *, real_commands=False):
             def cancel(self, run_id, command_id=None):
                 return "cmd-fake01"
 
+            def steer(self, run_id, message, command_id=None):
+                if command_id not in (None, "cmd-fake01"):
+                    return []
+                return [{"command_id": "cmd-fake01", "child_run_id": "child-1", "delivered": True}]
+
         runner = FakeRunner()
 
     def make_agent(run_id: str) -> MainAgent:
@@ -147,6 +152,23 @@ def test_stop_command_cancels_active(tmp_path):
     results = [e for e in events.read(run_id)
                if e.type == "tool/result" and e.payload.get("name") == "stop_command"]
     assert results and "已请求停止" in results[0].payload["content"]
+
+
+def test_steer_command_tool_injects_direction(tmp_path):
+    script = [
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="s1", name="steer_command",
+                                                    arguments={"message": "重点看财务质量"})]),
+        AssistantReply(content="已注入。"),
+    ]
+    events, kb, llm, runner, chat = make_stack(tmp_path, script)
+    run_id = "live-steer"
+    from finance_agent.eventstore.events import Event
+    events.append(Event(run_id=run_id, type="user/message", payload={"content": "研究改个方向"}))
+    chat.submit_message(run_id)
+    wait_event(events, run_id, lambda e: e.type == "turn/end")
+    results = [e for e in events.read(run_id)
+               if e.type == "tool/result" and e.payload.get("name") == "steer_command"]
+    assert results and "已注入" in results[0].payload["content"]
 
 
 def test_show_profile_returns_structured_card(tmp_path):

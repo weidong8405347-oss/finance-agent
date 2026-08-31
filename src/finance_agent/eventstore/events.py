@@ -43,6 +43,7 @@ STEP_AGENT_END = "step_agent/end"      # {command_id, child_run_id, step, status
 APPROVAL_ASKED = "approval/asked"      # {approval_id, op, detail}
 APPROVAL_DECIDED = "approval/decided"  # {approval_id, approved}
 APPROVAL_WAIVED = "approval/waived"    # {op, basis}（豁免当次有效，可审计）
+STEER_REQUESTED = "steer/requested"    # {command_id, child_run_id, message, delivered}（Q6 改向注入）
 SESSION_TITLE = "session/title"        # {title}
 REPORT_PUBLISHED = "report/published"  # {child_run_id, kind, title, summary, artifact_path}
 
