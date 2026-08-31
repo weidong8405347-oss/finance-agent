@@ -9,7 +9,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
+from typing import TYPE_CHECKING
+
+from ..gateway.adapters.prices import PRICE_SOURCE_ORDER
+
+if TYPE_CHECKING:
+    from ..gateway.gateway import DataGateway
+
+
+class PriceDataUnavailableError(RuntimeError):
+    """行情对账数据不可得——eval 不应带着空 PriceBook 静默烧预算。"""
 
 
 def add_months(d: date, months: int) -> date:
@@ -40,6 +51,37 @@ class PriceBook:
             d = date.fromisoformat(r["date"]) if isinstance(r["date"], str) else r["date"]
             closes.setdefault(r["ticker"], {})[d] = float(r["close"])
         return cls(closes)
+
+    @classmethod
+    def from_gateway(
+        cls,
+        gateway: DataGateway,
+        tickers: Sequence[str],
+        *,
+        sources: tuple[str, ...] = PRICE_SOURCE_ORDER,
+        start: str = "2000-01-01",
+        end: str = "2100-01-01",
+        require: bool = False,
+    ) -> PriceBook:
+        """按回退次序从网关装配对账行情（evaluator 专用，agent 工具面不可见）。
+
+        require=True：任一标的在所有源上都无数据 → 显式失败（铁律 4）——
+        空 PriceBook 会把整轮 LLM 预算烧成全 incomplete。
+        """
+        payloads: list[dict] = []
+        missing: list[str] = []
+        for ticker in tickers:
+            records = gateway.query_any(sources, {"ticker": ticker, "start": start, "end": end})
+            if records:
+                payloads.extend(r.payload for r in records)
+            else:
+                missing.append(ticker)
+        if require and missing:
+            raise PriceDataUnavailableError(
+                f"行情对账数据不可得（尝试源 {list(sources)} 全空）: {missing}；"
+                "检查网络/代理（Yahoo 通常需 HTTPS_PROXY）后再评估"
+            )
+        return cls.from_records(payloads)
 
     def forward_return(
         self, ticker: str, t: date, *, horizon_months: int

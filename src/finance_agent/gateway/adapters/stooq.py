@@ -3,6 +3,12 @@
 引入原因（2026-08-30）：yfinance 依赖装不上时行情能力停摆；
 Stooq 免费 CSV 日线（stooq.com/q/d/l/?s=<ticker>.us&i=d）直连即可。
 
+可用性实录（2026-08-31，真实冒烟）：CSV 端点已全局启用 JS PoW 反爬——
+直连返回 200 挑战页（解析不出行情行 → 空结果），经代理返回 404。
+两种姿态都降级为空列表，不抛错：作为回退链首跳（PRICE_SOURCE_ORDER），
+不可达时由 DataGateway.query_any 回退 yfinance；eval 对账侧的硬失败
+门禁在 PriceBook.from_gateway(require=True)。
+
 PIT 语义与 YFinancePricesAdapter 一致（保守）：available_at = 交易日 +1d。
 代码映射：美股 ticker 小写 + ".us"（AAPL → aapl.us）；暂不支持的市场在查询时明确报错。
 """
@@ -37,8 +43,13 @@ class StooqPricesAdapter:
             "d1": str(request.get("start") or "2000-01-01").replace("-", ""),
             "d2": str(request.get("end") or date.today().isoformat()).replace("-", ""),
         }
-        resp = httpx.get(_URL, params=params, timeout=30)
-        resp.raise_for_status()
+        try:
+            resp = httpx.get(_URL, params=params, timeout=30)
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            # 免费源可用性漂移（限流/404/网络）→ 空结果，回退链继续；
+            # 硬失败门禁在 PriceBook.from_gateway(require=True)。
+            return []
         text = resp.text.strip()
         if not text or "Exceeded" in text or text.startswith("No data"):
             return []

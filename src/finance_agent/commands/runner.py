@@ -33,6 +33,7 @@ from ..eventstore.events import (
     Event,
 )
 from ..eventstore.store import StoredEvent
+from ..gateway.adapters.prices import PRICE_SOURCE_ORDER
 from .registry import COMMANDS, ParsedCommand, parse_target
 from .steps import STEP_TITLES, STEPS, StepContext, StepDeps, StepResult
 
@@ -267,18 +268,15 @@ class CommandRunner:
 
         deps = self._deps
         prices: list[dict] | None = None
-        price_source = next(
-            (s for s in ("prices_stooq", "prices") if s in deps.gateway.source_ids()), None
-        )
-        if kind == "stock" and price_source:
-            try:  # 行情不可得（依赖缺失/限流）不阻断存档——图表缺省即可
+        if kind == "stock":
+            try:  # 行情不可得（反爬/限流/依赖缺失）不阻断存档——图表缺省即可
                 from datetime import date, timedelta
 
                 end = date.today()
-                recs = deps.gateway.query(
-                    price_source,
-                    {"ticker": entity_id, "start": (end - timedelta(days=365)).isoformat(),
-                     "end": end.isoformat()},
+                recs = deps.gateway.query_any(
+                    PRICE_SOURCE_ORDER,
+                    {"ticker": entity_id,
+                     "start": (end - timedelta(days=365)).isoformat(), "end": end.isoformat()},
                 )
                 prices = [r.payload for r in recs]
             except Exception:

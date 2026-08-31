@@ -144,14 +144,8 @@ def build_orchestrator(data_dir: Path):
         from .evaluation.replay import ReplayEngine
 
         cfg = EvalConfig.from_json(evals_dir / "mandates" / f"{config_name}.json")
-        records = []
-        for t in cfg.tickers:
-            records += [
-                r.payload
-                for r in gateway.query(
-                    "prices_stooq", {"ticker": t, "start": "2000-01-01", "end": "2100-01-01"}
-                )
-            ]
+        # 对账行情：按回退次序装配；全缺 → 显式失败（空 PriceBook 会把预算烧成全 incomplete）
+        price_book = PriceBook.from_gateway(gateway, cfg.tickers, require=True)
 
         def gateway_factory(as_of, run_id):
             g = DataGateway(
@@ -169,7 +163,7 @@ def build_orchestrator(data_dir: Path):
             decision_service=decisions,
             llm_agent=llm_for("research"),
             llm_baseline=llm_for("fast"),
-            price_book=PriceBook.from_records(records),
+            price_book=price_book,
             artifacts_dir=evals_dir,
             gateway_factory=gateway_factory,
         )

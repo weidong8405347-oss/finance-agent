@@ -9,6 +9,7 @@ C 级源在评估模式直接 blocked；B 级默认 blocked，manifest.allow_pit
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal
 
@@ -48,6 +49,25 @@ class DataGateway:
 
     def source_ids(self) -> list[str]:
         return list(self._adapters)
+
+    def query_any(self, source_ids: Sequence[str], request: dict) -> list[DataRecord]:
+        """按序尝试多个已注册源，第一个非空结果胜出；全部不可用/为空 → []。
+
+        免费行情源可用性漂移（stooq 反爬 / Yahoo 限流）的容错原语：
+        单源抛错或空结果不致命，逐个回退。空结果语义由调用方定：
+        图表缺省（软降级）或显式失败（eval 对账 require=True，铁律 4）。
+        未注册的源静默跳过——与 query 的 fail-closed 不冲突（那是显式单源调用）。
+        """
+        for source_id in source_ids:
+            if source_id not in self._adapters:
+                continue
+            try:
+                records = self.query(source_id, request)
+            except Exception:
+                continue  # 单源故障不阻断回退链
+            if records:
+                return list(records)
+        return []
 
     def query(self, source_id: str, request: dict) -> list[DataRecord]:
         adapter = self._adapters.get(source_id)
