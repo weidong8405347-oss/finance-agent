@@ -1,5 +1,8 @@
 # Handoff：冲突人工裁决 UI + gitignore 误伤源码事故修复（2026-08-31 晚）
 
+> **已被 [2026-08-31 steer 版](2026-08-31-steer-handoff.md)取代**（steer 落地，基线更新
+> 为 185+3s / vitest 11）。
+
 > 给新会话的唯一入口文档（取代 [2026-08-31 行情源版](2026-08-31-prices-eval-first-run.md)，
 > 历史见 git log：`1532936 feat(kb)` → `a5e8cf4 fix(repo)` → `edd0c33 style(knowledge)`——本次三个提交）。
 > 设计文档不变：`docs/redesign-interaction-orchestration.md`（§5 决策记录）、
