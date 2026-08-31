@@ -224,6 +224,7 @@ def build_orchestrator(data_dir: Path):
         return MainAgent(
             run_id=run_id, events=events, kb=kb, gateway=gateway,
             llm=llm_for("research"), commands=command_runner,
+            evals_dir=evals_dir,  # show_eval_config（评估配置对话式微调的「读出」一步）
         )
 
     chat_service = ChatService(events=events, make_main_agent=make_main_agent)

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from .commands.registry import COMMANDS, ParsedCommand, catalog
@@ -44,6 +46,10 @@ MAIN_CONTRACT = """\
 10. stalled 停手纪律：同一标的的 research 连续两次以 stalled（停滞，无新证据写入）
     收场 → 停手，不再自主发起第三次重试；向用户如实汇报数据边界
     （哪些维度查不到、可能的原因、可尝试的替代方向），由用户决定下一步。
+11. 评估配置微调：用户口头调整评估参数时，先 show_eval_config 读出目标 mandate 的
+    完整 JSON，按用户意图改好后把【完整新 JSON】以代码块贴给用户、说明改动点，
+    建议另存为新配置名（保留原配置可比性）；由用户自行落盘或明确授权后才可用
+    新配置名 /evaluate。你不直接改 evals/ 下的文件——评估配置变更必须留痕、经人确认。
 """
 
 MAIN_AGENT_TOOL_SCHEMAS: dict[str, dict] = {
@@ -104,6 +110,18 @@ MAIN_AGENT_TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["message"],
         },
     },
+    "show_eval_config": {
+        "name": "show_eval_config",
+        "description": (
+            "只读：读出评估配置（evals/mandates/<config>.json）的完整 JSON。"
+            "用户口头微调评估参数时先读再改——改好的完整 JSON 贴给用户确认，不直接改文件。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"config": {"type": "string", "description": "配置名（不带 .json）"}},
+            "required": ["config"],
+        },
+    },
     "show_profile": {
         "name": "show_profile",
         "description": "在对话流中内联展示实体档案卡（完整度/关键事实/thesis/冲突）",
@@ -119,6 +137,10 @@ MAIN_AGENT_TOOL_SCHEMAS: dict[str, dict] = {
 }
 
 
+#: 配置名白名单（防路径穿越：show_eval_config 的参数直接拼文件路径）
+_CONFIG_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 class MainAgent:
     """会话级主 agent。一个会话一个实例；上下文无状态（永远从 EventStore 投影）。"""
 
@@ -132,6 +154,7 @@ class MainAgent:
         llm: LLM,
         commands: CommandRunner,
         max_steps: int = 8,
+        evals_dir: Path | None = None,
     ):
         self._run_id = run_id
         self._events = events
@@ -140,6 +163,7 @@ class MainAgent:
         self._llm = llm
         self._commands = commands
         self._max_steps = max_steps
+        self._evals_dir = evals_dir
 
     def ensure_contract(self) -> None:
         """会话首个模型可见事件 = system 契约（投影顺序即模型所见顺序）。"""
@@ -173,10 +197,33 @@ class MainAgent:
             "stop_command": self._stop_command,
             "steer_command": self._steer_command,
             "show_profile": self._show_profile,
+            "show_eval_config": self._show_eval_config,
         }
         for source_id in self._gateway.source_ids():
             tools[f"query_{source_id}"] = make_gateway_tool(self._gateway, source_id)
         return tools
+
+    def _show_eval_config(self, args: dict[str, Any]) -> dict[str, Any]:
+        """只读：读出 evals/mandates/<config>.json 完整内容（对话式微调的「读出」一步）。"""
+        name = str(args.get("config") or "").strip()
+        if not name:
+            return {
+                "content": 'error: show_eval_config 需要 config 参数（evals/mandates/ 下的配置名）。',
+                "provenance": [],
+            }
+        if not _CONFIG_NAME_RE.fullmatch(name):
+            return {"content": f"error: 非法配置名 {name!r}（只允许字母/数字/._-）", "provenance": []}
+        if self._evals_dir is None:
+            return {"content": "error: 本环境未装配 evals 目录", "provenance": []}
+        mandates = self._evals_dir / "mandates"
+        path = mandates / f"{name}.json"
+        if not path.exists():
+            available = sorted(p.stem for p in mandates.glob("*.json")) if mandates.exists() else []
+            return {
+                "content": f"error: 配置 {name} 不存在。可用：{', '.join(available) or '（空）'}",
+                "provenance": [],
+            }
+        return {"content": path.read_text(), "provenance": []}
 
     def _query_kb(self, args: dict[str, Any]) -> dict[str, Any]:
         kind, eid = args.get("entity_kind"), args.get("entity_id")

@@ -15,7 +15,7 @@ from finance_agent.commands.runner import CommandRunner
 from finance_agent.commands.steps import StepDeps
 from finance_agent.decision.service import DecisionService
 from finance_agent.decision.store import DecisionStore
-from finance_agent.eventstore.events import MODEL_VISIBLE_TYPES
+from finance_agent.eventstore.events import MODEL_VISIBLE_TYPES, Event
 from finance_agent.eventstore.store import EventStore
 from finance_agent.gateway.gateway import DataGateway
 from finance_agent.harness.approvals import ApprovalService
@@ -68,6 +68,7 @@ def make_stack(tmp_path, scripts: list, *, real_commands=False):
     def make_agent(run_id: str) -> MainAgent:
         return MainAgent(
             run_id=run_id, events=events, kb=kb, gateway=gateway, llm=llm, commands=runner,
+            evals_dir=tmp_path / "evals",
         )
 
     chat = ChatService(events=events, make_main_agent=make_agent)
@@ -82,6 +83,54 @@ def wait_event(events, run_id, pred, timeout=5.0):
             return found
         time.sleep(0.02)
     raise AssertionError("等待事件超时")
+
+
+def run_one_tool_turn(tmp_path, tool_name, arguments):
+    """脚本化主 agent：调用一个工具 → 返回该工具结果消息内容（模型可见投影）。"""
+    script = [
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="t1", name=tool_name,
+                                                    arguments=arguments)]),
+        AssistantReply(content="done"),
+    ]
+    events, kb, llm, runner, chat = make_stack(tmp_path, script)
+    run_id = "live-tool"
+    chat.begin_session(run_id)
+    events.append(Event(run_id=run_id, type="user/message", payload={"content": "trigger"}))
+    chat.submit_message(run_id)
+    wait_event(events, run_id, lambda e: e.type == "turn/end")
+    tools = [m for m in events.derive_messages(run_id) if m["role"] == "tool"]
+    assert tools, "工具结果应进入模型可见投影"
+    return tools[0]["content"]
+
+
+def test_contract_has_eval_config_tuning_guidance():
+    """评估配置的对话式微调：读出 → 完整新 JSON 代码块 → 用户确认/落盘。
+    主 agent 不直接改 evals/ 下的文件（评估配置变更必须留痕、经人确认）。"""
+    from finance_agent.main_agent import MAIN_CONTRACT
+
+    assert "show_eval_config" in MAIN_CONTRACT
+    assert "代码块" in MAIN_CONTRACT
+    assert "不直接改" in MAIN_CONTRACT
+
+
+def test_show_eval_config_reads_mandate(tmp_path):
+    (tmp_path / "evals" / "mandates").mkdir(parents=True)
+    (tmp_path / "evals" / "mandates" / "be-q.json").write_text('{"tickers": ["BE"], "budget": 3}')
+    content = run_one_tool_turn(tmp_path, "show_eval_config", {"config": "be-q"})
+    assert '"tickers"' in content and "BE" in content  # 完整 JSON 读出（微调的基础）
+
+
+def test_show_eval_config_unknown_lists_available(tmp_path):
+    (tmp_path / "evals" / "mandates").mkdir(parents=True)
+    (tmp_path / "evals" / "mandates" / "wf-2023.json").write_text("{}")
+    content = run_one_tool_turn(tmp_path, "show_eval_config", {"config": "nope"})
+    assert "error" in content and "wf-2023" in content  # 可操作报错：列出可用配置
+
+
+def test_show_eval_config_rejects_path_traversal(tmp_path):
+    (tmp_path / "evals" / "mandates").mkdir(parents=True)
+    content = run_one_tool_turn(tmp_path, "show_eval_config", {"config": "../../secrets"})
+    assert "error" in content and "wf" not in content
 
 
 def test_contract_has_stalled_retry_discipline():
