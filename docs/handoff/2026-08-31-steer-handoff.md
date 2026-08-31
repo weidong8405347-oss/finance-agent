@@ -1,5 +1,8 @@
 # Handoff：steer 落地（运行中改方向注入子 run，Q6 后置项）（2026-08-31 深夜）
 
+> **已被 [2026-08-31 评估调优版](2026-08-31-eval-tuning-handoff.md)取代**（决策保守度
+> 根因修复 + canary 真实复跑，基线更新为 189+3s / vitest 11）。
+
 > 给新会话的唯一入口文档（取代 [2026-08-31 冲突裁决版](2026-08-31-conflict-resolve-ui.md)，
 > 历史见 git log：`c759991 feat(steer)`——本次唯一代码提交）。
 > 设计文档不变：`docs/redesign-interaction-orchestration.md`（§5 决策记录）、
