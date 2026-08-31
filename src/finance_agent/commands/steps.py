@@ -99,7 +99,8 @@ class StepDeps:
     knowledge_dir: Path  # 档案磁盘投影（HTML 存档）；必填——测试绝不许写进仓库工作树
     judge_llm: LLM | None = None
     eval_runner: Callable[..., dict[str, Any]] | None = None  # (config_name, child_run_id) → summary dict
-    fetch_document: Callable[[str], str] | None = None  # 文档正文抓取（live 研究用；eval 禁用）
+    fetch_document: Callable[[str], str] | None = None  # 文档正文抓取（生产研究用；eval 回放经
+                                                       # ReplayEngine 自带）
     max_rounds: int = 3
     max_steps_per_round: int = 16
     completeness_target: float = 0.8

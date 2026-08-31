@@ -178,6 +178,121 @@ def test_walkforward_replay_end_to_end(tmp_path):
     assert events.read(report.eval_run_id, types={"eval/report"})
 
 
+def test_eval_research_can_read_filing_body(tmp_path):
+    """eval 研究必须能读申报正文（生产路径同款能力）。
+
+    回归首跑事故的根因：eval 回放缺 fetch_document → 研究 agent 只有 filing 索引，
+    档案关键字段（现金流等）永远缺失 → 决策全 watch、kb_delta=0。
+    本测试：增量研究查 filing 索引（时间锁过滤 ≤T）→ 读正文窗口 → 登记证据 → 写事实；
+    断言 eval 命名空间落下从正文逐字摘出的字段（read_edgar_filing 在 eval 可用且 PIT 安全）。
+    """
+    from finance_agent.gateway.adapters.fixture import FixtureAdapter
+    from finance_agent.gateway.gateway import DataGateway
+    from finance_agent.gateway.models import DataRecord, SourceCapability
+    from finance_agent.llm.base import AssistantReply, ToolCall
+    from finance_agent.llm.mock import MockLLM
+
+    events = EventStore(tmp_path / "e.db")
+    kb = seed_kb(tmp_path)
+    decisions = DecisionStore(tmp_path / "d.db")
+    svc = DecisionService(kb=kb, decisions=decisions, events=events)
+
+    body = "net cash provided by operating activities was 250 million"
+
+    def filing_gateway(as_of: datetime, run_id: str) -> DataGateway:
+        g = DataGateway(mode="eval", eval_as_of=as_of, events=events, run_id=run_id)
+        g.register(
+            FixtureAdapter(
+                SourceCapability(source_id="edgar", pit_grade=PitGrade.A),
+                [DataRecord(
+                    source_id="edgar", payload={"form": "10-K", "accession": "0001"},
+                    url="edgar://filing",
+                    available_at=datetime(2023, 1, 15, tzinfo=UTC),  # ≤ 所有决策点
+                )],
+            )
+        )
+        return g
+
+    def fetch_document(url: str) -> str:
+        assert url == "edgar://filing"
+        return body
+
+    # 每个决策点的增量研究：查 edgar 索引（chk-0001）→ 读正文（chk-0002 窗口）
+    # → 登记逐字摘录 → 写现金流事实 → round2 无新发现停滞 → 决策买
+    def agent_for_points(n: int) -> MockLLM:
+        replies = []
+        for i in range(n):
+            replies += [
+                AssistantReply(content="", tool_calls=[ToolCall(
+                    call_id=f"q{i}", name="query_edgar", arguments={})]),
+                AssistantReply(content="", tool_calls=[ToolCall(
+                    call_id=f"r{i}", name="read_edgar_filing",
+                    arguments={"chunk_id": "chk-0001", "query": "cash"})]),
+                AssistantReply(content="", tool_calls=[ToolCall(
+                    call_id=f"e{i}", name="register_evidence",
+                    arguments={"evidence_id": f"ev-cf-{i}", "chunk_id": "chk-0002",
+                               "verbatim_quote": body})]),
+                AssistantReply(content="", tool_calls=[ToolCall(
+                    call_id=f"f{i}", name="propose_fact",
+                    arguments={"field": "cash_flow", "value": 250, "evidence_ids": [f"ev-cf-{i}"]})]),
+                AssistantReply(content="研究完毕"),
+                # round 2：已有进展 → 再轮一轮，无新写入 → stalled 收敛
+                AssistantReply(content="无新发现"),
+            ]
+            replies += [
+                AssistantReply(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            call_id=f"d{i}",
+                            name="propose_decision",
+                            arguments={
+                                "action": "buy",
+                                "conviction": 4,
+                                "horizon": "3m",
+                                "rationale": [f"ev-cf-{i}"],
+                                "thesis_points": ["cash_flow"],
+                                "invalidation": ["现金流转负则失效"],
+                                "position": {"sizing_pct": 0.1, "max_loss_pct": 0.05},
+                            },
+                        )
+                    ],
+                ),
+                AssistantReply(content="buy"),
+            ]
+        return MockLLM(replies)
+
+    engine = ReplayEngine(
+        kb=kb,
+        events=events,
+        decision_service=svc,
+        llm_agent=agent_for_points(2),
+        llm_baseline=baseline_llm(),
+        price_book=make_prices(),
+        artifacts_dir=tmp_path / "evals",
+        gateway_factory=filing_gateway,
+        fetch_document=fetch_document,
+    )
+    config = EvalConfig(
+        name="filing-body",
+        tickers=["AAA"],
+        decision_points=[date(2023, 3, 31), date(2023, 6, 30)],
+        horizon_months=3,
+        backbone_cutoff=date(2023, 6, 30),
+        cost=CostModel(commission_bps=5.0, slippage_bps=10.0),
+        incremental_research=True,
+    )
+    report = engine.run(config)
+    assert report.verdict == "clean"
+    # 正文证据落 eval 命名空间（读正文能力在 eval 路径可用）
+    assert kb.get_evidence("ev-cf-0").verbatim_quote == body
+    # 现金流事实进入 eval 视图且时间锁正确（available_at 从 filing 记录继承）
+    view = kb.view("stock", "AAA", datetime(2023, 3, 31, 23, 59, 59, tzinfo=UTC),
+                   namespace=f"eval:{report.eval_run_id}")
+    assert view["cash_flow"].value == 250
+    assert all(o.action == "buy" and not o.incomplete for o in report.outcomes)
+
+
 def test_leakage_marks_run_contaminated(tmp_path):
     """硬门禁：回放过程中出现任何一次穿越尝试（被网关拦下也算），整批作废。"""
     from finance_agent.gateway.adapters.fixture import FixtureAdapter

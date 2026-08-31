@@ -100,3 +100,15 @@ def test_llm_choosing_no_action_is_respected(tmp_path):
     loop = DecisionLoop(kb=kb, events=events, decision_service=svc, llm=llm, manifest=manifest)
     assert loop.run("stock", "AAPL", now=NOW) is None
     assert decisions.list() == []
+
+
+def test_decision_contract_has_explicit_conviction_mapping(tmp_path):
+    """出手阈值可读化（backlog #4）：契约必须给出确信度→动作的显式映射，
+    让「全 watch 零敞口」成为可识别、可审计的系统性状态而非默认偷懒路径。"""
+    from finance_agent.decision.loop import DECISION_CONTRACT
+
+    # 确信度与动作的映射条款
+    assert "确信度" in DECISION_CONTRACT or "conviction" in DECISION_CONTRACT.lower()
+    assert "watch" in DECISION_CONTRACT
+    # 高确信 + 证据链完整 → 应给出可执行动作（而非默认 watch）
+    assert "≥4" in DECISION_CONTRACT or ">=4" in DECISION_CONTRACT

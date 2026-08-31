@@ -61,6 +61,9 @@ class ReplayEngine:
         price_book: PriceBook,
         artifacts_dir: str | Path,
         gateway_factory: GatewayFactory | None = None,
+        fetch_document: Callable[[str], str] | None = None,
+        # fetch_document：申报正文抓取。eval 也可用——filing 正文不可变（amendment 是独立 filing），
+        # 且 chunk 的 available_at 从「时间锁网关查询出的 filing 记录」继承（PIT 安全同生产路径）。
     ):
         self._kb = kb
         self._events = events
@@ -70,6 +73,7 @@ class ReplayEngine:
         self._prices = price_book
         self._artifacts = Path(artifacts_dir)
         self._gateway_factory = gateway_factory
+        self._fetch_document = fetch_document
 
     def run(self, config: EvalConfig, *, eval_run_id: str | None = None) -> EvalReport:
         eval_run_id = eval_run_id or f"eval-{uuid.uuid4().hex[:8]}"
@@ -241,6 +245,7 @@ class ReplayEngine:
             namespace=namespace,
             gateway_sources=gateway.source_ids(),
             hooks=[LeakageAuditHook(event_sink=self._events)],
+            fetch_document=self._fetch_document,
         )
         with contextlib.suppress(LeakageDetected):
             # 泄漏事件已落库，报告的硬门禁会判定

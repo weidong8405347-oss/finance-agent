@@ -166,6 +166,7 @@ def build_orchestrator(data_dir: Path):
             price_book=price_book,
             artifacts_dir=evals_dir,
             gateway_factory=gateway_factory,
+            fetch_document=fetch_filing_text,  # eval 研究同样需要读申报正文（filing 不可变，PIT 安全）
         )
         report = engine.run(cfg, eval_run_id=child_run_id)
         return {

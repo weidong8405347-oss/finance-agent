@@ -27,6 +27,9 @@ DECISION_CONTRACT = """\
 1. rationale 只能引用证据 id；thesis_points 只能引用档案字段名。
 2. buy/sell 必须给出仓位与最大亏损预算；必须给出明确失效条件。
 3. 证据不足时不要强行出卡——watch/avoid 或直接说明不出卡都是合法结论。
+4. 确信度→动作映射（出手阈值可审计）：conviction ≥4 且 rationale 至少 2 条一手证据 →
+   buy/sell（必带仓位与失效条件）；conviction 2-3 或证据链不完整 → watch；
+   conviction 1 或基本面恶化 → avoid。档案缺失关键维度时不得报高确信度——诚实降级优先。
 """
 
 DECISION_TOOL_SCHEMAS: dict[str, dict] = {
