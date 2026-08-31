@@ -1,5 +1,8 @@
 # Handoff：行情源解锁 + /evaluate 真实首跑（2026-08-31）
 
+> **已被 [2026-08-31 冲突裁决版](2026-08-31-conflict-resolve-ui.md)取代**（冲突人工裁决 UI +
+> gitignore 误伤源码事故修复——后者影响基线，务必看新版 §1/§3）。
+
 > 给新会话的唯一入口文档（取代 2026-08-30 版，历史见 git log：
 > `7652a27 feat(prices): 行情源可用性容错`——本次唯一代码提交）。
 > 设计文档不变：`docs/redesign-interaction-orchestration.md`（§5 决策记录）、
