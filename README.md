@@ -36,7 +36,9 @@ uv run python -m finance_agent serve   # 一条命令：自动构建前端（首
 
 交互与编排层的完整设计：[docs/redesign-interaction-orchestration.md](docs/redesign-interaction-orchestration.md)。
 
-**LLM 配置**：默认直接复用 pi 的 provider 配置（`~/.pi/agent/`，研究主力 pa/gpt-5.6-sol；fast 角色 kimi-k3；另有 GLM-5.3 / deepseek-v4-pro-0813 等别名可路由）。无 pi 配置时回落 `.env` 三件套（见 [.env.example](.env.example)）。
+**LLM 配置**：默认直接复用 pi 的 provider 配置（`~/.pi/agent/`，研究主力 pa/gpt-5.6-sol；fast 角色 kimi-k3；另有 GLM-5.3 / deepseek-v4-pro-0813 等别名可路由）。无 pi 配置时回落 `.env` 三件套（见 [.env.example](.env.example)）。LLM 读超时默认 180s，可用 `FINANCE_AGENT_LLM_TIMEOUT`（环境变量或 .env）覆盖。
+
+**代理固化**：本机网络受限时，在 `.env` 写 `HTTPS_PROXY=http://127.0.0.1:7897`（可加 `HTTP_PROXY`）即可——`serve` 启动时自动注入进程环境；显式设置的环境变量优先，不会被 .env 覆盖。代码不探测系统代理（环境显式原则）。
 
 前端开发热更新模式才需要第二个进程：`cd frontend && npm run dev`（:5173，代理 /api 到 :8000）。
 

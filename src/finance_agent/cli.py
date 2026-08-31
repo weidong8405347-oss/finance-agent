@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -51,6 +52,28 @@ def _build(
         fetch_document=fetch_document,
     )
     return loop, kb, events
+
+
+#: 代理固化只认这两个变量（与 handoff 的真实运行约定一致）
+_PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY")
+
+
+def _apply_dotenv_proxy(dotenv_path: str | Path = ".env") -> list[str]:
+    """.env 代理固化（serve 启动时调用）：进程环境未显式设置代理变量时，从 .env 注入。
+
+    显式环境变量优先（不覆盖；显式空串也算显式设置）。不在代码里探测系统代理——
+    代理配置必须显式（环境变量或 .env），可复现、可审计。
+    返回本次注入的变量名（启动横幅可见）。
+    """
+    from .llm.router import _read_dotenv  # 复用同一份 .env 解析（不写第二份）
+
+    dotenv = _read_dotenv(str(dotenv_path))
+    injected: list[str] = []
+    for key in _PROXY_ENV_KEYS:
+        if key not in os.environ and dotenv.get(key):
+            os.environ[key] = dotenv[key]
+            injected.append(key)
+    return injected
 
 
 def _router():
@@ -242,6 +265,9 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
     from .logging_setup import mirror_events_to_logging, setup_logging
 
     logger = setup_logging()
+    injected = _apply_dotenv_proxy()
+    if injected:
+        print(f"[finance-agent] 代理固化：从 .env 注入 {', '.join(injected)}（显式环境变量优先）")
     repo_root = Path(__file__).resolve().parents[2]
     dist = repo_root / "frontend" / "dist"
     if auto_build:

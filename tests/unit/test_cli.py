@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -34,6 +35,38 @@ def test_cli_research_real_without_provider_fails_actionably(tmp_path, capsys, m
     assert rc == 2  # 非零退出码（SystemExit 由 __main__ 层转换）
     err = capsys.readouterr().err
     assert ".env" in err and "OPENAI_API_KEY" in err  # 可操作指引，不是 traceback
+
+
+def test_dotenv_proxy_injected_when_env_absent(tmp_path, monkeypatch):
+    from finance_agent.cli import _apply_dotenv_proxy
+
+    (tmp_path / ".env").write_text("HTTPS_PROXY=http://127.0.0.1:7897\nHTTP_PROXY=http://127.0.0.1:7897\n")
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    injected = _apply_dotenv_proxy(tmp_path / ".env")
+    assert injected == ["HTTPS_PROXY", "HTTP_PROXY"]
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+    assert os.environ["HTTP_PROXY"] == "http://127.0.0.1:7897"
+
+
+def test_dotenv_proxy_does_not_override_explicit_env(tmp_path, monkeypatch):
+    from finance_agent.cli import _apply_dotenv_proxy
+
+    (tmp_path / ".env").write_text("HTTPS_PROXY=http://127.0.0.1:7897\n")
+    monkeypatch.setenv("HTTPS_PROXY", "http://explicit:1")  # 显式环境变量优先
+    injected = _apply_dotenv_proxy(tmp_path / ".env")
+    assert injected == []
+    assert os.environ["HTTPS_PROXY"] == "http://explicit:1"
+
+
+def test_dotenv_proxy_no_file_no_injection(tmp_path, monkeypatch):
+    from finance_agent.cli import _apply_dotenv_proxy
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    injected = _apply_dotenv_proxy(tmp_path / ".env")  # 文件不存在
+    assert injected == []
+    assert "HTTPS_PROXY" not in os.environ
 
 
 def test_cli_serve_subprocess_smoke(tmp_path):
