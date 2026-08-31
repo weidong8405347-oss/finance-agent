@@ -1,5 +1,8 @@
 # Handoff：当前状态全景（2026-08-30 收官版）
 
+> **已被 [2026-08-31 版](2026-08-31-prices-eval-first-run.md)取代**（行情源解锁 + /evaluate 真实首跑）。
+> 本文作为历史快照保留。
+
 > 给新会话的唯一入口文档。历史过程见 git log（重设计批次：cf231d5 设计稿 v4 →
 > ecc8202 R1 → e7fc344 R1.5 → b815fcf R2 → 09eb53e R3+R4 → 35b7a8d R5 → bedae58 R6）。
 > 设计文档：`docs/redesign-interaction-orchestration.md`（交互/编排，§5 决策记录全）、
