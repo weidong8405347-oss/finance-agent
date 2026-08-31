@@ -12,12 +12,11 @@ build/
 .env
 config/config.yaml
 
-# 运行期数据
+# 运行期数据（锚定仓库根：勿用裸目录名——曾误伤 src/finance_agent/knowledge/ 源码模块）
 data/
 runs/
-knowledge/
+/knowledge/
 *.db
 *.db-journal
 *.sqlite3
 .DS_Store
-knowledge/
