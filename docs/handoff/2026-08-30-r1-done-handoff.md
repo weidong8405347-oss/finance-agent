@@ -34,14 +34,22 @@ commits：ecc8202(R1) → e7fc344(R1.5 证据完整性) → b815fcf(R2 UI+流式
 - **整改**：StepDeps.knowledge_dir 必填（测试曾污染仓库工作树，真实 run 抓出）；
   usage 容忍 provider 嵌套明细（ValidationError 真实抓出）；knowledge/ 入 .gitignore
 
+## R6（第二轮 grill 裁决批次，commit bedae58）
+
+- 冲突语义收窄（同 event_time 才算冲突）+ resolve_conflict 裁决闭环（工具+事件+人工入口）
+- schema 扩为必填 8 字段 + 可选维度；synthesize step（CIO 研报，证据锚点内联）——
+  真实验证：报告质量达到 deep-research 级（多年份财务序列、客户集中度、证据锚点全覆盖）
+- StooqPricesAdapter（零依赖行情）；EvalReportCard 内联；vitest 装配层测试；
+  docs/how-to-extend.md 五份扩展配方（数据源/工具/step/前端节点/MCP 桥）
+
 ## 下一步候选（backlog，按价值排序）
 
-1. **yfinance 安装**（PyPI 网络当时不通）→ 行情工具可用后估值维度解锁
+1. **行情源在本机网络不可用**（PyPI 装不了 yfinance、stooq 被反爬）——换网络环境即可解锁；
+   或接付费行情 API
 2. **steer**（运行中改方向，Q6 后置项）
-3. **主 agent 对 stalled 研究的重试上限**收紧（观察到自主重试 3 次才停）
-4. **前端组件级测试**（L4 欠账，vitest）
-5. **评估配置的中文补全体验**（/evaluate 配置选择卡的对话式微调）
-6. **INDUSTRY 档案与多实体对比视图**
+3. **冲突人工裁决 UI**（详情页「以此版本为准」按钮——后端 resolve 已就绪，前端未接）
+4. **/evaluate 真实首跑**（需行情源；ReplayEngine 装配已就绪）
+5. **行业档案的图表维度**（industry schema 的时序字段较弱）
 
 ## R1.5（验收事故整改，commit e7fc344）
 
