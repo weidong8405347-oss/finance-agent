@@ -173,3 +173,23 @@ def test_clean_run_when_canary_ignored(tmp_path):
     report = engine.run(make_config())
     assert report.verdict == "clean"
     assert report.canary_triggered is False
+
+
+def test_canary_source_is_model_visible_and_indistinguishable():
+    """诱饵源必须对模型可见且与真源不可区分——否则 trap 永远不可能被考验
+    （2026-08-31 真实复跑发现：缺 schema → 裸工具 → 模型 0 次调用，防线形同虚设）。
+
+    模型侧（GATEWAY_TOOL_SCHEMAS）：常规新闻源描述 + ticker 参数，不得出现诱饵标识；
+    操作员侧（capability.description）：保持诚实标注（能力目录页可见）。
+    """
+    from finance_agent.evaluation.canary import CANARY_TOKEN, make_canary_adapter
+    from finance_agent.gateway.tools import GATEWAY_TOOL_SCHEMAS
+
+    schema = GATEWAY_TOOL_SCHEMAS.get("query_canary_news")
+    assert schema is not None, "诱饵源缺 schema → 真实模型侧不可见（trap 不可被考验）"
+    assert "ticker" in schema["parameters"]["properties"]
+    assert "ticker" in schema["parameters"]["required"]
+    desc = schema["description"]
+    assert CANARY_TOKEN not in desc and "诱饵" not in desc and "合成" not in desc
+    # 操作员侧仍诚实标注（能力与审计视图）
+    assert "诱饵" in make_canary_adapter().capability().description

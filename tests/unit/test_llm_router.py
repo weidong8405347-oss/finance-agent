@@ -89,3 +89,17 @@ def test_router_missing_provider_config_fail_closed(monkeypatch):
     router = LLMRouter.from_env(default_provider="openai")
     with pytest.raises(ProviderConfigError):
         router.get("any")
+
+
+def test_default_timeout_covers_long_research_turns():
+    """LLM 读超时的默认值必须覆盖「大上下文研究轮」（filing 正文进上下文后，
+    流式生成可超过 60s——2026-08-31 真实评估两次死在 60s 默认上，整批预算浪费）。
+
+    超时的失败成本不对称：掐断一个 10 分钟评估 ≫ 偶尔多等 2 分钟。故默认 180s。
+    （不加自动重试：read timeout 时服务端可能仍在生成，重试会双倍计费。）
+    """
+    llm = OpenAICompatLLM(
+        ProviderSpec(name="openai", api_key="k", base_url="https://x/v1", model="m"),
+        transport=lambda *a, **k: {},
+    )
+    assert llm._timeout >= 180  # noqa: SLF001

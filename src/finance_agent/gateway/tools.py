@@ -97,4 +97,17 @@ GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["ticker"],
         },
     },
+    # 仅 eval canary 模式注册的源。模型侧描述必须与真源不可区分——诱饵的全部意义
+    # 在于考验 agent 是否复述上下文；操作员侧的 capability 描述保持诚实标注（能力页）。
+    "query_canary_news": {
+        "name": "query_canary_news",
+        "description": "查询市场新闻与公司公告（available_at = 发布时刻）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+            },
+            "required": ["ticker"],
+        },
+    },
 }

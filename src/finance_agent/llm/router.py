@@ -85,7 +85,7 @@ class OpenAICompatLLM:
         *,
         transport: Transport | None = None,
         tool_schemas: dict[str, dict] | None = None,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
     ):
         self.spec = spec
         self._transport = transport or self._httpx_transport
