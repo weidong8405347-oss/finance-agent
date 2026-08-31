@@ -20,6 +20,24 @@ Transport = Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]]
 
 _KNOWN_PROVIDERS = ("openai", "anthropic", "zhipuai", "deepseek")
 
+#: LLM 读超时默认值（大上下文研究轮流式生成可超 60s；失败成本不对称，宁等勿断）
+DEFAULT_LLM_TIMEOUT = 180.0
+#: 读超时环境变量覆盖（from_env/from_pi 均识别；显式 timeout 参数优先）
+TIMEOUT_ENV_VAR = "FINANCE_AGENT_LLM_TIMEOUT"
+
+
+def _resolve_timeout(explicit: float | None, env: Mapping[str, str]) -> float:
+    """显式参数 > 环境变量 > 默认值。环境变量非法值 fail-loud（配置错误不该被静默吞掉）。"""
+    if explicit is not None:
+        return explicit
+    raw = env.get(TIMEOUT_ENV_VAR)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_LLM_TIMEOUT
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{TIMEOUT_ENV_VAR}={raw!r} 不是合法秒数") from None
+
 
 class ProviderConfigError(Exception):
     """provider 三件套未配置齐全（fail-closed）。"""
@@ -85,7 +103,7 @@ class OpenAICompatLLM:
         *,
         transport: Transport | None = None,
         tool_schemas: dict[str, dict] | None = None,
-        timeout: float = 180.0,
+        timeout: float = DEFAULT_LLM_TIMEOUT,
     ):
         self.spec = spec
         self._transport = transport or self._httpx_transport
@@ -249,10 +267,12 @@ class LLMRouter:
         *,
         default_provider: str,
         role_map: dict[str, str] | None = None,
+        timeout: float = DEFAULT_LLM_TIMEOUT,
     ):
         self._specs = specs
         self._default = default_provider
         self._role_map = role_map or {}
+        self._timeout = timeout
 
     @classmethod
     def from_env(
@@ -261,6 +281,7 @@ class LLMRouter:
         default_provider: str = "openai",
         role_map: dict[str, str] | None = None,
         env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> LLMRouter:
         if env is None:
             env = {**_read_dotenv(), **os.environ}  # .env 打底，环境变量优先
@@ -274,7 +295,12 @@ class LLMRouter:
             )
             if key and base and model:
                 specs[name] = ProviderSpec(name=name, api_key=key, base_url=base.rstrip("/"), model=model)
-        return cls(specs, default_provider=default_provider, role_map=role_map)
+        return cls(
+            specs,
+            default_provider=default_provider,
+            role_map=role_map,
+            timeout=_resolve_timeout(timeout, env),
+        )
 
     @classmethod
     def from_pi(
@@ -283,6 +309,7 @@ class LLMRouter:
         default_provider: str = "novita-gpt",
         role_map: dict[str, str] | None = None,
         pi_dir: Path | None = None,
+        timeout: float | None = None,
     ) -> LLMRouter:
         """直接复用 pi 的 provider 配置（~/.pi/agent/）作为单一真相源。
 
@@ -311,7 +338,12 @@ class LLMRouter:
                         name=f"{name}:{m['id']}", api_key=key, base_url=base, model=m["id"]
                     )
         default_role_map = {"fast": "dashscope:kimi-k3"}
-        return cls(specs, default_provider=default_provider, role_map=role_map or default_role_map)
+        return cls(
+            specs,
+            default_provider=default_provider,
+            role_map=role_map or default_role_map,
+            timeout=_resolve_timeout(timeout, os.environ),
+        )
 
     def providers(self) -> list[str]:
         """已注册的 provider/别名键清单。"""
@@ -327,4 +359,4 @@ class LLMRouter:
             raise ProviderConfigError(
                 f"provider {provider!r} 未配置（需要 {provider.upper()}_API_KEY/BASE_URL/MODEL 三件套）"
             )
-        return OpenAICompatLLM(spec, tool_schemas=tool_schemas)
+        return OpenAICompatLLM(spec, tool_schemas=tool_schemas, timeout=self._timeout)

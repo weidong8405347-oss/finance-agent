@@ -91,6 +91,54 @@ def test_router_missing_provider_config_fail_closed(monkeypatch):
         router.get("any")
 
 
+def _three_piece_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-a")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://a/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-a")
+    monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})  # 隔离真实 .env
+
+
+def test_router_timeout_default_when_env_absent(monkeypatch):
+    _three_piece_env(monkeypatch)
+    monkeypatch.delenv("FINANCE_AGENT_LLM_TIMEOUT", raising=False)
+    router = LLMRouter.from_env(default_provider="openai")
+    assert router.get()._timeout == 180.0  # noqa: SLF001
+
+
+def test_router_timeout_env_override(monkeypatch):
+    _three_piece_env(monkeypatch)
+    monkeypatch.setenv("FINANCE_AGENT_LLM_TIMEOUT", "45")
+    router = LLMRouter.from_env(default_provider="openai")
+    assert router.get()._timeout == 45.0  # noqa: SLF001
+
+
+def test_router_timeout_explicit_param_beats_env(monkeypatch):
+    _three_piece_env(monkeypatch)
+    monkeypatch.setenv("FINANCE_AGENT_LLM_TIMEOUT", "45")
+    router = LLMRouter.from_env(default_provider="openai", timeout=300.0)
+    assert router.get()._timeout == 300.0  # noqa: SLF001
+
+
+def test_router_timeout_invalid_env_fails_loud(monkeypatch):
+    _three_piece_env(monkeypatch)
+    monkeypatch.setenv("FINANCE_AGENT_LLM_TIMEOUT", "soon")
+    with pytest.raises(ValueError, match="FINANCE_AGENT_LLM_TIMEOUT"):
+        LLMRouter.from_env(default_provider="openai")
+
+
+def test_router_from_pi_timeout_env_override(monkeypatch, tmp_path):
+    import json
+
+    (tmp_path / "models.json").write_text(json.dumps({"providers": {
+        "pa": {"api": "openai-completions", "baseUrl": "https://pa/v1",
+               "models": [{"id": "gpt-x"}]},
+    }}))
+    (tmp_path / "auth.json").write_text(json.dumps({"pa": {"key": "sk-pa"}}))
+    monkeypatch.setenv("FINANCE_AGENT_LLM_TIMEOUT", "90")
+    router = LLMRouter.from_pi(pi_dir=tmp_path)
+    assert router.get("pa")._timeout == 90.0  # noqa: SLF001
+
+
 def test_default_timeout_covers_long_research_turns():
     """LLM 读超时的默认值必须覆盖「大上下文研究轮」（filing 正文进上下文后，
     流式生成可超过 60s——2026-08-31 真实评估两次死在 60s 默认上，整批预算浪费）。
