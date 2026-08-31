@@ -41,7 +41,10 @@ from ..eventstore.events import (
 )
 from ..eventstore.store import EventStore
 from ..harness.approvals import ApprovalService
+from ..harness.manifest import RunManifest, RunMode
+from ..knowledge.models import Fact
 from ..knowledge.store import BitemporalStore
+from ..knowledge.writer import ProfileWriter
 from .sse import iter_sse_events
 
 logger = logging.getLogger("finance_agent.api")
@@ -50,6 +53,14 @@ logger = logging.getLogger("finance_agent.api")
 class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
+
+
+class ResolveConflictRequest(BaseModel):
+    """详情页人工裁决请求：keep_fact_id = 「以此为准」的版本（详情页/版本链上的 fact_id）。"""
+
+    field: str
+    keep_fact_id: str
+    note: str | None = None
 
 
 def create_app(
@@ -77,6 +88,7 @@ def create_app(
     knowledge_path = Path(knowledge_dir)
     reports_path = Path(reports_dir)
     approvals = approvals or ApprovalService(events)
+    kb_writer = ProfileWriter(store=kb, events=events)  # 唯一写入者（铁律 3）：人工裁决也走单写者
 
     # ---------------- Sessions ----------------
 
@@ -90,7 +102,8 @@ def create_app(
         return [
             _session_summary(events, r[0], r[2], r[3])
             for r in rows
-            if r[0] not in child_ids
+            # kb-* 是知识维护审计 run（人工裁决等），不是会话
+            if r[0] not in child_ids and not r[0].startswith("kb-")
         ]
 
     @app.get("/api/sessions/{run_id}/events")
@@ -177,6 +190,7 @@ def create_app(
             "namespace": namespace,
             "facts": {
                 field: {
+                    "fact_id": rec.fact_id,
                     "value": rec.value,
                     "event_time": rec.event_time.isoformat() if rec.event_time else None,
                     "knowledge_time": rec.knowledge_time.isoformat(),
@@ -187,6 +201,52 @@ def create_app(
                 for field, rec in sorted(profile.items())
             },
         }
+
+    @app.post("/api/knowledge/{kind}/{entity_id}/resolve")
+    def resolve_field_conflict(
+        kind: str, entity_id: str, req: ResolveConflictRequest
+    ) -> dict[str, Any]:
+        """人工裁决字段的开放冲突（详情页「以此版本为准」按钮的后端入口）。
+
+        - keep 指向非最新版本 → 经 ProfileWriter 补写一条同值新版本（append-only，
+          证据/事件时点沿用被裁决版本），让「以此为准」落到当前投影；
+        - 随后清除该字段全部竞争版本标记，落 fact/conflict_resolved（可审计）；
+        - 审计事件落 kb-<kind>-<entity_id> 维护 run（非会话，sessions 列表排除 kb-*）；
+        - 仅 prod 命名空间：eval 命名空间的裁决权属于回放纪律，不升人工入口（铁律 6）。
+        """
+        history = kb.history(kind, entity_id, req.field)
+        if not history:
+            raise HTTPException(status_code=404, detail=f"实体 {kind}:{entity_id} 无字段 {req.field}")
+        kept = next((r for r in history if r.fact_id == req.keep_fact_id), None)
+        if kept is None:
+            raise HTTPException(
+                status_code=404, detail=f"keep_fact_id {req.keep_fact_id} 不在 {req.field} 的版本链中"
+            )
+        run = RunManifest(run_id=f"kb-{kind}-{entity_id}", mode=RunMode.LIVE)
+        new_fact_id: str | None = None
+        if kept.fact_id != history[-1].fact_id:
+            new_fact_id = kb_writer.write_fact(
+                Fact(
+                    entity_kind=kind,
+                    entity_id=entity_id,
+                    field=req.field,
+                    value=kept.value,
+                    event_time=kept.event_time,
+                    knowledge_time=datetime.now(UTC),
+                    evidence_ids=kept.evidence_ids,
+                    run_id=run.run_id,
+                ),
+                run=run,
+            )
+        cleared = kb_writer.resolve_conflict(
+            kind,
+            entity_id,
+            req.field,
+            keep_fact_id=req.keep_fact_id,
+            note=req.note or f"人工裁决：以 {req.keep_fact_id} 为准",
+            run=run,
+        )
+        return {"resolved": req.field, "cleared": cleared, "new_fact_id": new_fact_id}
 
     # ---------------- Chat（唯一写入口） ----------------
 
@@ -332,6 +392,7 @@ def create_app(
             history = kb.history(kind, entity_id, field, namespace=namespace)
             out[field] = [
                 {
+                    "fact_id": r.fact_id,
                     "event_time": r.event_time.isoformat() if r.event_time else None,
                     "knowledge_time": r.knowledge_time.isoformat(),
                     "value": r.value,

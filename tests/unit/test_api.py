@@ -77,6 +77,35 @@ def make_client(tmp_path):
     return TestClient(app)
 
 
+def conflict_seeded(tmp_path):
+    """同一 event_time 的两个竞争版本（100 vs 200）→ revenue_fy 处于开放冲突。"""
+    kb = BitemporalStore(tmp_path / "kb.db")
+    events = EventStore(tmp_path / "events.db")
+    decisions = DecisionStore(tmp_path / "decisions.db")
+    for eid, quote in (("ev-1", "Total revenue 100"), ("ev-2", "Total revenue 200")):
+        kb.add_evidence(
+            Evidence(
+                evidence_id=eid,
+                source_id="edgar",
+                url=f"https://sec.gov/{eid}",
+                verbatim_quote=quote,
+                retrieved_at=NOW,
+                available_at=OLD,
+                pit_grade=PitGrade.A,
+            )
+        )
+    for value, eid, known in ((100, "ev-1", OLD), (200, "ev-2", NOW)):
+        kb.assert_fact(
+            Fact(
+                entity_kind="stock", entity_id="AAPL", field="revenue_fy", value=value,
+                event_time=datetime(2023, 12, 31, tzinfo=UTC),
+                knowledge_time=known, evidence_ids=[eid], run_id="run-1",
+            )
+        )
+    app = create_app(kb=kb, events=events, decisions=decisions, evals_dir=tmp_path / "evals")
+    return TestClient(app), kb, events
+
+
 def test_sessions_list_and_events(tmp_path):
     client = make_client(tmp_path)
     runs = client.get("/api/sessions").json()
@@ -130,3 +159,68 @@ def test_decisions_list(tmp_path):
 def test_evaluations_empty_dir(tmp_path):
     client = make_client(tmp_path)
     assert client.get("/api/evaluations").json() == []
+
+
+# ---------------- 冲突人工裁决（backlog #2：详情页「以此版本为准」→ 版本链落裁决事件） ----------------
+
+
+def test_resolve_conflict_endpoint_keeps_latest(tmp_path):
+    client, _kb, events = conflict_seeded(tmp_path)
+    facts = client.get("/api/knowledge/stock/AAPL").json()["facts"]
+    assert facts["revenue_fy"]["conflict"] is True
+    keep = facts["revenue_fy"]["fact_id"]  # 投影带 fact_id（裁决锚点）
+
+    resp = client.post(
+        "/api/knowledge/stock/AAPL/resolve",
+        json={"field": "revenue_fy", "keep_fact_id": keep},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["resolved"] == "revenue_fy" and body["cleared"] == 1
+    assert body["new_fact_id"] is None  # keep 最新版 → 无需补写
+
+    after = client.get("/api/knowledge/stock/AAPL").json()["facts"]["revenue_fy"]
+    assert after["conflict"] is False and after["value"] == 200
+
+    # 版本链落裁决事件：kb-* 维护 run 可审计，但不进会话列表
+    resolutions = [e for e in events.read("kb-stock-AAPL") if e.type == "fact/conflict_resolved"]
+    assert len(resolutions) == 1
+    assert resolutions[0].payload["keep_fact_id"] == keep
+    assert resolutions[0].payload["note"]
+    sessions = [r["run_id"] for r in client.get("/api/sessions").json()]
+    assert "kb-stock-AAPL" not in sessions
+
+
+def test_resolve_conflict_keeps_older_version_rewrites_latest(tmp_path):
+    """keep 非最新版本 → 经单写者 append-only 补写同值新版本，投影回到被裁决值。"""
+    client, kb, _events = conflict_seeded(tmp_path)
+    v1 = kb.history("stock", "AAPL", "revenue_fy")[0]
+
+    resp = client.post(
+        "/api/knowledge/stock/AAPL/resolve",
+        json={"field": "revenue_fy", "keep_fact_id": v1.fact_id, "note": "旧版才对"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["new_fact_id"] is not None
+    assert body["cleared"] == 2  # v2 的竞争标记 + 补写引发的标记，一并清除
+
+    after = client.get("/api/knowledge/stock/AAPL").json()["facts"]["revenue_fy"]
+    assert after["value"] == 100 and after["conflict"] is False and after["version"] == 3
+    hist = kb.history("stock", "AAPL", "revenue_fy")
+    assert len(hist) == 3
+    assert hist[-1].value == 100 and hist[-1].evidence_ids == v1.evidence_ids  # 证据沿用被裁决版本
+
+
+def test_resolve_conflict_unknown_target_returns_404(tmp_path):
+    client, _kb, _events = conflict_seeded(tmp_path)
+    r1 = client.post(
+        "/api/knowledge/stock/AAPL/resolve",
+        json={"field": "revenue_fy", "keep_fact_id": "fact-nope"},
+    )
+    assert r1.status_code == 404 and "版本链" in r1.json()["detail"]
+    r2 = client.post(
+        "/api/knowledge/stock/AAPL/resolve",
+        json={"field": "nope", "keep_fact_id": "whatever"},
+    )
+    assert r2.status_code == 404 and "nope" in r2.json()["detail"]

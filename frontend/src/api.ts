@@ -71,6 +71,7 @@ export interface Capabilities {
 }
 
 export interface SeriesPoint {
+  fact_id: string;
   event_time: string | null;
   knowledge_time: string;
   value: unknown;
@@ -96,6 +97,7 @@ export interface EvidenceJson {
 }
 
 export interface FactJson {
+  fact_id: string;
   value: unknown;
   event_time: string | null;
   knowledge_time: string;
@@ -167,6 +169,20 @@ export const api = {
     get<EntityProfile>(
       `/api/knowledge/${kind}/${id}` + (asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""),
     ),
+  resolveConflict: async (
+    kind: string, id: string, field: string, keepFactId: string, note?: string,
+  ) => {
+    const resp = await fetch(`/api/knowledge/${kind}/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field, keep_fact_id: keepFactId, note }),
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      throw new Error(detail.detail ?? `resolveConflict: ${resp.status}`);
+    }
+    return (await resp.json()) as { resolved: string; cleared: number; new_fact_id: string | null };
+  },
   decisions: () => get<DecisionCardJson[]>("/api/decisions"),
   evaluations: () => get<EvalSummary[]>("/api/evaluations"),
   pendingApprovals: () => get<ApprovalRow[]>("/api/approvals/pending"),

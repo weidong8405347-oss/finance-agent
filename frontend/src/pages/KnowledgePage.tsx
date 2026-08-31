@@ -1,6 +1,6 @@
 // Knowledge 页（R3 重做）：全部档案列表（点击选中 → 摘要联动）+ 详情页
 // （facts 证据锚点 / thesis / as_of 时光机 / HTML 存档版本查看器）。
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api, ArchiveRow, CompareItem, EntityProfile, EntityRow, SeriesPoint } from "../api";
 import { BarCompare, LineChart } from "../components/MiniChart";
 
@@ -201,6 +201,69 @@ function FactCharts({ kind, id, facts }: { kind: string; id: string; facts: stri
   );
 }
 
+// ---------- 冲突裁决面板（详情页）：以此版本为准 + 版本链展开 ----------
+function ConflictResolver({ kind, id, field, factId, onResolved }: {
+  kind: string; id: string; field: string; factId: string; onResolved: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);  // 正在裁决的 fact_id
+  const [versions, setVersions] = useState<SeriesPoint[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const resolve = async (keepFactId: string) => {
+    setBusy(keepFactId);
+    setError(null);
+    try {
+      await api.resolveConflict(kind, id, field, keepFactId, "详情页人工裁决");
+      onResolved();  // 重载投影：冲突标记清除、裁决值落地
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  };
+  const toggleVersions = () => {
+    if (versions) { setVersions(null); return; }
+    api.series(kind, id, [field])
+      .then((r) => setVersions(r.fields[field] ?? []))
+      .catch(() => setVersions([]));
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] text-amber-700">同一事件时点出现不同值，需人工裁决</span>
+        <button disabled={busy !== null} onClick={() => resolve(factId)}
+          className="rounded border border-amber-300 bg-white px-2 py-0.5 text-[11px] text-amber-800 hover:bg-amber-100 disabled:opacity-40">
+          {busy === factId ? "裁决中…" : "以此版本为准"}
+        </button>
+        <button onClick={toggleVersions} className="text-[11px] text-neutral-500 hover:underline">
+          {versions ? "收起版本链" : "查看版本链"}
+        </button>
+      </div>
+      {error && <div className="text-[11px] text-red-600">裁决失败：{error}</div>}
+      {versions && (
+        <div className="space-y-1 rounded border border-neutral-200 bg-white p-2">
+          {versions.map((v) => (
+            <div key={v.fact_id} className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+              <span className="text-neutral-400">v{v.version}</span>
+              <span className="max-w-48 truncate" title={JSON.stringify(v.value)}>
+                {JSON.stringify(v.value)}
+              </span>
+              <span className="text-neutral-400">event {v.event_time?.slice(0, 10) ?? "—"}</span>
+              <span className="text-neutral-400">known {v.knowledge_time.slice(0, 10)}</span>
+              {v.conflict && <span className="text-amber-600">⚠竞争</span>}
+              <button disabled={busy !== null} onClick={() => resolve(v.fact_id)}
+                className="ml-auto rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] hover:border-amber-400 disabled:opacity-40">
+                {busy === v.fact_id ? "…" : "以此版本为准"}
+              </button>
+            </div>
+          ))}
+          {versions.length === 0 && <div className="text-[11px] text-neutral-400">（版本链为空）</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- 详情页 ----------
 function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: () => void }) {
   const [profile, setProfile] = useState<EntityProfile | null>(null);
@@ -250,22 +313,32 @@ function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: 
               </thead>
               <tbody>
                 {facts.filter(([f]) => f !== "thesis").map(([field, f]) => (
-                  <tr key={field} className="border-b border-neutral-100">
-                    <td className="py-1.5 font-mono">{field}</td>
-                    <td className="max-w-40 truncate py-1.5 font-mono"
-                      title={f.evidence?.map((ev) =>
-                        `${ev.evidence_id} · ${ev.source_id}\n「${ev.verbatim_quote}」\navailable ${ev.available_at} · PIT-${ev.pit_grade}`
-                      ).join("\n\n") || "无证据"}
-                    >
-                      <span className="border-b border-dotted border-neutral-400">
-                        {JSON.stringify(f.value)}
-                      </span>
-                      {f.conflict && <span className="ml-1 text-amber-600">⚠冲突</span>}
-                    </td>
-                    <td className="py-1.5 font-mono text-neutral-500">{f.event_time?.slice(0, 10) ?? "—"}</td>
-                    <td className="py-1.5 font-mono text-neutral-500">{f.knowledge_time.slice(0, 10)}</td>
-                    <td className="py-1.5 font-mono text-neutral-400">v{f.version}</td>
-                  </tr>
+                  <Fragment key={field}>
+                    <tr className="border-b border-neutral-100">
+                      <td className="py-1.5 font-mono">{field}</td>
+                      <td className="max-w-40 truncate py-1.5 font-mono"
+                        title={f.evidence?.map((ev) =>
+                          `${ev.evidence_id} · ${ev.source_id}\n「${ev.verbatim_quote}」\navailable ${ev.available_at} · PIT-${ev.pit_grade}`
+                        ).join("\n\n") || "无证据"}
+                      >
+                        <span className="border-b border-dotted border-neutral-400">
+                          {JSON.stringify(f.value)}
+                        </span>
+                        {f.conflict && <span className="ml-1 text-amber-600">⚠冲突</span>}
+                      </td>
+                      <td className="py-1.5 font-mono text-neutral-500">{f.event_time?.slice(0, 10) ?? "—"}</td>
+                      <td className="py-1.5 font-mono text-neutral-500">{f.knowledge_time.slice(0, 10)}</td>
+                      <td className="py-1.5 font-mono text-neutral-400">v{f.version}</td>
+                    </tr>
+                    {f.conflict && (
+                      <tr className="border-b border-neutral-100">
+                        <td colSpan={5} className="bg-amber-50/40 px-3 py-2">
+                          <ConflictResolver kind={kind} id={id} field={field} factId={f.fact_id}
+                            onResolved={() => load(asOf ? `${asOf}T23:59:59Z` : undefined)} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

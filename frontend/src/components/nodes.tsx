@@ -1,5 +1,5 @@
 // 对话流节点渲染器：只消费 assemble() 产出的节点（投影），不碰原始事件。
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { ChatNode, ProfileCardData, StepNode, outcomeLabel } from "../lib/assemble";
 import { Markdown } from "../lib/markdown";
 import { api } from "../api";
@@ -249,6 +249,37 @@ function ApprovalCard({ node }: { node: Extract<ChatNode, { kind: "approval" }> 
   );
 }
 
+// ---------- 冲突裁决卡（fact/conflict_raised | resolved；详情页人工裁决或研究轮自动裁决） ----------
+function ConflictNode({ node }: { node: Extract<ChatNode, { kind: "conflict" }> }) {
+  const raised = node.state === "raised";
+  const goKnowledge = (e: MouseEvent) => {
+    e.preventDefault();
+    window.dispatchEvent(new CustomEvent("nav", { detail: "knowledge" }));
+  };
+  return (
+    <div className={`rounded-lg border px-3 py-1.5 text-xs ${
+      raised ? "border-amber-300 bg-amber-50" : "border-green-200 bg-green-50/60"
+    }`}>
+      <span className={`font-semibold ${raised ? "text-amber-800" : "text-green-800"}`}>
+        {raised ? "⚠ 字段冲突待裁决" : "✓ 冲突已裁决"}
+      </span>
+      <span className="ml-2 font-mono text-neutral-600">
+        {node.entity ? `${node.entity} · ` : ""}{node.field}
+      </span>
+      {raised ? (
+        <a className="ml-2 text-blue-700 hover:underline" href="#knowledge" onClick={goKnowledge}>
+          去裁决 →
+        </a>
+      ) : (
+        <span className="ml-2 text-neutral-500">
+          {node.note ?? "已清除竞争版本标记"}
+          {node.cleared != null ? `（清除 ${node.cleared} 项）` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ---------- 其余 ----------
 function ErrorNode({ node }: { node: Extract<ChatNode, { kind: "error" }> }) {
   return (
@@ -298,6 +329,7 @@ export function ChatNodeView({ node }: { node: ChatNode }) {
     case "command": return <CommandCard node={node} />;
     case "report": return <ReportFoldCard card={node} />;
     case "approval": return <ApprovalCard node={node} />;
+    case "conflict": return <ConflictNode node={node} />;
     case "error": return <ErrorNode node={node} />;
     case "turnfold": return <TurnFold node={node} />;
     default: return <DebugNode node={node} />;

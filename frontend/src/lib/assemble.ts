@@ -17,6 +17,7 @@ export type ChatNode =
   | { kind: "command"; key: string; commandId: string; name: string; raw: string; outcome?: string; summary?: string; steps: StepNode[]; reports: ReportCard[] }
   | { kind: "report"; key: string; title: string; summary: string; flags: string[]; artifact: string }
   | { kind: "approval"; key: string; approvalId: string; op: string; detail: string; state: "pending" | "approved" | "rejected" | "waived"; basis?: string }
+  | { kind: "conflict"; key: string; entity?: string; field: string; state: "raised" | "resolved"; note?: string; cleared?: number; keepFactId?: string }
   | { kind: "error"; key: string; label: string; reason: string }
   | { kind: "debug"; key: string; type: string; payload: string; seq: number }
   | { kind: "turnfold"; key: string; turn: number; tools: Extract<ChatNode, { kind: "tool" }>[]; tokens: number | null; model?: string };
@@ -70,6 +71,7 @@ export function assemble(events: EventRow[]): ChatNode[] {
   const toolByCallId = new Map<string, Extract<ChatNode, { kind: "tool" }>>();
   const commandById = new Map<string, Extract<ChatNode, { kind: "command" }>>();
   const approvalById = new Map<string, Extract<ChatNode, { kind: "approval" }>>();
+  const conflictByKey = new Map<string, Extract<ChatNode, { kind: "conflict" }>>();
   const stepByChildRun = new Map<string, StepNode>();
   // 每个 (turn,step) 的最终 assistant/message 到达后，其 chunk 缓冲作废
   const finalizedSteps = new Set<string>();
@@ -206,6 +208,44 @@ export function assemble(events: EventRow[]): ChatNode[] {
           kind: "approval", key: `aw${e.seq}`, approvalId: "", op: String(p.op ?? ""),
           detail: "", state: "waived", basis: String(p.basis ?? ""),
         });
+        break;
+      }
+      case "fact/conflict_raised":
+      case "fact/conflict_resolved": {
+        // 冲突裁决卡：raised → resolved 同节点状态迁移（同实体同字段）；
+        // 裁决后再冲突则回到 raised（复审可见）。
+        const field = String(p.field ?? "");
+        if (!field) break;
+        const entity = p.entity ? String(p.entity) : undefined;
+        const key = `cf-${entity ?? "-"}:${field}`;
+        const resolved = e.type === "fact/conflict_resolved";
+        const existing = conflictByKey.get(key);
+        if (existing) {
+          existing.state = resolved ? "resolved" : "raised";
+          if (resolved) {
+            existing.note = p.note ? String(p.note) : undefined;
+            existing.cleared = Number(p.cleared ?? 0);
+            existing.keepFactId = p.keep_fact_id ? String(p.keep_fact_id) : undefined;
+          } else {
+            existing.note = undefined;
+            existing.cleared = undefined;
+            existing.keepFactId = undefined;
+          }
+        } else {
+          const node: Extract<ChatNode, { kind: "conflict" }> = {
+            kind: "conflict", key, entity, field,
+            state: resolved ? "resolved" : "raised",
+            ...(resolved
+              ? {
+                  note: p.note ? String(p.note) : undefined,
+                  cleared: Number(p.cleared ?? 0),
+                  keepFactId: p.keep_fact_id ? String(p.keep_fact_id) : undefined,
+                }
+              : {}),
+          };
+          conflictByKey.set(key, node);
+          nodes.push(node);
+        }
         break;
       }
       case "turn/error":

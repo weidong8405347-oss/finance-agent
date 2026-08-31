@@ -66,4 +66,48 @@ describe("assemble", () => {
     ]);
     expect(nodes[0]).toMatchObject({ kind: "approval", state: "rejected" });
   });
+
+  it("fact/conflict_raised → 冲突节点（raised）", () => {
+    const nodes = assemble([
+      ev("fact/conflict_raised", { field: "revenue_fy", entity: "stock:AAPL", fact_id: "f2", supersedes: "f1" }),
+    ]);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      kind: "conflict", state: "raised", field: "revenue_fy", entity: "stock:AAPL",
+    });
+  });
+
+  it("conflict_raised → conflict_resolved 同节点状态迁移（附裁决信息）", () => {
+    const nodes = assemble([
+      ev("fact/conflict_raised", { field: "revenue_fy", entity: "stock:AAPL" }),
+      ev("fact/conflict_resolved", {
+        field: "revenue_fy", entity: "stock:AAPL",
+        keep_fact_id: "f2", note: "以 v2 为准", cleared: 2, namespace: "prod",
+      }),
+    ]);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      kind: "conflict", state: "resolved", note: "以 v2 为准", cleared: 2, keepFactId: "f2",
+    });
+  });
+
+  it("无前置 raised 的 conflict_resolved → 独立已裁决节点；不同实体同字段互不合并", () => {
+    const nodes = assemble([
+      ev("fact/conflict_resolved", { field: "revenue_fy", entity: "stock:BE", cleared: 1 }),
+      ev("fact/conflict_raised", { field: "revenue_fy", entity: "stock:AAPL" }),
+    ]);
+    expect(nodes).toHaveLength(2);
+    expect(nodes[0]).toMatchObject({ kind: "conflict", state: "resolved", entity: "stock:BE" });
+    expect(nodes[1]).toMatchObject({ kind: "conflict", state: "raised", entity: "stock:AAPL" });
+  });
+
+  it("裁决后同字段再次冲突 → 节点回到 raised（复审可见）", () => {
+    const nodes = assemble([
+      ev("fact/conflict_raised", { field: "margin", entity: "stock:BE" }),
+      ev("fact/conflict_resolved", { field: "margin", entity: "stock:BE", cleared: 1 }),
+      ev("fact/conflict_raised", { field: "margin", entity: "stock:BE" }),
+    ]);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({ kind: "conflict", state: "raised" });
+  });
 });
