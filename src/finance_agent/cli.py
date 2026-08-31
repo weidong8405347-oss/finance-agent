@@ -32,9 +32,11 @@ def _build(
     if register_adapters:
         from .gateway.adapters.edgar import EdgarAdapter
         from .gateway.adapters.prices import YFinancePricesAdapter
+        from .gateway.adapters.stooq import StooqPricesAdapter
 
         gateway.register(EdgarAdapter())
         gateway.register(YFinancePricesAdapter())
+        gateway.register(StooqPricesAdapter())
     manifest = RunManifest(run_id="live-cli", mode=RunMode.LIVE)
     loop = ResearchLoop(
         store=kb,
@@ -115,6 +117,7 @@ def build_orchestrator(data_dir: Path):
     from .decision.store import DecisionStore
     from .gateway.adapters.edgar import EdgarAdapter, fetch_filing_text
     from .gateway.adapters.prices import YFinancePricesAdapter
+    from .gateway.adapters.stooq import StooqPricesAdapter
     from .harness.approvals import ApprovalService
     from .main_agent import MainAgent
 
@@ -126,6 +129,7 @@ def build_orchestrator(data_dir: Path):
     gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
     gateway.register(EdgarAdapter())
     gateway.register(YFinancePricesAdapter())
+    gateway.register(StooqPricesAdapter())
     decisions = DecisionService(kb=kb, decisions=DecisionStore(data_dir / "decisions.db"), events=events)
     approvals = ApprovalService(events)
     evals_dir = data_dir / "evals"
@@ -144,7 +148,9 @@ def build_orchestrator(data_dir: Path):
         for t in cfg.tickers:
             records += [
                 r.payload
-                for r in gateway.query("prices", {"ticker": t, "start": "2000-01-01", "end": "2100-01-01"})
+                for r in gateway.query(
+                    "prices_stooq", {"ticker": t, "start": "2000-01-01", "end": "2100-01-01"}
+                )
             ]
 
         def gateway_factory(as_of, run_id):
@@ -154,6 +160,7 @@ def build_orchestrator(data_dir: Path):
             )
             g.register(EdgarAdapter())
             g.register(YFinancePricesAdapter())
+            g.register(StooqPricesAdapter())
             return g
 
         engine = ReplayEngine(
@@ -167,7 +174,16 @@ def build_orchestrator(data_dir: Path):
             gateway_factory=gateway_factory,
         )
         report = engine.run(cfg, eval_run_id=child_run_id)
-        return {"verdict": report.verdict, "eval_run_id": report.eval_run_id}
+        return {
+            "verdict": report.verdict,
+            "eval_run_id": report.eval_run_id,
+            "mean_net_return": report.aggregate.mean_net_return,
+            "kb_delta": report.aggregate.kb_delta,
+            "leakage_events": report.leakage_events,
+            "n_complete": report.aggregate.n_complete,
+            "hit_rate": report.aggregate.hit_rate,
+            "report_path": str(evals_dir / report.eval_run_id / "report.json"),
+        }
 
     deps = StepDeps(
         events=events,
@@ -356,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 2
-            sources = ["edgar", "prices"]
+            sources = ["edgar", "prices", "prices_stooq"]
             from .gateway.adapters.edgar import fetch_filing_text
 
             fetch_document = fetch_filing_text

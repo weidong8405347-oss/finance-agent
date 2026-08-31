@@ -27,21 +27,21 @@ class CommandSpec:
 COMMANDS: dict[str, CommandSpec] = {
     "research": CommandSpec(
         name="research",
-        summary="S1 深度研究（轮次制）+ 过程评估",
-        usage="/research <标的> [研究目标]",
-        steps=("research", "process_eval"),
+        summary="S1 深度研究（轮次制）→ 报告合成 + 过程评估",
+        usage="/research <标的> [研究目标]（标的可写 industry:<slug> 研究行业）",
+        steps=("research", "synthesize", "process_eval"),
     ),
     "profile": CommandSpec(
         name="profile",
-        summary="S1 研究 → S2 档案更新（thesis 修订）+ 过程评估",
+        summary="S1 研究 → S2 档案更新 → 报告合成 + 过程评估",
         usage="/profile <标的>",
-        steps=("research", "profile_update", "process_eval"),
+        steps=("research", "profile_update", "synthesize", "process_eval"),
     ),
     "decide": CommandSpec(
         name="decide",
-        summary="S1 → S2 → S3 决策卡（risk-review 硬门禁）+ 过程评估",
+        summary="S1 → S2 → 报告合成 → S3 决策卡（risk-review 硬门禁）+ 过程评估",
         usage="/decide <标的>",
-        steps=("research", "profile_update", "decide", "process_eval"),
+        steps=("research", "profile_update", "synthesize", "decide", "process_eval"),
     ),
     "evaluate": CommandSpec(
         name="evaluate",
@@ -64,6 +64,13 @@ class ParsedCommand:
     config: str = ""
     no_approval: bool = False
     extra: dict[str, str] = field(default_factory=dict)
+
+
+def parse_target(raw: str) -> tuple[str, str]:
+    """标的解析：'industry:<slug>' → 行业；否则股票（代码大写归一）。"""
+    if raw.lower().startswith("industry:"):
+        return "industry", raw.split(":", 1)[1].strip().lower()
+    return "stock", raw.upper()
 
 
 def parse_command(text: str) -> ParsedCommand | None:

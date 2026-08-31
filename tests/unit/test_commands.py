@@ -134,6 +134,11 @@ PROFILE_SCRIPT = [
     AssistantReply(content="thesis done"),
 ]
 
+SYNTHESIZE_SCRIPT = [
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="s1", name="query_kb", arguments={})]),
+    AssistantReply(content="## 摘要\n产能 2GW 的标的，证据绑定完成。[ev-1]\n## 业务与模式\n……"),
+]
+
 DECIDE_SCRIPT = [
     AssistantReply(content="", tool_calls=[ToolCall(call_id="d1", name="propose_decision", arguments={
         "action": "watch", "conviction": 2, "horizon": "3m",
@@ -147,7 +152,8 @@ DECIDE_SCRIPT = [
 
 def test_decide_pipeline_runs_all_steps_in_order(tmp_path):
     deps, events, _, _ = make_deps(
-        tmp_path, {"research": [RESEARCH_SCRIPT, PROFILE_SCRIPT, DECIDE_SCRIPT]}
+        tmp_path,
+        {"research": [RESEARCH_SCRIPT, PROFILE_SCRIPT, SYNTHESIZE_SCRIPT, DECIDE_SCRIPT]},
     )
     done = run_command(deps, events, "/decide BE 值得投资吗")
     assert done.payload["outcome"] == "completed"
@@ -155,13 +161,13 @@ def test_decide_pipeline_runs_all_steps_in_order(tmp_path):
     types = [e.type for e in events.read("live-s1")]
     assert types[0] == "command/run"
     assert "command/done" in types
-    # 四个 step 依次启动/结束
+    # 五个 step 依次启动/结束
     starts = [e.payload["step"] for e in events.read("live-s1") if e.type == "step_agent/start"]
-    assert starts == ["research", "profile_update", "decide", "process_eval"]
+    assert starts == ["research", "profile_update", "synthesize", "decide", "process_eval"]
     ends = {e.payload["step"]: e.payload["status"] for e in events.read("live-s1")
             if e.type == "step_agent/end"}
     assert ends == {"research": "completed", "profile_update": "completed",
-                    "decide": "completed", "process_eval": "completed"}
+                    "synthesize": "completed", "decide": "completed", "process_eval": "completed"}
 
 
 def test_child_runs_carry_parent_link(tmp_path):
@@ -187,17 +193,22 @@ def test_progress_bridged_to_parent_stream(tmp_path):
 
 
 def test_report_published_with_artifact(tmp_path):
-    deps, events, _, _ = make_deps(tmp_path, {"research": [RESEARCH_SCRIPT]})
+    deps, events, _, _ = make_deps(
+        tmp_path, {"research": [RESEARCH_SCRIPT, SYNTHESIZE_SCRIPT]}
+    )
     run_command(deps, events, "/research BE")
     pub = [e for e in events.read("live-s1") if e.type == "report/published"]
-    assert pub, "研究完成应发布 report/published（ResearchFoldCard 数据源）"
+    assert pub, "synthesize 应发布 report/published（ResearchFoldCard 数据源）"
+    assert pub[0].payload["kind"] == "research_report"
     artifact = Path(pub[0].payload["artifact_path"])
-    assert artifact.exists() and "第 1 轮" in artifact.read_text()
-    assert pub[0].payload["artifact_ref"].endswith("/research.md")
+    assert artifact.exists() and "## 摘要" in artifact.read_text()
+    assert "产能 2GW" in pub[0].payload["summary"]
+    assert pub[0].payload["artifact_ref"].endswith("/report.md")
 
     # R3：command 完成后档案 HTML 存档生成（版本化目录，写进 tmp 而非工作树）
     archived = [e for e in events.read("live-s1") if e.type == "profile/archived"]
     assert archived, "档案有变化应生成 HTML 存档"
+    assert archived[0].payload["entity"] == "stock:BE"
     archive_dir = tmp_path / "knowledge" / "stocks" / "BE" / "archive"
     assert (archive_dir / "latest.html").exists()
     assert any(f.suffix == ".html" and f.name != "latest.html" for f in archive_dir.iterdir())
@@ -308,7 +319,8 @@ def test_decide_rejection_retries_then_blocked(tmp_path):
     # rationale 引用未登记证据 → risk-review 必拒；重试满 2 次 → blocked（Q7 有界重试）
     deps, events, _, _ = make_deps(
         tmp_path,
-        {"research": [RESEARCH_SCRIPT, PROFILE_SCRIPT, ALWAYS_REJECT_SCRIPT, ALWAYS_REJECT_SCRIPT]},
+        {"research": [RESEARCH_SCRIPT, PROFILE_SCRIPT, SYNTHESIZE_SCRIPT,
+                      ALWAYS_REJECT_SCRIPT, ALWAYS_REJECT_SCRIPT]},
     )
     done = run_command(deps, events, "/decide BE")
     assert done.payload["outcome"] == "blocked"

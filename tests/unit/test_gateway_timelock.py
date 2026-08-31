@@ -116,3 +116,32 @@ def test_unregistered_source_fail_closed(tmp_path):
     g, _ = gw(tmp_path)
     with pytest.raises(SourceBlockedError):
         g.query("nonexistent", {})
+
+
+def test_stooq_adapter_parses_csv_and_respects_as_of(monkeypatch):
+    """Stooq adapter：CSV 解析 + available_at = 交易日+1d + as_of 过滤。"""
+    from datetime import UTC, datetime
+
+    from finance_agent.gateway.adapters.stooq import StooqPricesAdapter
+
+    csv = "Date,Open,High,Low,Close,Volume\n2024-01-02,10,11,9,10.5,1000\n2024-01-03,10.5,11.5,10,11.0,1200\n"
+
+    class FakeResp:
+        text = csv
+
+        def raise_for_status(self):
+            pass
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    adapter = StooqPricesAdapter()
+    assert adapter.capability().source_id == "prices_stooq"
+
+    recs = adapter.query({"ticker": "BE"})
+    assert len(recs) == 2
+    assert recs[0].payload["close"] == 10.5 and recs[0].payload["date"] == "2024-01-02"
+    assert recs[0].available_at == datetime(2024, 1, 3, tzinfo=UTC)  # +1d
+    # as_of 过滤：1 月 3 日之前的只剩第一条（其 available_at=1月3日 恰好 ≤）
+    cut = adapter.query({"ticker": "BE"}, as_of=datetime(2024, 1, 3, tzinfo=UTC))
+    assert len(cut) == 1

@@ -34,12 +34,13 @@ def make_client(tmp_path, scripts=None):
     gateway = DataGateway(mode="live", events=events, run_id="live-t")
     approvals = ApprovalService(events)
     main_llm = MockLLM(scripts or [AssistantReply(content="好的")])
-    step_llm = MockLLM([AssistantReply(content="done")])
+    # 每个 step 独立实例（MockLLM 是一次性脚本，共享会被抽干）
+    step_llm_factory = lambda: MockLLM([AssistantReply(content="## 摘要\n完成。")])  # noqa: E731
 
     deps = StepDeps(
         events=events, kb=kb, writer=writer, gateway=gateway,
         decisions=DecisionService(kb=kb, decisions=DecisionStore(tmp_path / "d.db"), events=events),
-        llm_for=lambda role: step_llm,
+        llm_for=lambda role: step_llm_factory(),
         approvals=approvals,
         evals_dir=tmp_path / "evals",
         reports_dir=tmp_path / "reports",
@@ -111,7 +112,7 @@ def test_slash_research_runs_pipeline(tmp_path):
     done = wait_event(events, run_id, lambda e: e.type == "command/done")[0]
     assert done.payload["outcome"] == "completed"
     steps = [e.payload["step"] for e in events.read(run_id) if e.type == "step_agent/start"]
-    assert steps == ["research", "process_eval"]
+    assert steps == ["research", "synthesize", "process_eval"]
 
 
 def test_sessions_exclude_child_runs_and_carry_title(tmp_path):
@@ -129,8 +130,8 @@ def test_sessions_exclude_child_runs_and_carry_title(tmp_path):
     assert sess["last_active"]
 
     children = client.get(f"/api/sessions/{run_id}/children").json()
-    assert len(children) == 2
-    assert {c["step"] for c in children} == {"research", "process_eval"}
+    assert len(children) == 3
+    assert {c["step"] for c in children} == {"research", "synthesize", "process_eval"}
 
 
 def test_commands_catalog_endpoint(tmp_path):

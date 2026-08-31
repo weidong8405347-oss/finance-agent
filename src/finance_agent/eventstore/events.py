@@ -27,6 +27,7 @@ HOOK_VERDICT = "hook/verdict"
 FACT_ASSERTED = "fact/asserted"
 FACT_SUPERSEDED = "fact/superseded"
 FACT_CONFLICT = "fact/conflict_raised"
+FACT_CONFLICT_RESOLVED = "fact/conflict_resolved"  # {field, kept_fact_id, note}（裁决闭环）
 DECISION_CARD = "decision/card_issued"
 LEAKAGE_ATTEMPT = "leakage/attempt"
 RESEARCH_ROUND_START = "research/round_start"

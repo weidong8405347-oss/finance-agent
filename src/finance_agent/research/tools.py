@@ -146,10 +146,25 @@ def make_research_tools(
             ],
         }
 
+    def resolve_conflict(args: dict[str, Any]) -> dict[str, Any]:
+        """裁决字段冲突（Q2）：采集到更强证据后调用，清除该字段的竞争版本标记。"""
+        field = str(args["field"])
+        keep = str(args["keep_evidence_id"])
+        n = writer.resolve_conflict(
+            entity_kind, entity_id, field,
+            keep_fact_id="",  # 以证据为准的裁决（keep_fact_id 仅作审计记录）
+            note=str(args.get("note") or f"以证据 {keep} 为准"),
+            run=manifest,
+            namespace=namespace,
+        )
+        return {"content": json.dumps({"resolved": field, "cleared": n}, ensure_ascii=False),
+                "provenance": []}
+
     tools: dict[str, Any] = {
         "register_evidence": register_evidence,
         "propose_fact": propose_fact,
         "query_kb": query_kb,
+        "resolve_conflict": resolve_conflict,
     }
 
     if fetch_document is not None:
@@ -228,6 +243,19 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "name": "query_kb",
         "description": "查询当前实体档案（as_of 现在的投影）",
         "parameters": {"type": "object", "properties": {}},
+    },
+    "resolve_conflict": {
+        "name": "resolve_conflict",
+        "description": "裁决字段的开放冲突：采集到更强证据后调用，清除该字段的竞争版本标记",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string"},
+                "keep_evidence_id": {"type": "string", "description": "以哪条证据为准"},
+                "note": {"type": "string", "description": "裁决理由"},
+            },
+            "required": ["field", "keep_evidence_id"],
+        },
     },
     "read_edgar_filing": {
         "name": "read_edgar_filing",

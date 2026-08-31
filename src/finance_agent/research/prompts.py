@@ -36,6 +36,8 @@ def build_round_brief(
         parts.append("缺失字段：" + ", ".join(gaps.missing))
     if gaps.stale:
         parts.append("待更新（陈旧）字段：" + ", ".join(gaps.stale))
+    if gaps.optional_missing:
+        parts.append("可选维度（有能力就补）：" + ", ".join(gaps.optional_missing))
     if gaps.conflicts:
         parts.append("存在冲突待裁决：" + ", ".join(gaps.conflicts))
     if judge_feedback:

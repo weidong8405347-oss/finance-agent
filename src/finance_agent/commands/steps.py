@@ -74,6 +74,7 @@ class StepContext:
     objective: str
     config: str
     should_cancel: Callable[[], bool]
+    entity_kind: str = "stock"  # industry:<slug> 标的形态 → industry
 
 
 @dataclass
@@ -148,12 +149,15 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
     )
-    reports = loop.run("stock", ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}")
+    reports = loop.run(
+        ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
+    )
     if loop.stop_reason == "cancelled":
         return _cancelled(ctx)
-    gaps = GapAnalyzer(deps.kb).analyze("stock", ctx.ticker, datetime.now(UTC))
+    gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
 
-    artifact = _write_research_artifact(deps, ctx, reports, loop.stop_reason or "", gaps.completeness)
+    # 轮次摘要落盘（钻取用）；report/published 卡片由 synthesize step 负责（Q3）
+    _write_research_artifact(deps, ctx, reports, loop.stop_reason or "", gaps.completeness)
     if not reports:
         summary = f"档案完整度已达标（{gaps.completeness:.0%}），无需新一轮研究"
     else:
@@ -163,27 +167,6 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
             f"完整度 {last.completeness_before:.0%} → {last.completeness_after:.0%}，"
             f"写入 {len(last.facts_written)} 字段"
         )
-    flags: list[str] = []
-    if loop.stop_reason == "budget":
-        flags.append("budget-exhausted")
-    if gaps.completeness < deps.completeness_target:
-        flags.append("evidence-gap")
-    deps.events.append(
-        Event(
-            run_id=ctx.session_run_id,
-            type=REPORT_PUBLISHED,
-            payload={
-                "child_run_id": ctx.child_run_id,
-                "kind": "research",
-                "title": f"{ctx.ticker} 深度研究报告",
-                "summary": summary,
-                "artifact_path": str(artifact),
-                "artifact_ref": f"{ctx.child_run_id}/{artifact.name}",  # 在线阅读：/api/reports/{ref}
-                "quality_flags": flags,
-                "command_id": ctx.command_id,
-            },
-        )
-    )
     return StepResult(status="completed", summary=summary)
 
 
@@ -209,6 +192,147 @@ def _write_research_artifact(
     return path
 
 
+# ---------------- 报告合成（CIO 综合，Q3） ----------------
+
+_SYNTHESIZE_CONTRACT = """\
+你是 CIO（首席投资官）。基于档案事实写一份结构化研究报告（Markdown）。
+纪律：
+1. 用 query_kb 读档案（每条事实含证据 id）；用 read_evidence 核对证据原文。
+2. 每个事实性断言后紧跟证据锚点，形如 [ev-xxx]；数字必须与档案中的值逐字一致。
+3. 缺证据/未知的维度明确写「未知」——宁可留白，不可编造。
+4. 结构：## 摘要（3-5 句判断性结论）/ ## 业务与模式 / ## 财务质量 / ## 护城河 /
+   ## 风险与反方 / ## 估值锚点 / ## 未知与缺口。
+"""
+
+
+def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
+    """研究轮收敛后的报告合成：档案 + 证据 → 结构化研报（ResearchFoldCard 的内容源）。"""
+    if ctx.should_cancel():
+        return _cancelled(ctx)
+    now = datetime.now(UTC)
+    view = deps.kb.view(ctx.entity_kind, ctx.ticker, now)
+    manifest = _open_child(deps, ctx, "synthesize")
+
+    report_title = f"{ctx.ticker} 研究报告"
+    if not view:
+        summary = "档案为空，无内容可合成（先跑研究）"
+        artifact = _write_text_artifact(deps, ctx, "report.md", f"# {report_title}\n\n{summary}\n")
+        _publish_report(deps, ctx, report_title, summary, artifact, ["evidence-gap"])
+        return StepResult(status="completed", summary=summary)
+
+    def query_kb(_args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": json.dumps(
+                {
+                    f: {"value": r.value, "evidence_ids": r.evidence_ids, "conflict": r.conflict_flag}
+                    for f, r in view.items()
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+            "provenance": [],
+        }
+
+    def read_evidence(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            ev = deps.kb.get_evidence(str(args["evidence_id"]))
+        except Exception as e:
+            return {"content": f"error: {e}", "provenance": []}
+        return {
+            "content": json.dumps(
+                {
+                    "evidence_id": ev.evidence_id,
+                    "source_id": ev.source_id,
+                    "url": ev.url,
+                    "verbatim_quote": ev.verbatim_quote,
+                    "available_at": ev.available_at.isoformat() if ev.available_at else None,
+                },
+                ensure_ascii=False,
+            ),
+            "provenance": [
+                {
+                    "source_id": ev.source_id,
+                    "available_at": ev.available_at.isoformat() if ev.available_at else None,
+                    "pit_grade": ev.pit_grade.value,
+                }
+            ],
+        }
+
+    deps.events.append(
+        Event(
+            run_id=ctx.child_run_id,
+            type=CONTEXT_INJECT,
+            payload={"role": "system", "content": _SYNTHESIZE_CONTRACT},
+        )
+    )
+    kernel = AgentKernel(
+        store=deps.events,
+        llm=deps.llm_for("research"),
+        manifest=manifest,
+        tools={"query_kb": query_kb, "read_evidence": read_evidence},
+        max_steps=8,
+    )
+    report_md = kernel.run_turn(f"为 {ctx.entity_kind}:{ctx.ticker} 写研究报告。")
+    artifact = _write_text_artifact(deps, ctx, "report.md", report_md or "（空报告）")
+    # 摘要 = 报告首个「## 摘要」节的文本（取不到就首段）
+    summary = _extract_summary(report_md) or "报告已生成"
+    gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, now)
+    flags: list[str] = []
+    if gaps.missing:
+        flags.append(f"evidence-gap: {len(gaps.missing)} 项缺口")
+    if gaps.conflicts:
+        flags.append(f"conflict: {len(gaps.conflicts)} 项待裁决")
+    _publish_report(deps, ctx, report_title, summary, artifact, flags)
+    return StepResult(status="completed", summary=summary)
+
+
+def _write_text_artifact(deps: StepDeps, ctx: StepContext, name: str, content: str) -> Path:
+    out_dir = deps.reports_dir / ctx.child_run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / name
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _extract_summary(report_md: str) -> str:
+    """取「## 摘要」节正文；取不到则取首个非标题行。"""
+    lines = report_md.splitlines()
+    in_summary = False
+    buf: list[str] = []
+    for ln in lines:
+        if ln.strip().startswith("## 摘要"):
+            in_summary = True
+            continue
+        if in_summary and ln.strip().startswith("## "):
+            break
+        if in_summary and ln.strip():
+            buf.append(ln.strip())
+    if not buf:
+        buf = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")][:2]
+    return " ".join(buf)[:300]
+
+
+def _publish_report(
+    deps: StepDeps, ctx: StepContext, title: str, summary: str, artifact: Path, flags: list[str]
+) -> None:
+    deps.events.append(
+        Event(
+            run_id=ctx.session_run_id,
+            type=REPORT_PUBLISHED,
+            payload={
+                "child_run_id": ctx.child_run_id,
+                "kind": "research_report",
+                "title": title,
+                "summary": summary,
+                "artifact_path": str(artifact),
+                "artifact_ref": f"{ctx.child_run_id}/{artifact.name}",
+                "quality_flags": flags,
+                "command_id": ctx.command_id,
+            },
+        )
+    )
+
+
 # ---------------- S2 档案更新（thesis 修订） ----------------
 
 
@@ -216,7 +340,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
     if ctx.should_cancel():
         return _cancelled(ctx)
     now = datetime.now(UTC)
-    profile = deps.kb.view("stock", ctx.ticker, now)
+    profile = deps.kb.view(ctx.entity_kind, ctx.ticker, now)
     if not profile:
         return StepResult(status="completed", summary="档案为空，跳过 thesis 修订")
 
@@ -224,7 +348,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
     outcome: dict[str, str] = {}
 
     def query_kb(_args: dict[str, Any]) -> dict[str, Any]:
-        view = deps.kb.view("stock", ctx.ticker, datetime.now(UTC))
+        view = deps.kb.view(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
         return {
             "content": json.dumps(
                 {
@@ -248,7 +372,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         try:
             fact_id = deps.writer.write_fact(
                 Fact(
-                    entity_kind="stock",
+                    entity_kind=ctx.entity_kind,  # type: ignore[arg-type]
                     entity_id=ctx.ticker,
                     field="thesis",
                     value=args["thesis"],
@@ -278,7 +402,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         max_steps=6,
     )
     kernel.run_turn(
-        f"请基于 stock:{ctx.ticker} 的当前档案修订投资论点（thesis）。"
+        f"请基于 {ctx.entity_kind}:{ctx.ticker} 的当前档案修订投资论点（thesis）。"
         "先 query_kb 查看全部事实，再 propose_thesis 提交（绑定支撑证据 id）。"
     )
     if "fact_id" in outcome:
@@ -315,7 +439,7 @@ def step_decide(deps: StepDeps, ctx: StepContext) -> StepResult:
             llm=deps.llm_for("research"),
             manifest=manifest,
         )
-        card_id = loop.run("stock", ctx.ticker)
+        card_id = loop.run(ctx.entity_kind, ctx.ticker)
         if loop.last_outcome == "issued":
             return StepResult(status="completed", summary=f"决策卡已出具：{card_id}")
         if loop.last_outcome == "declined":
@@ -335,13 +459,13 @@ def step_decide(deps: StepDeps, ctx: StepContext) -> StepResult:
 
 def step_process_eval(deps: StepDeps, ctx: StepContext) -> StepResult:
     _open_child(deps, ctx, "process_eval")
-    gaps = GapAnalyzer(deps.kb).analyze("stock", ctx.ticker, datetime.now(UTC))
+    gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
     deps.events.append(
         Event(
             run_id=ctx.child_run_id,
             type="process_eval/report",
             payload={
-                "entity": f"stock:{ctx.ticker}",
+                "entity": f"{ctx.entity_kind}:{ctx.ticker}",
                 "completeness": gaps.completeness,
                 "missing": list(gaps.missing),
                 "stale": list(gaps.stale),
@@ -378,6 +502,7 @@ def step_evaluate(deps: StepDeps, ctx: StepContext) -> StepResult:
 STEPS: dict[str, Callable[[StepDeps, StepContext], StepResult]] = {
     "research": step_research,
     "profile_update": step_profile_update,
+    "synthesize": step_synthesize,
     "decide": step_decide,
     "process_eval": step_process_eval,
     "evaluate": step_evaluate,
@@ -386,6 +511,7 @@ STEPS: dict[str, Callable[[StepDeps, StepContext], StepResult]] = {
 STEP_TITLES: dict[str, str] = {
     "research": "S1 研究",
     "profile_update": "S2 档案更新",
+    "synthesize": "报告合成",
     "decide": "S3 决策",
     "process_eval": "过程评估",
     "evaluate": "S4 效果评估",
@@ -416,6 +542,14 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
         "plugins": ["打回有界重试 ×2"],
         "hooks": ["risk-review（失效条件/仓位上限/证据链）", "kb_snapshot 绑定校验"],
         "budget": {"max_steps": 8, "max_attempts": 2},
+    },
+    "synthesize": {
+        "title": "报告合成（CIO 综合 → 结构化研报）",
+        "model_role": "research",
+        "tools": ["query_kb", "read_evidence"],
+        "plugins": ["结构化研报模板", "证据锚点内联"],
+        "hooks": ["数字与档案值一致（契约级）"],
+        "budget": {"max_steps": 8},
     },
     "process_eval": {
         "title": "过程评估（软反馈聚合）",

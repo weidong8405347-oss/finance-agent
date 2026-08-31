@@ -38,6 +38,9 @@ export interface ReportCard {
   flags: string[];
   artifact: string;
   artifactRef?: string;  // /api/reports/<child_run_id>/<file> —— 在线阅读全文
+  reportKind?: string;   // "research_report" | "evaluation"
+  stats?: Record<string, number>;
+  verdict?: string;
 }
 
 export interface ProfileCardData {
@@ -166,6 +169,9 @@ export function assemble(events: EventRow[]): ChatNode[] {
           title: String(p.title ?? "研究报告"), summary: String(p.summary ?? ""),
           flags: (p.quality_flags as string[]) ?? [], artifact: String(p.artifact_path ?? ""),
           artifactRef: p.artifact_ref ? String(p.artifact_ref) : undefined,
+          reportKind: p.kind ? String(p.kind) : undefined,
+          stats: (p.stats as Record<string, number>) ?? undefined,
+          verdict: p.verdict ? String(p.verdict) : undefined,
         };
         const cmd = p.command_id ? commandById.get(String(p.command_id)) : undefined;
         if (cmd) cmd.reports.push(card);

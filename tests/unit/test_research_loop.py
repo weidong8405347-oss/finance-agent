@@ -29,15 +29,19 @@ def scripted_llm() -> MockLLM:
 
     chunk 序：chk-0001 = query_edgar 的 filing 记录；之后每次 read_edgar_filing
     产生一个正文窗口 chunk（chk-0002 起递增）。evidence_id 显式指定（脚本静态可预测）。
+    schema 必填 8 字段全写（target=1.0 收敛）。
     """
-    f1, f2, f3, f4, f5 = FIELDS
-    facts = [
-        (f1, "Total revenue 100", 100),
-        (f2, "Net income 25", 25),
-        (f3, "sells phones and services", "硬件+服务"),
-        (f4, "ecosystem lock-in", "生态锁定"),
-        (f5, "competition may intensify", "竞争加剧"),
-    ]
+    quotes = {
+        "revenue_fy": ("Total revenue 100", 100),
+        "net_income_fy": ("Net income 25", 25),
+        "cash_flow": ("Operating cash flow 30", 30),
+        "valuation": ("market cap 500", 500),
+        "business_model": ("sells phones and services", "硬件+服务"),
+        "moat": ("ecosystem lock-in", "生态锁定"),
+        "risks": ("competition may intensify", "竞争加剧"),
+        "peers": ("peers include Pear Corp", " Pear Corp"),
+    }
+    facts = [(f, *quotes[f]) for f in FIELDS]
     replies = [
         # round 1 开头：先拿 filing 记录（→ chk-0001）
         AssistantReply(content="", tool_calls=[tc(0, "query_edgar", {"ticker": "AAPL"})]),
@@ -59,7 +63,7 @@ def scripted_llm() -> MockLLM:
             ]),
         ]
         i += 3
-        if n in (1, 3):  # round1 写 2 字段、round2 写 2 字段
+        if n in (2, 5):  # round1 写 3 字段、round2 写 3 字段、round3 写 2 字段
             replies.append(AssistantReply(content="round done"))
     replies.append(AssistantReply(content="round3 done"))
     return MockLLM(replies)
@@ -85,8 +89,9 @@ def make_loop(tmp_path, llm, *, max_rounds=5):
     ))
     manifest = RunManifest(run_id="live-1", mode=RunMode.LIVE)
     fake_fetch = lambda url: (  # noqa: E731 - 夹具正文：含全部脚本 quote
-        "Total revenue 100. Net income 25. sells phones and services. "
-        "ecosystem lock-in. competition may intensify."
+        "Total revenue 100. Net income 25. Operating cash flow 30. market cap 500. "
+        "sells phones and services. ecosystem lock-in. competition may intensify. "
+        "peers include Pear Corp."
     )
     loop = ResearchLoop(
         store=kb,

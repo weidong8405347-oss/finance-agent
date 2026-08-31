@@ -152,3 +152,30 @@ def test_kb_snapshot_id_stable_and_time_sensitive(tmp_path):
     assert kb_snapshot_id(store, ents, t1) == kb_snapshot_id(store, ents, t1)  # 稳定
     snap_t2 = kb_snapshot_id(store, ents, T("2024-06-01T00:00:00"))
     assert kb_snapshot_id(store, ents, t1) != snap_t2  # 跨版本不同
+
+
+def test_conflict_only_when_same_event_time(tmp_path):
+    """冲突语义收窄（Q2）：同 event_time 不同值 = 真冲突；不同 event_time = 演进不冲突。"""
+    from datetime import UTC, datetime
+
+    from finance_agent.knowledge.models import Evidence, Fact, PitGrade
+
+    kb = BitemporalStore(tmp_path / "kb.db")
+    kb.add_evidence(Evidence(
+        evidence_id="e1", source_id="s", verbatim_quote="q1",
+        retrieved_at=datetime(2024, 1, 1, tzinfo=UTC),
+        available_at=datetime(2024, 1, 1, tzinfo=UTC), pit_grade=PitGrade.A))
+    t1, t2 = datetime(2023, 12, 31, tzinfo=UTC), datetime(2024, 12, 31, tzinfo=UTC)
+    # 演进：不同 event_time 不同值 → 不冲突
+    kb.assert_fact(Fact(entity_kind="stock", entity_id="A", field="rev", value=100,
+                        event_time=t1, knowledge_time=datetime(2024, 3, 1, tzinfo=UTC), evidence_ids=["e1"]))
+    kb.assert_fact(Fact(entity_kind="stock", entity_id="A", field="rev", value=110,
+                        event_time=t2, knowledge_time=datetime(2025, 3, 1, tzinfo=UTC), evidence_ids=["e1"]))
+    assert kb.open_conflicts("stock", "A") == []
+    # 同 event_time 不同值 → 真冲突
+    kb.assert_fact(Fact(entity_kind="stock", entity_id="A", field="rev", value=105,
+                        event_time=t2, knowledge_time=datetime(2025, 4, 1, tzinfo=UTC), evidence_ids=["e1"]))
+    assert len(kb.open_conflicts("stock", "A")) == 1
+    # 裁决闭环
+    n = kb.resolve_conflict("stock", "A", "rev", keep_fact_id="")
+    assert n == 1 and kb.open_conflicts("stock", "A") == []

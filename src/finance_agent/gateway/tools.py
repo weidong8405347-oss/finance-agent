@@ -84,4 +84,17 @@ GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["ticker"],
         },
     },
+    "query_prices_stooq": {
+        "name": "query_prices_stooq",
+        "description": "查询日线行情（Stooq 源，零依赖；available_at = 交易日 +1d）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+            },
+            "required": ["ticker"],
+        },
+    },
 }

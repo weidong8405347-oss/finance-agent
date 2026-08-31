@@ -33,7 +33,7 @@ from ..eventstore.events import (
     Event,
 )
 from ..eventstore.store import StoredEvent
-from .registry import COMMANDS, ParsedCommand
+from .registry import COMMANDS, ParsedCommand, parse_target
 from .steps import STEP_TITLES, STEPS, StepContext, StepDeps, StepResult
 
 logger = logging.getLogger("finance_agent.commands")
@@ -192,14 +192,16 @@ class CommandRunner:
                     },
                 )
             )
+            entity_kind, entity_id = parse_target(p.ticker) if p.ticker else ("stock", "")
             ctx = StepContext(
                 command_id=command_id,
                 session_run_id=sid,
                 child_run_id=child_run_id,
-                ticker=p.ticker,
+                ticker=entity_id,
                 objective=p.objective,
                 config=p.config,
                 should_cancel=cancel.is_set,
+                entity_kind=entity_kind,
             )
             result = self._run_step(step_name, ctx)
             deps.events.append(
@@ -221,7 +223,8 @@ class CommandRunner:
             if result.status in ("error", "blocked"):
                 return result.status, "；".join(step_summaries)
         if p.ticker:
-            self._maybe_archive_profile(sid, p.ticker)
+            kind, eid = parse_target(p.ticker)
+            self._maybe_archive_profile(sid, kind, eid)
         return "completed", "；".join(step_summaries)
 
     def _run_step(self, step_name: str, ctx: StepContext) -> StepResult:
@@ -258,36 +261,39 @@ class CommandRunner:
         finally:
             deps.events.unsubscribe(bridge)
 
-    def _maybe_archive_profile(self, sid: str, ticker: str) -> None:
+    def _maybe_archive_profile(self, sid: str, kind: str, entity_id: str) -> None:
         """S2 后档案有变化 → 生成版本化 HTML 存档（profile/archived 事件进父流）。"""
         from ..knowledge.render import maybe_archive
 
         deps = self._deps
         prices: list[dict] | None = None
-        if "prices" in deps.gateway.source_ids():
-            try:  # 行情不可得（如 yfinance 未装）不阻断存档——图表缺省即可
+        price_source = next(
+            (s for s in ("prices_stooq", "prices") if s in deps.gateway.source_ids()), None
+        )
+        if kind == "stock" and price_source:
+            try:  # 行情不可得（依赖缺失/限流）不阻断存档——图表缺省即可
                 from datetime import date, timedelta
 
                 end = date.today()
                 recs = deps.gateway.query(
-                    "prices",
-                    {"ticker": ticker, "start": (end - timedelta(days=365)).isoformat(),
+                    price_source,
+                    {"ticker": entity_id, "start": (end - timedelta(days=365)).isoformat(),
                      "end": end.isoformat()},
                 )
                 prices = [r.payload for r in recs]
             except Exception:
                 prices = None
         try:
-            path = maybe_archive(deps.kb, deps.knowledge_dir, "stock", ticker, prices=prices)
+            path = maybe_archive(deps.kb, deps.knowledge_dir, kind, entity_id, prices=prices)
         except Exception as e:
-            logger.warning("profile archive failed for %s: %s", ticker, e)
+            logger.warning("profile archive failed for %s:%s: %s", kind, entity_id, e)
             return
         if path is not None:
             deps.events.append(
                 Event(
                     run_id=sid,
                     type="profile/archived",
-                    payload={"entity": f"stock:{ticker}", "archive": path.name},
+                    payload={"entity": f"{kind}:{entity_id}", "archive": path.name},
                 )
             )
 

@@ -119,9 +119,15 @@ function StepCard({ step }: { step: StepNode }) {
   );
 }
 
+const STAT_LABEL: Record<string, string> = {
+  mean_net_return: "平均净收益", kb_delta: "知识库增量", leakage_events: "穿越事件",
+  n_complete: "决策点", hit_rate: "胜率",
+};
+
 function ReportFoldCard({ card }: { card: import("../lib/assemble").ReportCard }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState<string | null>(null);
+  const isEval = card.reportKind === "evaluation";
   const toggle = () => {
     const next = !open;
     setOpen(next);
@@ -131,11 +137,21 @@ function ReportFoldCard({ card }: { card: import("../lib/assemble").ReportCard }
       if (ref) api.reportText(ref).then(setFull).catch(() => setFull("（读取失败：" + card.artifact + "）"));
     }
   };
+  const border = isEval
+    ? card.verdict === "clean" ? "border-blue-300 bg-blue-50/40" : "border-red-300 bg-red-50/40"
+    : "border-green-200 bg-green-50/40";
   return (
-    <div className="rounded-md border border-green-200 bg-green-50/40">
+    <div className={`rounded-md border ${border}`}>
       <button onClick={toggle} className="flex w-full items-center px-2.5 py-1.5 text-left text-xs">
         <Arrow open={open} />
-        <span>📄 <b>{card.title}</b></span>
+        <span>{isEval ? "📊" : "📄"} <b>{card.title}</b></span>
+        {isEval && card.verdict && (
+          <span className={`ml-2 rounded px-1.5 py-0.5 font-mono text-[10px] ${
+            card.verdict === "clean" ? "bg-blue-100 text-blue-800" : "bg-red-100 text-red-700"
+          }`}>
+            {card.verdict === "clean" ? "干净（无穿越）" : "已污染"}
+          </span>
+        )}
         <span className="ml-2 flex gap-1">
           {card.flags.map((f) => (
             <span key={f} className="rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-mono text-[10px] text-amber-700">{f}</span>
@@ -143,6 +159,18 @@ function ReportFoldCard({ card }: { card: import("../lib/assemble").ReportCard }
         </span>
       </button>
       <div className="px-3 pb-2 text-xs text-neutral-600">{card.summary}</div>
+      {isEval && card.stats && Object.keys(card.stats).length > 0 && (
+        <div className="grid grid-cols-3 gap-2 px-3 pb-2">
+          {Object.entries(card.stats).map(([k, v]) => (
+            <div key={k} className="rounded bg-white/70 p-1.5 text-center">
+              <div className="font-mono text-sm font-semibold">
+                {typeof v === "number" && Math.abs(v) < 2 ? (v * 100).toFixed(1) + "%" : v}
+              </div>
+              <div className="text-[10px] text-neutral-500">{STAT_LABEL[k] ?? k}</div>
+            </div>
+          ))}
+        </div>
+      )}
       {open && (
         <div className="max-h-72 overflow-auto border-t border-green-200 px-3 py-2 text-xs text-neutral-700">
           {full === null ? <span className="text-neutral-400">加载中…</span> : <Markdown text={full} />}
