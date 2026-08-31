@@ -1,5 +1,7 @@
 # Handoff：决策保守度调优——根因修复 + canary 真实复跑实录（2026-08-31 收官）
 
+> ⚠️ **本文档已被 [2026-09-01 backlog 清零 + canary 验证版](2026-09-01-backlog-cleanup-canary-verified.md) 取代**，仅作历史留痕。本文 §5 backlog 的 6 个剩余项已全部完成，canary 防线已获真实行为结论（verdict=clean，诱饵被检索 3 次但 0 引用）。
+
 > 给新会话的唯一入口文档（取代 [2026-08-31 steer 版](2026-08-31-steer-handoff.md)，
 > 历史见 git log：`2f4c60d fix(eval)` → `1c150f6 fix(eval)`——本次两个代码提交）。
 > 设计文档不变：`docs/redesign-interaction-orchestration.md`（§5 决策记录）、
