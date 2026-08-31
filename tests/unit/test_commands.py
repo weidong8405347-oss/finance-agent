@@ -127,6 +127,14 @@ RESEARCH_SCRIPT = [
     AssistantReply(content="no new findings"),
 ]
 
+# 研究脚本变体：轮内裁决字段冲突（resolve_conflict → fact/conflict_resolved）
+RESEARCH_SCRIPT_WITH_RESOLVE = [
+    *RESEARCH_SCRIPT[:4],
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c4", name="resolve_conflict", arguments={
+        "field": "capacity", "keep_evidence_id": "ev-1", "note": "以新公告为准"})]),
+    *RESEARCH_SCRIPT[4:],
+]
+
 PROFILE_SCRIPT = [
     AssistantReply(content="", tool_calls=[ToolCall(call_id="p1", name="query_kb", arguments={})]),
     AssistantReply(content="", tool_calls=[ToolCall(call_id="p2", name="propose_thesis", arguments={
@@ -190,6 +198,16 @@ def test_progress_bridged_to_parent_stream(tmp_path):
     progress = [e for e in events.read("live-s1") if e.type == "step_agent/progress"]
     assert progress, "轮次级进度应桥接到父流"
     assert any("第 1 轮" in e.payload["summary"] for e in progress)
+
+
+def test_conflict_resolved_bridged_to_parent_stream(tmp_path):
+    deps, events, _, _ = make_deps(tmp_path, {"research": [RESEARCH_SCRIPT_WITH_RESOLVE]})
+    run_command(deps, events, "/research BE")
+    progress = [e for e in events.read("live-s1") if e.type == "step_agent/progress"]
+    resolved = [e for e in progress if "冲突已裁决" in e.payload["summary"]]
+    assert resolved, "fact/conflict_resolved 应桥接为父流进度行（裁决回显）"
+    assert "capacity" in resolved[0].payload["summary"]
+    assert "以新公告为准" in resolved[0].payload["summary"]
 
 
 def test_report_published_with_artifact(tmp_path):

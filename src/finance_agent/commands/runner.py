@@ -29,6 +29,7 @@ from ..eventstore.events import (
     DECISION_CARD,
     FACT_ASSERTED,
     FACT_CONFLICT,
+    FACT_CONFLICT_RESOLVED,
     RESEARCH_ROUND_END,
     STEER_REQUESTED,
     STEP_AGENT_END,
@@ -49,6 +50,7 @@ _BRIDGE_TYPES = {
     DECISION_CARD,
     FACT_ASSERTED,
     FACT_CONFLICT,
+    FACT_CONFLICT_RESOLVED,
     "eval/report",
     "research/error",
     "decision/error",
@@ -414,6 +416,8 @@ def _progress_summary(e: StoredEvent) -> str:
         )
     if e.type == FACT_CONFLICT:
         return f"⚠ 档案冲突：{p.get('field')} 产生竞争版本，待裁决"
+    if e.type == FACT_CONFLICT_RESOLVED:
+        return f"✓ 冲突已裁决：{p.get('field')}（{p.get('note')}）"
     if e.type in ("research/error", "decision/error"):
         return f"出错：{p.get('reason', '')}"
     if e.type == "eval/report":
