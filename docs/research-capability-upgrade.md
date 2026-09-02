@@ -249,6 +249,28 @@ F5 排序报告（逐格证据针 + calc 验算 + ABSI 三源市值 42.3% 分歧
 | **P4 投资判断层**（2026-09-02 范本对齐重构，裁决：评级/仓位归 /decide 域；评分权重为行业可调参考值；PDF 抽取进范围） | F1.5 thesis 备忘录（带研究预算）；评分体系（Bottleneck/护城河/估值/成长，默认 40/25/20/15 可行业调整，分值强制绑证据 + rubric 锚定）；估值工具链（EV/Sales 等 + 预期分析）；投资委员会（四视角+空头+CIO 双强交叉）；人才/CEO 深挖 playbook；HKEXnews PDF 正文抽取（pypdf）；报告结构对齐范本（thesis 先行/淘汰逻辑/估值快照/证伪条件） | 报告质量上限 | 对照 docs/samples/ 四份范本逐项覆盖；评级/仓位/价格区间只进 /decide 决策卡 |
 | **P5 UI** | provider 配置前端页；漏斗进度可视化 | 自服务 | 前端 vitest + 手测 |
 
+### P4 真实验收实录（2026-09-02/03，`/industry AI for Science 美股港股` 复跑，`live-2be18efd`）
+
+端到端：F1 复用档案 100% → F1.5 thesis 落档 → F2 池 39 只复用 → F3 闸口批准 6 只
+（02228.HK/7666.HK/ABSI/SDGR/RLAY/ABCL）→ F4 六票 88-100% converged → F4.5 委员会 6/6
+（四视角真实分歧、空头含证伪条件、CIO 明确倾向）→ F5 排序报告 9 段对齐范本。
+
+实测发现并修复的缺陷（全部进测试锁定，292 绿）：
+
+| 缺陷 | 修法 |
+| --- | --- |
+| read_evidence 无 function schema → 模型空参调用烧光 8 步，委员会两视角（02228 financial、ABCL risk_mgmt）空白 | TOOL_SCHEMAS 补登记（同 P3 submit_card 事故同类）；空产出/空 CIO 明示标记入 artifact（失败可见性） |
+| F5 输入全局截断（profiles[:8000]/committee[:6000]）→ RLAY/ABCL 静默缺席，模型据残缺输入编造「8→4」漏斗叙事 | 逐票预算隔离（12k/票）+ 漏斗事实注入（池规模/入选名单/闸口筛分表）+ 名单完整性纪律进 brief |
+| 2228.HK vs 02228.HK 双胞胎并存（F2 产出） | 池入口归一化 `_normalize_pool_ticker`（港股 zfill(5)，与 hkexnews/fundamentals adapter 同口径） |
+| talent_density 未登记维度组 → 轮转进随机组全空 | 登记进 risk_mgmt 组 + dimension_researcher playbook 补人才/CEO 深挖路径（致股东信/电话会/高管变动/论文专利） |
+
+验收遗留观察项：① 行业实体 id = theme_slug（保中文），历史主题串不同导致同一赛道碎片化为
+两个实体（ai-for-science / ai-for-science-美股港股）——档案碎片化，后续可考虑主题归一；
+② F5 强模型首轮 TTFT ~15 分钟（max effort + 90k 字符 brief），dashscope 心跳保活不触发
+300s 读超时，属正常但需知会；③ F3 全量卡片 ~20 分钟（6 并行 flash + 429 退避）——提速空间：
+卡批并发上限或 Tavily 直取基本面；④ GLM-5.3-Flash 是 worker 池最慢者（reasoning 模型），
+观察其提案拒绝率再定去留。
+
 ## 5.1 P4 补充裁决（2026-09-02 grill）
 
 | # | 议题 | 裁决 |
