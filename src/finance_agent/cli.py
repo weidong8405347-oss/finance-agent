@@ -359,6 +359,8 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
         knowledge_dir=orch["knowledge_dir"],
         reports_dir=orch["reports_dir"],
         capabilities_info=orch["capabilities_info"],
+        data_dir=data_dir,
+        router_factory=lambda: _router(data_dir),  # P5 自配页：有效配置视图（每次新建=热生效）
     )
     uvicorn.run(app, host=host, port=port)
     return 0

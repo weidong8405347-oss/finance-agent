@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -83,6 +84,8 @@ def create_app(
     knowledge_dir: str | Path = "knowledge",
     reports_dir: str | Path = "data/reports",
     capabilities_info: Callable[[], dict[str, Any]] | None = None,
+    data_dir: str | Path = "data",
+    router_factory: Callable[[], Any] | None = None,  # 有效 LLMRouter（cli 注入，P5 自配页用）
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.2.0")
     app.add_middleware(
@@ -416,6 +419,107 @@ def create_app(
                 for spec in COMMANDS.values()
             ],
         }
+
+    # ---------------- Providers（P5 模型自配页） ----------------
+
+    from ..llm import provider_config as pcfg
+
+    providers_cfg_path = Path(data_dir) / pcfg.CONFIG_FILENAME
+
+    def _providers_payload() -> dict[str, Any]:
+        raw = pcfg.load_raw(providers_cfg_path)  # JSON 损坏 → 422（见 error handler 纪律）
+        source = "own" if raw is not None else "fallback"
+        effective: dict[str, Any] = {}
+        if router_factory is not None:
+            try:
+                effective = router_factory().describe()
+            except Exception as e:  # 有效配置装不起来 = 如实上报（不伪装正常）
+                effective = {"error": f"{type(e).__name__}: {e}"}
+        return {
+            "source": source,  # own=自有文件生效；fallback=pi/.env 兜底
+            "config_path": str(providers_cfg_path),
+            "file": pcfg.masked_view(raw) if raw is not None else None,
+            "effective": effective,
+        }
+
+    @app.get("/api/providers")
+    def get_providers() -> dict[str, Any]:
+        """当前生效的 provider 配置视图（脱敏：明文 key 永不出 API）。"""
+        try:
+            return _providers_payload()
+        except pcfg.ProviderConfigValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @app.post("/api/providers")
+    def save_providers(body: dict[str, Any]) -> dict[str, Any]:
+        """保存自有配置（全量替换语义）。校验先试装（fail-closed），非法配置 422 不落盘。"""
+        try:
+            candidate = pcfg.prepare_candidate(body, pcfg.load_raw(providers_cfg_path))
+            pcfg.validate_candidate(candidate)
+        except pcfg.ProviderConfigValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        pcfg.save(providers_cfg_path, candidate)
+        return _providers_payload()
+
+    @app.post("/api/providers/reset")
+    def reset_providers() -> dict[str, Any]:
+        """删除自有配置 → 回落 pi/.env（设计 §4.4：缺省回落为现状行为）。"""
+        providers_cfg_path.unlink(missing_ok=True)
+        return _providers_payload()
+
+    @app.post("/api/providers/test")
+    def test_provider(body: dict[str, Any]) -> dict[str, Any]:
+        """测活：一条最小 chat completion（max_tokens=8，30s 超时）。
+
+        body: {name?, base_url, api_key?, model}——api_key 缺省/"***" 时按 name
+        从已存配置继承；env:VAR 间接引用解析后使用。key 不落日志不回显。
+        """
+        import time
+
+        import httpx
+
+        base_url = str(body.get("base_url") or "").rstrip("/")
+        model = str(body.get("model") or "")
+        api_key = str(body.get("api_key") or "")
+        if not base_url or not model:
+            raise HTTPException(status_code=422, detail="base_url 与 model 必填")
+        if api_key in ("", pcfg.KEY_MASK):
+            name = str(body.get("name") or "")
+            stored = (pcfg.load_raw(providers_cfg_path) or {}).get("providers", {}).get(name, {})
+            api_key = str(stored.get("api_key") or "")
+            if not api_key:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"provider {name!r} 无已存 key 可继承——请填明文或 env:VAR",
+                )
+        from ..llm.router import _read_dotenv
+
+        env = {**_read_dotenv(), **os.environ}
+        if api_key.startswith("env:"):
+            api_key = env.get(api_key[4:], "")
+            if not api_key:
+                raise HTTPException(status_code=422, detail="env:VAR 引用的环境变量不存在")
+        t0 = time.monotonic()
+        try:
+            resp = httpx.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "ping"}],
+                      "max_tokens": 8, "stream": False},
+                timeout=30.0,
+            )
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code != 200:
+                return {"ok": False, "latency_ms": latency_ms,
+                        "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+            data = resp.json()
+            ok = bool((data.get("choices") or [{}])[0].get("message", {}).get("content"))
+            return {"ok": ok, "latency_ms": latency_ms,
+                    "error": None if ok else "200 但无 choices 内容"}
+        except Exception as e:
+            return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "error": f"{type(e).__name__}: {e}"}
 
     @app.get("/api/knowledge/{kind}/{entity_id}/series")
     def fact_series(

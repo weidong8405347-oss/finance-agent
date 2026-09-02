@@ -522,6 +522,31 @@ class LLMRouter:
         """已注册的 provider/别名键清单。"""
         return sorted(self._specs)
 
+    def describe(self) -> dict[str, Any]:
+        """配置自配页用的脱敏视图（P5）：api_key 永不外泄，只报是否已配置。
+
+        specs 含主键与别名键（name 与 name:model-id）——视图按主键聚合 models。
+        """
+        providers: list[dict[str, Any]] = []
+        for key, spec in self._specs.items():
+            if ":" in key:  # 别名键，models 由主键行汇总
+                continue
+            models = sorted(
+                {spec.model, *(s.model for k, s in self._specs.items() if k.startswith(f"{key}:"))}
+            )
+            providers.append({
+                "name": spec.name,
+                "base_url": spec.base_url,
+                "models": models,
+                "has_key": bool(spec.api_key),
+            })
+        return {
+            "providers": sorted(providers, key=lambda p: p["name"]),
+            "default_provider": self._default,
+            "role_map": dict(self._role_map),
+            "role_options": dict(self._role_options),
+        }
+
     def has_role(self, role: str) -> bool:
         """角色是否有显式路由或同名 provider（装配层据此选兜底）。"""
         return role in self._role_map or role in self._specs

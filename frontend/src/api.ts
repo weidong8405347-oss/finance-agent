@@ -143,6 +143,44 @@ async function get<T>(url: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+async function post<T>(url: string, body?: unknown): Promise<T> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}));
+    throw new Error(detail.detail ?? `${url}: ${resp.status}`);
+  }
+  return resp.json() as Promise<T>;
+}
+
+// P5 provider 自配（类型与 lib/providers.ts 对齐）
+export interface ProvidersView {
+  source: "own" | "fallback";
+  config_path: string;
+  file: {
+    providers: Record<string, { base_url: string; api_key: string; models: string[] }>;
+    default_provider?: string;
+    role_map?: Record<string, string>;
+    role_options?: Record<string, { effort?: string; timeout?: number }>;
+  } | null;
+  effective: {
+    providers?: { name: string; base_url: string; models: string[]; has_key: boolean }[];
+    default_provider?: string;
+    role_map?: Record<string, string>;
+    role_options?: Record<string, { effort?: string; timeout?: number }>;
+    error?: string;
+  };
+}
+
+export interface ProviderProbeResult {
+  ok: boolean;
+  latency_ms: number;
+  error: string | null;
+}
+
 export const api = {
   sessions: () => get<SessionRow[]>("/api/sessions"),
   sessionEvents: (runId: string) => get<EventRow[]>(`/api/sessions/${runId}/events`),
@@ -201,6 +239,13 @@ export const api = {
     if (!resp.ok) throw new Error(`stopSession: ${resp.status}`);
     return (await resp.json()) as { stopped: string | null };
   },
+  providers: () => get<ProvidersView>("/api/providers"),
+  saveProviders: (payload: Record<string, unknown>) =>
+    post<ProvidersView>("/api/providers", payload),
+  resetProviders: () => post<ProvidersView>("/api/providers/reset"),
+  testProvider: (body: {
+    name?: string; base_url: string; api_key?: string; model: string;
+  }) => post<ProviderProbeResult>("/api/providers/test", body),
   chat: async (sessionId: string | null, message: string) => {
     const resp = await fetch("/api/chat", {
       method: "POST",

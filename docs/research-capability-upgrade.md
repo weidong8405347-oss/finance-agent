@@ -247,7 +247,7 @@ F5 排序报告（逐格证据针 + calc 验算 + ABSI 三源市值 42.3% 分歧
 | 卡片/stock 字段自造中文名（F4 读不到） | brief 强制 schema 字段名 |
 | 打回无反馈通道 | 审批 decide 增 comment（服务/API/前端三层） |
 | **P4 投资判断层**（2026-09-02 范本对齐重构，裁决：评级/仓位归 /decide 域；评分权重为行业可调参考值；PDF 抽取进范围） | F1.5 thesis 备忘录（带研究预算）；评分体系（Bottleneck/护城河/估值/成长，默认 40/25/20/15 可行业调整，分值强制绑证据 + rubric 锚定）；估值工具链（EV/Sales 等 + 预期分析）；投资委员会（四视角+空头+CIO 双强交叉）；人才/CEO 深挖 playbook；HKEXnews PDF 正文抽取（pypdf）；报告结构对齐范本（thesis 先行/淘汰逻辑/估值快照/证伪条件） | 报告质量上限 | 对照 docs/samples/ 四份范本逐项覆盖；评级/仓位/价格区间只进 /decide 决策卡 |
-| **P5 UI** | provider 配置前端页；漏斗进度可视化 | 自服务 | 前端 vitest + 手测 |
+| ~~**P5 UI**~~ ✅（2026-09-03，provider 配置页；漏斗进度面板未做） | provider 配置前端页（列表/新增/编辑/测活/恢复默认：GET+POST /api/providers、POST …/test、POST …/reset）；api_key 掩码不出 API、保存前 from_config 试装校验（fail-closed 单一真相源）、原子写+热生效、纯逻辑层 lib/providers.ts 可测 | 自服务 | 后端 10 契约测试 + 前端 7 纯逻辑测试 + 真机 e2e（保存→脱敏视图→测活→reset 回落） |
 
 ### P4 真实验收实录（2026-09-02/03，`/industry AI for Science 美股港股` 复跑，`live-2be18efd`）
 

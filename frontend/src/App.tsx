@@ -4,9 +4,10 @@ import KnowledgePage from "./pages/KnowledgePage";
 import DecisionsPage from "./pages/DecisionsPage";
 import EvaluationsPage from "./pages/EvaluationsPage";
 import CapabilitiesPage from "./pages/CapabilitiesPage";
+import ProvidersPage from "./pages/ProvidersPage";
 // ApprovalsBanner 已删：审批内联在对话流（approval/asked 事件 + SSE 驱动），无轮询
 
-type Page = "sessions" | "knowledge" | "decisions" | "evaluations" | "capabilities";
+type Page = "sessions" | "knowledge" | "decisions" | "evaluations" | "capabilities" | "providers";
 
 const NAV: { key: Page; label: string }[] = [
   { key: "sessions", label: "对话" },
@@ -14,6 +15,7 @@ const NAV: { key: Page; label: string }[] = [
   { key: "decisions", label: "Decisions" },
   { key: "evaluations", label: "Evaluations" },
   { key: "capabilities", label: "能力" },
+  { key: "providers", label: "模型" },
 ];
 
 export default function App() {
@@ -54,6 +56,7 @@ export default function App() {
           {page === "decisions" && <DecisionsPage />}
           {page === "evaluations" && <EvaluationsPage />}
           {page === "capabilities" && <CapabilitiesPage />}
+          {page === "providers" && <ProvidersPage />}
         </main>
       )}
     </div>
