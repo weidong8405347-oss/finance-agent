@@ -217,6 +217,7 @@ function CommandCard({ node }: { node: Extract<ChatNode, { kind: "command" }> })
 // ---------- ApprovalCard（内联审批，SSE 驱动） ----------
 function ApprovalCard({ node }: { node: Extract<ChatNode, { kind: "approval" }> }) {
   const [busy, setBusy] = useState(false);
+  const [comment, setComment] = useState("");  // 打回反馈（F3 闸口回环）
   if (node.state === "waived") {
     return (
       <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 font-mono text-[11px] text-neutral-500">
@@ -228,22 +229,32 @@ function ApprovalCard({ node }: { node: Extract<ChatNode, { kind: "approval" }> 
     return (
       <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-500">
         审批 {node.op}：{node.state === "approved" ? "✓ 已允许" : "✕ 已拒绝"}
+        {node.comment ? ` · 反馈：${node.comment}` : ""}
       </div>
     );
   }
   const decide = async (approved: boolean) => {
     setBusy(true);
-    try { await api.decideApproval(node.approvalId, approved); } finally { setBusy(false); }
+    try { await api.decideApproval(node.approvalId, approved, comment || undefined); } finally { setBusy(false); }
   };
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5">
       <div className="text-xs font-semibold text-amber-800">审批 · {node.op} 需要确认</div>
-      <div className="mb-2 mt-0.5 font-mono text-[11px] text-neutral-600">{node.detail}</div>
+      <div className="mb-2 mt-0.5 whitespace-pre-wrap font-mono text-[11px] text-neutral-600">{node.detail}</div>
+      <textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="打回理由（可选；填写后拒绝 = 带反馈重呈）"
+        rows={2}
+        className="mb-2 w-full rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs outline-none focus:border-neutral-500"
+      />
       <div className="flex gap-2">
         <button disabled={busy} onClick={() => decide(true)}
           className="rounded-md bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-40">允许一次</button>
         <button disabled={busy} onClick={() => decide(false)}
-          className="rounded-md border border-red-300 px-3 py-1 text-xs text-red-700 disabled:opacity-40">拒绝</button>
+          className="rounded-md border border-red-300 px-3 py-1 text-xs text-red-700 disabled:opacity-40">
+          {comment.trim() ? "打回（带反馈）" : "拒绝"}
+        </button>
       </div>
     </div>
   );

@@ -33,6 +33,11 @@ LEAKAGE_ATTEMPT = "leakage/attempt"
 RESEARCH_ROUND_START = "research/round_start"
 RESEARCH_ROUND_END = "research/round_end"
 RESEARCH_RUBRIC = "research/rubric"
+# stalled 三通道之事件通道：{entity, rounds_attempted, missing_fields, stale_fields,
+# rejected, sources_available, suggestions}（research-capability-upgrade §4.3 L3）
+RESEARCH_STALL_DIAGNOSTIC = "research/stall_diagnostic"
+# command 启动前数据源探活：{mode, results: {source_id: {ok, detail}}}（§4.9 预检）
+GATEWAY_PREFLIGHT = "gateway/preflight"
 
 # ---- 编排层（command 制交互，redesign-interaction-orchestration.md §3.5） ----
 COMMAND_RUN = "command/run"            # {command_id, name, args, raw_input}

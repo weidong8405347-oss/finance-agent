@@ -72,12 +72,12 @@ def make_deps(tmp_path: Path, scripts: dict[str, list], *, eval_runner=None):
                             url="demo://filing")],
     ))
     approvals = ApprovalService(events)
-    calls = {"research": 0, "fast": 0}
+    calls: dict[str, int] = {}
 
     def llm_for(role: str) -> MockLLM:
         script = scripts.get(role, [])
-        idx = calls[role]
-        calls[role] += 1
+        idx = calls.get(role, 0)
+        calls[role] = idx + 1
         return MockLLM(script[idx] if idx < len(script) else [AssistantReply(content="done")])
 
     deps = StepDeps(
@@ -397,7 +397,19 @@ def test_cancel_stops_command_between_rounds(tmp_path):
 
 class GatedLLM:
     """第一次调用挂起等 steer（返回一个工具调用），之后放行；记录每次调用收到的 messages。
-    第一次返回带 tool_call → 同一 turn 内还有第二次模型调用，可验证「注入后下一次调用即见」。"""
+    第一次返回带 tool_call → 同一 turn 内还有第二次模型调用，可验证「注入后下一次调用即见」。
+    放行后走完「检索→登记证据→写事实」最小闭环——stalled 语义升级后，
+    整轮零产出 = blocked 会拦停后续 step（test_steer_carried_to_subsequent_steps 依赖管道走通）。"""
+
+    #: 放行后的闭环脚本（chunk 编号与 fetch_document 文本同 make_deps 的 demo 夹具配套）
+    _SCRIPT = [
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="g2", name="read_edgar_filing",
+                                                  arguments={"chunk_id": "chk-0001", "query": "产能"})]),
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="g3", name="register_evidence", arguments={
+            "evidence_id": "ev-1", "chunk_id": "chk-0002", "verbatim_quote": "产能 2GW 公告"})]),
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="g4", name="propose_fact", arguments={
+            "field": "capacity", "value": "2GW", "evidence_ids": ["ev-1"]})]),
+    ]
 
     def __init__(self):
         self.calls: list[list[dict]] = []
@@ -413,6 +425,9 @@ class GatedLLM:
                 content="",
                 tool_calls=[ToolCall(call_id="g1", name="query_demo", arguments={})],
             )
+        idx = len(self.calls) - 2
+        if idx < len(self._SCRIPT):
+            return self._SCRIPT[idx]
         return AssistantReply(content="done")
 
 
@@ -508,9 +523,11 @@ def test_steer_no_active_command_returns_empty(tmp_path):
 def test_steer_targets_specific_command(tmp_path):
     """多 command 并行：显式 command_id 只注入指定的那个。"""
     llms: list[GatedLLM] = []
+    shared_gate = threading.Event()  # 共享放行闸：后续 step 新建的实例也能被放行
 
     def llm_for(role):
         g = GatedLLM()
+        g.gate = shared_gate
         llms.append(g)
         return g
 
@@ -528,8 +545,7 @@ def test_steer_targets_specific_command(tmp_path):
 
     result = runner.steer("live-s1", "只改 A 的方向", command_id=cmd_a)
     assert [r["command_id"] for r in result] == [cmd_a]
-    for g in llms:
-        g.gate.set()
+    shared_gate.set()
     for cid in (cmd_a, cmd_b):
         wait_for(events, "live-s1",
                  lambda e, c=cid: e.type == "command/done" and e.payload["command_id"] == c)
@@ -553,3 +569,45 @@ def test_wake_called_on_completed_but_not_on_usage_error(tmp_path):
     wakes.clear()
     run_command(deps, events, "/research", wake=lambda sid, c: wakes.append((sid, c)))
     assert not wakes, "usage_error 不唤醒主 agent（错误卡自解释）"
+
+
+# ---------------- P1：通知上下文 + stalled 诊断（research-capability-upgrade §4.3/§4.9） ----------------
+
+
+def test_done_wake_message_carries_ticker_and_command_id(tmp_path):
+    """[command 完成] 必须带标的与 command_id——主 agent 靠它们定位「哪只票的哪个任务」
+    （2026-09 AI for Science 调研事故：通知缺 ticker/command_id，无法判断失败标的）。"""
+    woken: list[str] = []
+    deps, events, _, _ = make_deps(tmp_path, {"research": [RESEARCH_SCRIPT]})
+    done = run_command(deps, events, "/research BE", wake=lambda sid, content: woken.append(content))
+    assert woken, "command/done 应唤醒主 agent"
+    assert "BE" in woken[0]
+    assert f"command_id={done.payload['command_id']}" in woken[0]
+
+
+def test_stalled_zero_progress_blocks_with_diagnostic(tmp_path, caplog):
+    """整轮零产出的 stalled = blocked + 缺口诊断卡（失败可见性三通道）：
+    事件（子流 stall_diagnostic + 父流桥接进度行）+ 日志（caplog）+ 用户可见（blocked 摘要/唤醒）。"""
+    import logging
+
+    no_progress = [
+        AssistantReply(content="", tool_calls=[ToolCall(call_id="q1", name="query_demo", arguments={})]),
+        AssistantReply(content="没找到可靠数据"),
+    ]
+    woken: list[str] = []
+    deps, events, _, _ = make_deps(tmp_path, {"research": [no_progress]})
+    with caplog.at_level(logging.WARNING, logger="finance_agent.research"):
+        done = run_command(deps, events, "/research BE", wake=lambda sid, content: woken.append(content))
+    assert done.payload["outcome"] == "blocked"
+    assert "stalled" in done.payload["summary"] and "缺口" in done.payload["summary"]
+    assert woken and "BE" in woken[0] and "command_id=" in woken[0]
+    # 事件通道：子流落诊断卡，父流桥接出进度行
+    child = f"live-s1--{done.payload['command_id']}-1-research"
+    diag = [e for e in events.read(child) if e.type == "research/stall_diagnostic"]
+    assert diag and "revenue_fly" not in diag[0].payload["missing_fields"]  # typo 哨兵
+    assert "revenue_fy" in diag[0].payload["missing_fields"]
+    progress = [e for e in events.read("live-s1") if e.type == "step_agent/progress"
+                and "停滞诊断" in e.payload["summary"]]
+    assert progress, "诊断卡应桥接为父流进度行"
+    # 日志通道
+    assert any("stalled" in r.message for r in caplog.records)

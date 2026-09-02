@@ -31,6 +31,17 @@ class YFinancePricesAdapter:
             description="日线 OHLCV；available_at = 交易日 +1d（保守收盘近似）",
         )
 
+    def healthcheck(self) -> dict:
+        """探活：取 SPY 近 5 天日线；空结果即视为不健康（限流/网络）。"""
+        try:
+            start = (datetime.now(UTC) - timedelta(days=7)).date().isoformat()
+            recs = self.query({"ticker": "SPY", "start": start})
+            if recs:
+                return {"ok": True, "detail": "yfinance 日线可取"}
+            return {"ok": False, "detail": "空结果（疑似限流/网络不通）"}
+        except Exception as e:
+            return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
     def query(self, request: dict, as_of: datetime | None = None) -> list[DataRecord]:
         import yfinance as yf  # lazy
 

@@ -37,6 +37,9 @@ MAIN_CONTRACT = """\
    把用户原话摘录进 waiver_basis 一并调用（豁免当次有效）。
 5. 多标的：对比/批量类输入 → 每个标的各自独立 run_command（可并行发起），
    全部完成后由你综合对比；command 只接受单标的。
+   例外：行业/赛道级调研（「调研 X 赛道」「X 行业有哪些标的值得投」）→
+   用 run_command 调 industry（objective 传主题）——它是赛道拆解→标的池→粗筛闸口
+   →深研→排序的五步漏斗，不要手工拆成多个单标的研究。
 6. 先查档案：调用 command 前先 query_kb 看完整度与新鲜度，把现状告诉用户。
 7. 一切事实性断言引用证据 id；没有证据就说「我不知道」。
 8. 用户要看档案 → 调 show_profile；要停任务 → stop_command；command 运行中用户想改研究方向
@@ -70,14 +73,15 @@ MAIN_AGENT_TOOL_SCHEMAS: dict[str, dict] = {
         "description": (
             "启动一个领域 command（子 agent pipeline，异步执行，完成后你会收到通知）。"
             "research=深度研究；profile=研究+档案更新；decide=全链路出决策卡（先经用户确认）；"
-            "evaluate=独立效果评估（默认审批）。"
+            "evaluate=独立效果评估（默认审批）；"
+            "industry=行业调研漏斗（赛道→标的池→粗筛→深研→排序，objective 传主题）。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "enum": list(COMMANDS)},
                 "ticker": {"type": "string", "description": "单标的代码（research/profile/decide 必填）"},
-                "objective": {"type": "string", "description": "研究目标（可选）"},
+                "objective": {"type": "string", "description": "研究目标；industry 必填（调研主题）"},
                 "config": {"type": "string", "description": "评估配置名（evaluate 必填）"},
                 "waiver_basis": {
                     "type": "string",

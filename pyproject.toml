@@ -19,6 +19,8 @@ dev = [
 data = [
     "httpx>=0.27",
     "yfinance>=0.2",
+    "akshare>=1.12",  # 港股基本面快照（fundamentals_hk adapter）
+    "pypdf>=4.0",  # 港股披露 PDF 正文抽取（P4，HKEXnews 全是 PDF）
 ]
 
 [build-system]

@@ -50,6 +50,14 @@ COMMANDS: dict[str, CommandSpec] = {
         steps=("evaluate",),
         needs_approval=True,
     ),
+    "industry": CommandSpec(
+        name="industry",
+        summary="行业调研漏斗：F1 赛道地图 → F1.5 产业判断备忘录 → F2 标的池 → "
+                "F3 粗调研+人工闸口 → F4 深研 → F4.5 投资委员会 → F5 排序报告",
+        usage="/industry <主题>（如 /industry AI for Science）",
+        steps=("industry_map", "thesis", "candidate_pool", "screen", "deep_dive",
+               "committee", "rank_report"),
+    ),
 }
 
 
@@ -92,6 +100,9 @@ def parse_command(text: str) -> ParsedCommand | None:
     ticker, config, objective = "", "", ""
     if name == "evaluate":
         config = positional[0] if positional else ""
+    elif name == "industry":
+        # 主题是自然语言整段（含空格），不走 ticker 大写归一
+        objective = " ".join(positional).strip()
     elif positional:
         ticker = positional[0].upper()
         objective = " ".join(positional[1:]).strip()

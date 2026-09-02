@@ -98,3 +98,44 @@ def test_cli_serve_subprocess_smoke(tmp_path):
         proc.terminate()
         proc.wait(timeout=5)
     assert proc.returncode is not None
+
+
+def test_router_prefers_data_dir_config(tmp_path, monkeypatch):
+    """provider 配置优先级（§4.4）：data_dir/llm-providers.json 存在即优先于 pi/.env。"""
+    import json as _json
+
+    from finance_agent.cli import _router
+
+    (tmp_path / "llm-providers.json").write_text(_json.dumps({
+        "providers": {
+            "local": {"base_url": "http://127.0.0.1:9/v1", "api_key": "sk-x", "models": ["m1"]}
+        },
+        "default_provider": "local",
+        "role_map": {"research": "local:m1"},
+    }))
+    router = _router(tmp_path)
+    assert router.get("research").spec.base_url == "http://127.0.0.1:9/v1"
+
+    # 热生效：改文件后下一次 _router() 即见（无需重启）
+    (tmp_path / "llm-providers.json").write_text(_json.dumps({
+        "providers": {
+            "local": {"base_url": "http://127.0.0.1:8/v1", "api_key": "sk-x", "models": ["m2"]}
+        },
+        "default_provider": "local",
+        "role_map": {"research": "local:m2"},
+    }))
+    router2 = _router(tmp_path)
+    assert router2.get("research").spec.model == "m2"
+
+
+def test_router_config_fail_closed_actionable(tmp_path):
+    """自有配置损坏 → fail-closed 且报错可读（不静默回落 pi——那会让人以为新配置生效了）。"""
+    from finance_agent.cli import _router
+    from finance_agent.llm.router import ProviderConfigError
+
+    (tmp_path / "llm-providers.json").write_text("{broken")
+    try:
+        _router(tmp_path)
+        raise AssertionError("应抛 ProviderConfigError")
+    except ProviderConfigError as e:
+        assert "llm-providers.json" in str(e)

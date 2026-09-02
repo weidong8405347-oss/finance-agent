@@ -3,6 +3,8 @@
 - request() 挂起请求并落 approval/asked 事件；
 - 后台线程 wait() 阻塞等待；UI 经 SSE 看到 asked 事件后内联呈现审批卡；
 - decide() 落 approval/decided 事件并放行/取消；超时 = rejected（fail-closed）；
+- decide() 支持 comment（P3 行业漏斗 F3 闸口的打回反馈：拒绝可带理由，
+  反馈进 approval/decided 事件，调用方据此迭代优化后重呈）；
 - 豁免走 approval/waived（当次有效，带用户原话/flag 依据，可审计）——由调用方落。
 """
 
@@ -28,6 +30,7 @@ class ApprovalRequest:
     detail: dict[str, Any]
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: str = "pending"  # pending / approved / rejected
+    comment: str | None = None  # 打回反馈（拒绝时用户给的理由）
     _event: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
@@ -52,18 +55,24 @@ class ApprovalService:
             self.decide(approval_id, False)
         return req.status == "approved"
 
-    def decide(self, approval_id: str, approved: bool) -> None:
+    def decide(self, approval_id: str, approved: bool, comment: str | None = None) -> None:
         with self._lock:
             req = self._requests[approval_id]
             if req.status != "pending":
                 return
             req.status = "approved" if approved else "rejected"
+            req.comment = comment or None
             req._event.set()
         self._emit(
             APPROVAL_RESOLVED,
             req.run_id,
-            {"approval_id": approval_id, "approved": approved},
+            {"approval_id": approval_id, "approved": approved, "comment": req.comment},
         )
+
+    def outcome(self, approval_id: str) -> tuple[bool, str | None]:
+        """审批结果 + 打回反馈（F3 闸口用）：(approved, comment)。"""
+        req = self._requests[approval_id]
+        return req.status == "approved", req.comment
 
     def pending(self) -> list[ApprovalRequest]:
         with self._lock:

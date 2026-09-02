@@ -7,6 +7,7 @@
 - [DESIGN.md](DESIGN.md) — 总体设计文档（架构、四大 step、评估反穿越设计、UI、实施计划），**先读这份**
 - [docs/best-practices-evaluation.md](docs/best-practices-evaluation.md) — 业界最佳实践调研（LLM 回测污染证据、PIT 数据实践、评估协议、记忆架构），DESIGN.md 第 4.3/6 章的依据
 - [docs/evaluation-design.md](docs/evaluation-design.md) — 评估体系对齐稿（过程评估/效果评估两部分隔离 + 插件化，含待确认决策点清单）
+- [docs/research-capability-upgrade.md](docs/research-capability-upgrade.md) — 调研能力提升设计（/industry 行业漏斗、维度并行 loop、三 flash 模型分级、四新数据源、stalled 升级阶梯）；P1/P2/P3 已落地
 - [model_agent.md](model_agent.md) — 通用 agent 设计框架（本设计的理论输入，含投资领域风险清单）
 
 ## 设计要点速览
@@ -31,6 +32,7 @@ uv run python -m finance_agent serve   # 一条命令：自动构建前端（首
   - `/research <标的> [目标]` — S1 深度研究 + 过程评估
   - `/profile <标的>` — S1 研究 → S2 档案更新 + 过程评估
   - `/decide <标的>` — S1 → S2 → S3 决策卡 + 过程评估
+  - `/industry <主题>` — 行业调研漏斗：F1 赛道地图 → F2 标的池（三 worker 并集、每票绑证据）→ F3 粗调研卡 + 人工闸口（可打回迭代）→ F4 深研 fan-out → F5 排序报告
   - `/evaluate <配置名>` — S4 独立效果评估（默认需审批；`--no-approval` 当次豁免）
 - 每个 command = step agent 管道：各 step 跑在独立子 run（可钻取），父会话实时显示进度。
 

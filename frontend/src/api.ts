@@ -186,11 +186,11 @@ export const api = {
   decisions: () => get<DecisionCardJson[]>("/api/decisions"),
   evaluations: () => get<EvalSummary[]>("/api/evaluations"),
   pendingApprovals: () => get<ApprovalRow[]>("/api/approvals/pending"),
-  decideApproval: async (approvalId: string, approved: boolean) => {
+  decideApproval: async (approvalId: string, approved: boolean, comment?: string) => {
     const resp = await fetch(`/api/approvals/${approvalId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approved }),
+      body: JSON.stringify({ approved, comment: comment || undefined }),
     });
     if (!resp.ok) throw new Error(`decideApproval: ${resp.status}`);
   },

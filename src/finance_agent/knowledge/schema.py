@@ -36,6 +36,11 @@ STOCK_SCHEMA = ProfileSchema(
         "management": FieldPolicy(max_age_days=None),
         "catalysts": FieldPolicy(max_age_days=180),
         "counter_evidence": FieldPolicy(max_age_days=180),  # 反方证据采集义务（DESIGN.md §5.1）
+        # P3 扩展（research-capability-upgrade §4.6）：先 optional 观察证据可得性，
+        # 跑 2-3 个真实调研后再决定是否晋升 required
+        "future_space": FieldPolicy(max_age_days=180),  # 未来空间（TAM/赛道增速事实）
+        "market_share": FieldPolicy(max_age_days=400),  # 现有市场份额
+        "talent_density": FieldPolicy(max_age_days=None),  # 人才密度
     },
 )
 
@@ -47,6 +52,11 @@ INDUSTRY_SCHEMA = ProfileSchema(
         "value_chain": FieldPolicy(max_age_days=None),
         "competition": FieldPolicy(max_age_days=None),
         "policy": FieldPolicy(max_age_days=180),
+    },
+    optional={
+        # P3 扩展：F1 赛道地图 / F2 标的池的落点
+        "sub_sectors": FieldPolicy(max_age_days=None),  # 子赛道拆解（赛道地图）
+        "player_landscape": FieldPolicy(max_age_days=180),  # 标的池（含证据绑定）
     },
 )
 

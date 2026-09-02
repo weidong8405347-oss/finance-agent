@@ -76,10 +76,18 @@ def _apply_dotenv_proxy(dotenv_path: str | Path = ".env") -> list[str]:
     return injected
 
 
-def _router():
-    """provider 配置来源（可测试接缝）：pi 配置优先，.env 兜底。"""
+def _router(data_dir: Path | None = None):
+    """provider 配置来源（可测试接缝）：自有配置 > pi 配置 > .env 兜底。
+
+    自有配置 = data_dir/llm-providers.json（前端可自配，§4.4）；每次调用重读文件，
+    改配置即热生效，无需重启。
+    """
     from .llm.router import LLMRouter
 
+    if data_dir is not None:
+        cfg = Path(data_dir) / "llm-providers.json"
+        if cfg.exists():
+            return LLMRouter.from_config(cfg)
     pi_dir = Path.home() / ".pi" / "agent"
     if (pi_dir / "models.json").exists() and (pi_dir / "auth.json").exists():
         return LLMRouter.from_pi()  # 复用 pi 配置（单一真相源）
@@ -139,6 +147,9 @@ def build_orchestrator(data_dir: Path):
     from .decision.service import DecisionService
     from .decision.store import DecisionStore
     from .gateway.adapters.edgar import EdgarAdapter, fetch_filing_text
+    from .gateway.adapters.exa_search import ExaSearchAdapter
+    from .gateway.adapters.fundamentals import AkshareHKFundamentalsAdapter, YFinanceFundamentalsAdapter
+    from .gateway.adapters.gdelt import GdeltNewsAdapter
     from .gateway.adapters.prices import YFinancePricesAdapter
     from .gateway.adapters.stooq import StooqPricesAdapter
     from .harness.approvals import ApprovalService
@@ -153,12 +164,56 @@ def build_orchestrator(data_dir: Path):
     gateway.register(EdgarAdapter())
     gateway.register(YFinancePricesAdapter())
     gateway.register(StooqPricesAdapter())
+    # P2 数据源扩展（research-capability-upgrade §4.5；全部走 gateway 纪律）
+    gateway.register(YFinanceFundamentalsAdapter())  # C 级快照：美股基本面
+    gateway.register(GdeltNewsAdapter())  # B 级：全球新闻含中文媒体
+    from .gateway.adapters.hkexnews import HKEXNewsAdapter
+
+    gateway.register(HKEXNewsAdapter())  # A 级：港股披露原文（spike 已验证端点）
+    # 数据源 key 解析约定与 LLMRouter 一致：.env 打底、环境变量优先
+    from .llm.router import _read_dotenv
+
+    _dotenv = _read_dotenv()
+
+    def _key(name: str) -> str | None:
+        return os.environ.get(name) or _dotenv.get(name)
+
+    exa = ExaSearchAdapter(api_key=_key("EXA_API_KEY"))
+    if exa.configured:
+        gateway.register(exa)  # B 级：web 语义搜索（定性维度命脉）
+    else:
+        print("[finance-agent] EXA_API_KEY 未配置：web 搜索源未注册（定性维度研究能力受限）")
+    from .gateway.adapters.tavily import TavilySearchAdapter
+
+    tavily = TavilySearchAdapter(api_key=_key("TAVILY_API_KEY"))
+    if tavily.configured:
+        gateway.register(tavily)  # C 级：Exa 的备份/并集搜索源
+    else:
+        print("[finance-agent] TAVILY_API_KEY 未配置：Tavily 搜索源未注册")
+    import importlib.util
+
+    if importlib.util.find_spec("akshare") is not None:
+        gateway.register(AkshareHKFundamentalsAdapter())  # C 级：港股基本面快照
+    else:
+        print("[finance-agent] akshare 未安装（uv sync --extra data）：港股基本面源未注册")
     decisions = DecisionService(kb=kb, decisions=DecisionStore(data_dir / "decisions.db"), events=events)
     approvals = ApprovalService(events)
     evals_dir = data_dir / "evals"
 
     def llm_for(role: str):
-        return _router().get(role, tool_schemas=_all_tool_schemas())
+        return _router(data_dir).get(role, tool_schemas=_all_tool_schemas())
+
+    def worker_llm_for(n: int):
+        """维度并行 worker 池（P3 §4.4）：n 个 flash LLM（三源轮转；未配置 → fast 兜底）。"""
+        router = _router(data_dir)
+        schemas = _all_tool_schemas()
+        out = []
+        for i in range(n):
+            role = f"research-worker-{(i % 3) + 1}"
+            if not router.has_role(role):
+                role = "fast"
+            out.append(router.get(role, tool_schemas=schemas))
+        return out
 
     def eval_runner(*, config_name: str, child_run_id: str):
         """S4 独立效果评估的真实装配（mandate 文件 → ReplayEngine）。"""
@@ -210,6 +265,7 @@ def build_orchestrator(data_dir: Path):
         gateway=gateway,
         decisions=decisions,
         llm_for=llm_for,
+        worker_llm_for=worker_llm_for,
         approvals=approvals,
         evals_dir=evals_dir,
         reports_dir=data_dir / "reports",
@@ -234,11 +290,16 @@ def build_orchestrator(data_dir: Path):
         """能力目录的动态部分：模型名与数据源（装配时已知，查询时读最新配置）。"""
         models: dict[str, str] = {}
         try:
-            router = _router()
+            router = _router(data_dir)
             for role in ("research", "fast"):
                 try:
                     llm = router.get(role)
-                    models[role] = getattr(llm, "model_name", "?")
+                    name = getattr(llm, "model_name", "?")
+                    effort = getattr(getattr(llm, "spec", None), "effort", None)
+                    timeout = getattr(llm, "_timeout", None)  # noqa: SLF001 - 展示用
+                    models[role] = name + (f"@{effort}" if effort else "") + (
+                        f"（{timeout:.0f}s）" if timeout else ""
+                    )
                 except Exception:
                     models[role] = "未配置"
         except Exception:

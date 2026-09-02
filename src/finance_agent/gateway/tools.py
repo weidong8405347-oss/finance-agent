@@ -29,12 +29,16 @@ def make_gateway_tool(gateway: DataGateway, source_id: str, chunk_store=None):
 
                 # chunk 文本必须与模型所见逐项一致（子串校验的基准）
                 item_text = json.dumps(item, ensure_ascii=False, default=str)
+                # 逐条有效等级（2026-09-01 实测修复）：源级 B 但本条无 available_at
+                # → 本条降级 C（Evidence 校验：A/B 级必须有时刻；不给就拒登记）
+                grade = gateway_grade(gateway, r.source_id)
+                effective = grade if r.available_at is not None else "C"
                 item["chunk_id"] = chunk_store.add(
                     source_id=r.source_id,
                     text=item_text,
                     url=r.url,
                     available_at=r.available_at,
-                    pit_grade=PitGrade(gateway_grade(gateway, r.source_id)),
+                    pit_grade=PitGrade(effective),
                 )
             items.append(item)
         return {
@@ -95,6 +99,88 @@ GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
                 "end": {"type": "string"},
             },
             "required": ["ticker"],
+        },
+    },
+    "query_web_search": {
+        "name": "query_web_search",
+        "description": (
+            "web 语义搜索（Exa，B 级：publishedDate 为可知时刻，无日期的条目无 PIT 保证）。"
+            "护城河/管理层/市场份额/行业空间等定性维度的主要证据源"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索词（中英文皆可，尽量具体）"},
+                "num_results": {"type": "integer", "description": "条数（默认 8，上限 25）"},
+            },
+            "required": ["query"],
+        },
+    },
+    "query_web_search_tavily": {
+        "name": "query_web_search_tavily",
+        "description": (
+            "web 关键词搜索（Tavily，C 级：无逐条发布时间保证，评估模式不可用）。"
+            "与 query_web_search（Exa）互为补充/并集，提高召回"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "description": "默认 8，上限 20"},
+            },
+            "required": ["query"],
+        },
+    },
+    "query_fundamentals": {
+        "name": "query_fundamentals",
+        "description": (
+            "查询美股基本面快照（市值/股本/TTM 财务，C 级：当前值无历史 PIT，"
+            "评估模式不可用；严肃口径以 EDGAR 披露原文为准）"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    "query_fundamentals_hk": {
+        "name": "query_fundamentals_hk",
+        "description": "查询港股基本面快照（akshare/东财，C 级；ticker 如 2228.HK 或 02228）",
+        "parameters": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    "query_hkex_news": {
+        "name": "query_hkex_news",
+        "description": (
+            "查询港股披露易公告（HKEXnews，A 级：披露时刻精确到分钟）。"
+            "港股财报/公告的一手来源；ticker 如 2228.HK 或 02228"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "days": {"type": "integer", "description": "回看天数（默认 365）"},
+            },
+            "required": ["ticker"],
+        },
+    },
+    "query_news_gdelt": {
+        "name": "query_news_gdelt",
+        "description": (
+            "查询全球新闻（GDELT，B 级：seendate 收录时刻；含中文媒体）。"
+            "催化剂/风险/舆情维度的证据源"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_records": {"type": "integer", "description": "默认 25，上限 250"},
+                "timespan": {"type": "string", "description": "如 1d/1w/1m（默认 1m）"},
+            },
+            "required": ["query"],
         },
     },
     # 仅 eval canary 模式注册的源。模型侧描述必须与真源不可区分——诱饵的全部意义

@@ -9,9 +9,7 @@ PIT 语义：filingDate → available_at（何时可知）；reportDate（报告
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
-from html import unescape
 
 from ...knowledge.models import PitGrade
 from ..models import DataRecord, SourceCapability
@@ -22,20 +20,15 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 def fetch_filing_text(
     url: str, *, user_agent: str = "finance-agent research (contact: local@example.com)"
 ) -> str:
-    """抓取 filing 正文并剥离 HTML（read_edgar_filing 工具的抓取函数）。
+    """抓取 filing 正文（read_edgar_filing 工具的抓取函数）。
 
     PIT 语义：Archives 下的 filing 文档自发布起不可变，available_at 由
     filing 记录（filingDate）继承——抓取动作本身不产生新的时间线。
+    P4 起委托给统一抓取器（HTML + PDF 双格式，后者为港股披露）。
     """
-    import httpx  # lazy：核心与测试不依赖网络库
+    from ..fetch import fetch_document
 
-    resp = httpx.get(url, headers={"User-Agent": user_agent}, timeout=60, follow_redirects=True)
-    resp.raise_for_status()
-    html = resp.text
-    html = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
-    text = re.sub(r"(?s)<[^>]+>", " ", html)
-    text = unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
+    return fetch_document(url, user_agent=user_agent)
 
 
 class EdgarAdapter:
@@ -50,6 +43,21 @@ class EdgarAdapter:
             server_side_asof=True,
             description="SEC EDGAR submissions：filingDate 精确到日，A 级 PIT",
         )
+
+    def healthcheck(self) -> dict:
+        """探活：submissions 端点取 AAPL（短超时，不抛异常）。"""
+        try:
+            import httpx  # lazy
+
+            resp = httpx.get(
+                _SUBMISSIONS_URL.format(cik="0000320193"),
+                headers={"User-Agent": self._ua},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            return {"ok": True, "detail": "submissions 端点可达"}
+        except Exception as e:
+            return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
     def query(self, request: dict, as_of: datetime | None = None) -> list[DataRecord]:
         import httpx  # lazy：核心与测试不依赖网络库

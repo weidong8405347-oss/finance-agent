@@ -15,6 +15,7 @@ source_id / available_at / verbatim_quote——模型凭参数记忆编一个数
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -49,6 +50,7 @@ class ChunkStore:
     def __init__(self) -> None:
         self._chunks: dict[str, RetrievedChunk] = {}
         self._n = 0
+        self._lock = threading.Lock()  # 维度并行 researcher 共享台账（P3）
 
     def add(
         self,
@@ -59,9 +61,10 @@ class ChunkStore:
         available_at: datetime | None,
         pit_grade: PitGrade,
     ) -> str:
-        self._n += 1
-        chunk_id = f"chk-{self._n:04d}"
-        self._chunks[chunk_id] = RetrievedChunk(
+        with self._lock:
+            self._n += 1
+            chunk_id = f"chk-{self._n:04d}"
+            self._chunks[chunk_id] = RetrievedChunk(
             chunk_id=chunk_id,
             source_id=source_id,
             text=text,
@@ -72,7 +75,8 @@ class ChunkStore:
         return chunk_id
 
     def get(self, chunk_id: str) -> RetrievedChunk | None:
-        return self._chunks.get(chunk_id)
+        with self._lock:
+            return self._chunks.get(chunk_id)
 
 
 class EvidenceVerificationError(Exception):

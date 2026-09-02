@@ -31,6 +31,7 @@ from ..eventstore.events import (
     FACT_CONFLICT,
     FACT_CONFLICT_RESOLVED,
     RESEARCH_ROUND_END,
+    RESEARCH_STALL_DIAGNOSTIC,
     STEER_REQUESTED,
     STEP_AGENT_END,
     STEP_AGENT_PROGRESS,
@@ -40,13 +41,14 @@ from ..eventstore.events import (
 from ..eventstore.store import StoredEvent
 from ..gateway.adapters.prices import PRICE_SOURCE_ORDER
 from .registry import COMMANDS, ParsedCommand, parse_target
-from .steps import STEP_TITLES, STEPS, StepContext, StepDeps, StepResult
+from .steps import STEP_TITLES, STEPS, StepContext, StepDeps, StepResult, theme_slug
 
 logger = logging.getLogger("finance_agent.commands")
 
 #: 子流里桥接到父流进度的事件类型（过程透明：工具调用 + 知识库写入 + 决策出具）
 _BRIDGE_TYPES = {
     RESEARCH_ROUND_END,
+    RESEARCH_STALL_DIAGNOSTIC,
     DECISION_CARD,
     FACT_ASSERTED,
     FACT_CONFLICT,
@@ -56,6 +58,13 @@ _BRIDGE_TYPES = {
     "decision/error",
     "tool/call",
 }
+
+#: 预检关键组（research-capability-upgrade §4.9）：独立源必须健康；
+#: 回退链同组至少一员健康。只检查「已注册」的成员——装配决定注册什么。
+#: 按 command 类型分流：单标的命令的命门是 EDGAR+行情；行业漏斗的命门是
+#: web 搜索源（行情/基本面对它是增益而非命门，降级即可不拦）。
+_PREFLIGHT_GROUPS_STOCK: tuple[tuple[str, ...], ...] = (("edgar",), PRICE_SOURCE_ORDER)
+_PREFLIGHT_GROUPS_INDUSTRY: tuple[tuple[str, ...], ...] = (("web_search", "web_search_tavily"),)
 
 WakeFn = Callable[[str, str], None]  # (session_run_id, content) —— command/done 唤醒主 agent
 
@@ -218,10 +227,18 @@ class CommandRunner:
                 act.remove(command_id)
         # Q1：执行过的终态唤醒主 agent 汇报（usage/unknown/needs_config/rejected/cancelled 不唤醒）
         if self._wake is not None and outcome in ("completed", "blocked", "error"):
+            # 通知必须带标的与 command_id——主 agent 靠它们定位「哪只票的哪个任务」
+            # （2026-09 AI for Science 调研事故：通知缺 ticker/command_id，无法判断失败标的）
+            target = p.ticker or p.config or (p.objective[:24] if p.name == "industry" else "")
+            target_part = f" {target}" if target else ""
             note = ""
             if steers:  # 改向要进汇报上下文（主 agent 醒来能解释研究方向的变化）
                 note = f"（用户中途改向 ×{len(steers)}：最新「{steers[-1][:40]}」）"
-            self._wake(sid, f"[command 完成] /{p.name} → {outcome}：{summary}{note}")
+            self._wake(
+                sid,
+                f"[command 完成] /{p.name}{target_part} → {outcome}：{summary}{note}"
+                f"（command_id={command_id}）",
+            )
 
     def _execute(self, command_id: str, req: CommandRequest, cancel: threading.Event) -> tuple[str, str]:
         deps, sid, p = self._deps, req.session_run_id, req.parsed
@@ -234,8 +251,26 @@ class CommandRunner:
                 configs = self._list_eval_configs()
                 listing = "、".join(configs) if configs else "（evals/mandates/ 下暂无配置）"
                 return "needs_config", f"请指定评估配置：/evaluate <配置名>。可用：{listing}"
+        elif p.name == "industry":
+            if not p.objective:
+                return "usage_error", f"缺少主题。用法：{spec.usage}"
         elif not p.ticker:
             return "usage_error", f"缺少标的。用法：{spec.usage}"
+
+        # 数据源预检（§4.9）：关键源挂了直接拒启动并明示（防后台 agent 静默退化）；
+        # 非关键源挂了降级继续但留痕（事件 + 日志 + 汇报摘要）。
+        preflight = deps.gateway.preflight(run_id=sid)
+        groups = _PREFLIGHT_GROUPS_INDUSTRY if p.name == "industry" else _PREFLIGHT_GROUPS_STOCK
+        critical_failed = self._preflight_critical_failures(preflight, groups)
+        degraded_note = ""
+        if critical_failed:
+            detail = "；".join(f"{s}（{preflight[s]['detail'][:80]}）" for s in critical_failed)
+            logger.error("command %s 数据源预检拦截：%s", command_id, detail)
+            return "blocked", f"数据源预检未通过：{detail}。修复该源或从装配中摘除后重试"
+        failed = [s for s, r in preflight.items() if not r["ok"]]
+        if failed:
+            degraded_note = f"（预检降级源：{'、'.join(failed)}）"
+            logger.warning("command %s 数据源预检降级：%s", command_id, "、".join(failed))
 
         # 审批闸（默认强制；豁免当次有效：--no-approval flag 或主 agent 带原话依据）
         if spec.needs_approval:
@@ -270,7 +305,10 @@ class CommandRunner:
                     },
                 )
             )
-            entity_kind, entity_id = parse_target(p.ticker) if p.ticker else ("stock", "")
+            if p.name == "industry":
+                entity_kind, entity_id = "industry", theme_slug(p.objective)
+            else:
+                entity_kind, entity_id = parse_target(p.ticker) if p.ticker else ("stock", "")
             ctx = StepContext(
                 command_id=command_id,
                 session_run_id=sid,
@@ -316,11 +354,29 @@ class CommandRunner:
             if result.status == "cancelled":
                 return "cancelled", "已被用户停止"
             if result.status in ("error", "blocked"):
-                return result.status, "；".join(step_summaries)
+                return result.status, "；".join(step_summaries) + degraded_note
         if p.ticker:
             kind, eid = parse_target(p.ticker)
             self._maybe_archive_profile(sid, kind, eid)
-        return "completed", "；".join(step_summaries)
+        elif p.name == "industry":
+            self._maybe_archive_profile(sid, "industry", theme_slug(p.objective))
+        return "completed", "；".join(step_summaries) + degraded_note
+
+    @staticmethod
+    def _preflight_critical_failures(
+        report: dict[str, dict],
+        groups: tuple[tuple[str, ...], ...] = _PREFLIGHT_GROUPS_STOCK,
+    ) -> list[str]:
+        """关键源判定：全部注册源全灭 → 全关键；否则按关键组逐组判定——
+        组内有注册成员且全灭 → 该组成员均为关键失败。"""
+        if report and not any(r["ok"] for r in report.values()):
+            return list(report)
+        failed: list[str] = []
+        for group in groups:
+            members = [s for s in group if s in report]
+            if members and not any(report[s]["ok"] for s in members):
+                failed.extend(members)
+        return failed
 
     def _run_step(self, step_name: str, ctx: StepContext) -> StepResult:
         deps = self._deps
@@ -418,6 +474,10 @@ def _progress_summary(e: StoredEvent) -> str:
         return f"⚠ 档案冲突：{p.get('field')} 产生竞争版本，待裁决"
     if e.type == FACT_CONFLICT_RESOLVED:
         return f"✓ 冲突已裁决：{p.get('field')}（{p.get('note')}）"
+    if e.type == RESEARCH_STALL_DIAGNOSTIC:
+        missing = p.get("missing_fields") or []
+        sugg = (p.get("suggestions") or [""])[0]
+        return f"⚠ 研究停滞诊断：缺口 {len(missing)} 字段（{'、'.join(missing[:4])}）；建议：{sugg[:60]}"
     if e.type in ("research/error", "decision/error"):
         return f"出错：{p.get('reason', '')}"
     if e.type == "eval/report":

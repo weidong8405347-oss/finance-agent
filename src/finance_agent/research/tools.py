@@ -24,6 +24,7 @@ from ..knowledge.errors import KnowledgeError
 from ..knowledge.models import Fact
 from ..knowledge.store import BitemporalStore
 from ..knowledge.writer import ProfileWriter
+from .calc import CALC_TOOL_SCHEMA, calc_tool
 from .evidence_desk import ChunkStore, EvidenceVerificationError, verify_and_build
 
 #: 抓取函数的签名：filing URL → 纯文本正文（HTML 已剥离）
@@ -31,11 +32,20 @@ FetchDocument = Callable[[str], str]
 
 _WS = re.compile(r"\s+")
 
+#: 结构化字段校验（2026-09-01 实测：模型把 player_landscape 写成 JSON 字符串，
+#: 下游 F3 读到 1491 个字符——类型不校验的静默腐化）：值必须是 list[dict]，
+#: 且每条含必备键。
+_STRUCTURED_LIST_FIELDS: dict[str, tuple[str, ...]] = {
+    "player_landscape": ("ticker", "evidence_ids"),
+    "sub_sectors": ("name",),
+}
+
 
 class _Tracker:
     def __init__(self) -> None:
         self.written: list[str] = []
         self.rejected: list[dict] = []
+        self.registered: list[str] = []  # 已登记证据 id（囤证据检测：登记多而写入少 = 空转）
 
 
 def _windows(text: str, query: str, *, width: int = 1600, max_windows: int = 4) -> list[str]:
@@ -82,6 +92,7 @@ def make_research_tools(
             tracker.rejected.append({"evidence": str(args.get("chunk_id")), "reason": str(e)})
             return {"content": f"rejected: {e}", "provenance": []}
         store.add_evidence(ev)
+        tracker.registered.append(ev.evidence_id)
         return {
             "content": json.dumps({"evidence_id": ev.evidence_id}, ensure_ascii=False),
             "provenance": [
@@ -96,6 +107,19 @@ def make_research_tools(
     def propose_fact(args: dict[str, Any]) -> dict[str, Any]:
         field = args["field"]
         evidence_ids: list[str] = args["evidence_ids"]
+        # 结构化字段类型校验（写侧 fail-loud，防 JSON 字符串腐化下游）
+        if field in _STRUCTURED_LIST_FIELDS:
+            required_keys = _STRUCTURED_LIST_FIELDS[field]
+            value = args.get("value")
+            if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+                return {"content": f"rejected: 字段 {field} 的值必须是 list[object]（收到 "
+                                   f"{type(value).__name__}）；逐条给对象，不要拼 JSON 字符串",
+                        "provenance": []}
+            bad = [i for i, v in enumerate(value)
+                   if any(k not in v for k in required_keys)]
+            if bad:
+                return {"content": f"rejected: 字段 {field} 的第 {bad} 条缺必备键 {required_keys}",
+                        "provenance": []}
         try:
             evidences = [store.get_evidence(e) for e in evidence_ids]
             # knowledge_time 推导：所绑证据的最晚可知时刻；全无（C 级）则取当前（生产模式）
@@ -165,6 +189,7 @@ def make_research_tools(
         "propose_fact": propose_fact,
         "query_kb": query_kb,
         "resolve_conflict": resolve_conflict,
+        "calc": calc_tool,  # §4.7：数字保护双保险（逐字 + 计算一致性）
     }
 
     if fetch_document is not None:
@@ -208,6 +233,55 @@ def make_research_tools(
 
 
 TOOL_SCHEMAS: dict[str, dict] = {
+    "calc": CALC_TOOL_SCHEMA,
+    # F2/F3 漏斗专用工具（在 step 内动态注入 kernel；schema 登记在此供路由层绑定，
+    # 否则模型看到空 schema 会以空参调用——2026-09-01 实测 submit_card({}) 空提事故）
+    "propose_candidates": {
+        "name": "propose_candidates",
+        "description": "提交一批赛道候选标的（每只必须绑 ≥1 条已登记证据，否则拒收）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ticker": {"type": "string"},
+                            "name": {"type": "string"},
+                            "market": {"type": "string", "description": "US/HK/CN"},
+                            "sub_sector": {"type": "string"},
+                            "one_liner": {"type": "string"},
+                            "listed": {"type": "boolean"},
+                            "evidence_ids": {"type": "array", "items": {"type": "string"},
+                                             "minItems": 1},
+                        },
+                        "required": ["ticker", "evidence_ids"],
+                    },
+                }
+            },
+            "required": ["candidates"],
+        },
+    },
+    "submit_card": {
+        "name": "submit_card",
+        "description": "提交一只标的的粗调研卡（F3 闸口筛选用；全部字段必填）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "one_liner": {"type": "string", "description": "业务一句话"},
+                "key_metrics": {"type": "object", "description": "市值/收入/现金等（查不到标未知）"},
+                "highlights": {"type": "array", "items": {"type": "string"}},
+                "risks": {"type": "array", "items": {"type": "string"}},
+                "richness": {"type": "string", "enum": ["A", "B", "C"],
+                              "description": "信息丰富度评级"},
+                "recommend": {"type": "boolean", "description": "是否推荐进入深研"},
+                "reason": {"type": "string", "description": "推荐/淘汰的一句话理由"},
+                "evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            },
+            "required": ["one_liner", "key_metrics", "recommend", "reason", "evidence_ids"],
+        },
+    },
     "register_evidence": {
         "name": "register_evidence",
         "description": (
@@ -270,6 +344,20 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "query": {"type": "string", "description": "定位关键词（如 'total revenue'）"},
             },
             "required": ["chunk_id"],
+        },
+    },
+    # read_evidence 在多个 step 内动态注入（synthesize/committee/rank_report）；
+    # 缺 schema 时路由层回退空参 schema，模型会以 read_evidence({}) 空转——
+    # 2026-09-02 P4 验收实测：委员会 financial 视角 8 步全烧在空参调用上
+    "read_evidence": {
+        "name": "read_evidence",
+        "description": "读取一条已登记证据的原文（verbatim_quote）与来源，用于核对事实锚点",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "evidence_id": {"type": "string", "description": "证据 id（ev- 前缀）"},
+            },
+            "required": ["evidence_id"],
         },
     },
 }

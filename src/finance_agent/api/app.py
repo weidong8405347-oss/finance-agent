@@ -479,7 +479,11 @@ def create_app(
     @app.post("/api/approvals/{approval_id}")
     def decide_approval(approval_id: str, body: dict[str, Any]) -> dict[str, Any]:
         try:
-            approvals.decide(approval_id, bool(body.get("approved")))
+            approvals.decide(
+                approval_id,
+                bool(body.get("approved")),
+                comment=body.get("comment") or None,  # 打回反馈（F3 闸口回环）
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail="unknown approval_id") from None
         return {"ok": True}

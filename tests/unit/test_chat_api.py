@@ -18,13 +18,30 @@ from finance_agent.commands.steps import StepDeps
 from finance_agent.decision.service import DecisionService
 from finance_agent.decision.store import DecisionStore
 from finance_agent.eventstore.store import EventStore
+from finance_agent.gateway.adapters.fixture import FixtureAdapter
 from finance_agent.gateway.gateway import DataGateway
+from finance_agent.gateway.models import DataRecord, SourceCapability
 from finance_agent.harness.approvals import ApprovalService
+from finance_agent.knowledge.models import PitGrade
 from finance_agent.knowledge.store import BitemporalStore
 from finance_agent.knowledge.writer import ProfileWriter
-from finance_agent.llm.base import AssistantReply
+from finance_agent.llm.base import AssistantReply, ToolCall
 from finance_agent.llm.mock import MockLLM
 from finance_agent.main_agent import MainAgent
+
+#: 研究 step 脚本：走完「检索→登记证据→写事实」的最小闭环。
+#: 必须有进展——stalled 语义升级后一轮零写入 = blocked，会拦停管道，
+#: 覆盖不到 synthesize/process_eval 的接线（research-capability-upgrade §4.3）。
+RESEARCH_SCRIPT = [
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c0", name="query_demo", arguments={})]),
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c1", name="read_edgar_filing",
+                                               arguments={"chunk_id": "chk-0001", "query": "产能"})]),
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c2", name="register_evidence", arguments={
+        "evidence_id": "ev-1", "chunk_id": "chk-0002", "verbatim_quote": "产能 2GW 公告"})]),
+    AssistantReply(content="", tool_calls=[ToolCall(call_id="c3", name="propose_fact", arguments={
+        "field": "capacity", "value": "2GW", "evidence_ids": ["ev-1"]})]),
+    AssistantReply(content="round1 done"),
+]
 
 
 def make_client(tmp_path, scripts=None, step_llm_factory=None):
@@ -33,10 +50,22 @@ def make_client(tmp_path, scripts=None, step_llm_factory=None):
     kb = BitemporalStore(tmp_path / "kb.db")
     writer = ProfileWriter(store=kb, events=events)
     gateway = DataGateway(mode="live", events=events, run_id="live-t")
+    gateway.register(FixtureAdapter(
+        SourceCapability(source_id="demo", pit_grade=PitGrade.C,
+                         server_side_asof=False, description="夹具演示源"),
+        records=[DataRecord(source_id="demo", payload={"form": "10-K", "accession": "demo-1"},
+                            url="demo://filing")],
+    ))
     approvals = ApprovalService(events)
     main_llm = MockLLM(scripts or [AssistantReply(content="好的")])
-    # 每个 step 独立实例（MockLLM 是一次性脚本，共享会被抽干）
-    factory = step_llm_factory or (lambda: MockLLM([AssistantReply(content="## 摘要\n完成。")]))
+    # 每个 step 独立实例（MockLLM 是一次性脚本，共享会被抽干）；
+    # 缺省工厂：首个 step（research）走闭环脚本，后续 step 用纯文本补全
+    queue = [RESEARCH_SCRIPT]
+
+    def _default_factory():
+        return MockLLM(queue.pop(0) if queue else [AssistantReply(content="## 摘要\n完成。")])
+
+    factory = step_llm_factory or _default_factory
 
     deps = StepDeps(
         events=events, kb=kb, writer=writer, gateway=gateway,
@@ -47,6 +76,7 @@ def make_client(tmp_path, scripts=None, step_llm_factory=None):
         reports_dir=tmp_path / "reports",
         knowledge_dir=tmp_path / "knowledge",
         max_rounds=1,
+        fetch_document=lambda url: "产能 2GW 公告。demo 正文。",
     )
     runner = CommandRunner(deps)
     chat = ChatService(
@@ -138,7 +168,7 @@ def test_sessions_exclude_child_runs_and_carry_title(tmp_path):
 def test_commands_catalog_endpoint(tmp_path):
     client, _ = make_client(tmp_path)
     cmds = {c["name"]: c for c in client.get("/api/commands").json()}
-    assert set(cmds) == {"research", "profile", "decide", "evaluate"}
+    assert set(cmds) == {"research", "profile", "decide", "evaluate", "industry"}
     assert cmds["evaluate"]["needs_approval"] is True
 
 

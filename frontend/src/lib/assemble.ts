@@ -16,7 +16,7 @@ export type ChatNode =
   | { kind: "tool"; key: string; callId: string; name: string; args: unknown; result?: string; resultError: boolean; turn: number; profileCard?: ProfileCardData }
   | { kind: "command"; key: string; commandId: string; name: string; raw: string; outcome?: string; summary?: string; steps: StepNode[]; reports: ReportCard[] }
   | { kind: "report"; key: string; title: string; summary: string; flags: string[]; artifact: string }
-  | { kind: "approval"; key: string; approvalId: string; op: string; detail: string; state: "pending" | "approved" | "rejected" | "waived"; basis?: string }
+  | { kind: "approval"; key: string; approvalId: string; op: string; detail: string; state: "pending" | "approved" | "rejected" | "waived"; basis?: string; comment?: string }
   | { kind: "conflict"; key: string; entity?: string; field: string; state: "raised" | "resolved"; note?: string; cleared?: number; keepFactId?: string }
   | { kind: "steer"; key: string; commandId: string; message: string; childRunId?: string; delivered: boolean }
   | { kind: "error"; key: string; label: string; reason: string }
@@ -190,9 +190,14 @@ export function assemble(events: EventRow[]): ChatNode[] {
         break;
       }
       case "approval/asked": {
+        // F3 粗筛闸口：筛分表是阅读主体，直接渲染表格而非 JSON dump
+        const isScreen = p.detail?.op === "industry_screen";
+        const detailText = isScreen
+          ? `${p.detail?.prompt ?? ""}\n\n${p.detail?.table ?? ""}\n\n推荐深研：${(p.detail?.recommended ?? []).join("、")}`
+          : JSON.stringify(p.detail ?? {});
         const node = {
           kind: "approval" as const, key: `ap${e.seq}`, approvalId: String(p.approval_id),
-          op: String(p.detail?.op ?? ""), detail: JSON.stringify(p.detail ?? {}),
+          op: String(p.detail?.op ?? ""), detail: detailText,
           state: "pending" as const,
         };
         approvalById.set(node.approvalId, node);
@@ -201,7 +206,10 @@ export function assemble(events: EventRow[]): ChatNode[] {
       }
       case "approval/decided": {
         const node = approvalById.get(String(p.approval_id));
-        if (node) node.state = p.approved ? "approved" : "rejected";
+        if (node) {
+          node.state = p.approved ? "approved" : "rejected";
+          if (p.comment) node.comment = String(p.comment);  // 打回反馈可见
+        }
         break;
       }
       case "approval/waived": {

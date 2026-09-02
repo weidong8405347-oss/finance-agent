@@ -233,3 +233,28 @@ def test_stale_fields_force_refresh_even_when_complete(tmp_path):
     reports = loop.run("stock", "AAPL", objective="刷新", now=NOW)
     assert reports, "有 stale 字段就必须跑研究轮（不得零轮收敛）"
     assert loop.stop_reason != "converged" or reports
+
+
+def test_stall_emits_diagnostic_event(tmp_path):
+    """stalled 必产缺口诊断卡（§4.3 L3）：缺什么/试过什么/建议怎么办，全部落事件。"""
+    llm = MockLLM([AssistantReply(content="没有新发现"), AssistantReply(content="还是没有")])
+    loop, _, events = make_loop(tmp_path, llm, max_rounds=5)
+    loop.run("stock", "AAPL", objective="研究", now=NOW)
+    assert loop.stop_reason == "stalled"
+    diag = events.read("live-1", types={"research/stall_diagnostic"})
+    assert len(diag) == 1
+    p = diag[0].payload
+    assert p["entity"] == "stock:AAPL"
+    assert "revenue_fy" in p["missing_fields"] and "moat" in p["missing_fields"]
+    assert p["sources_available"] == ["edgar"]
+    assert any("web 搜索" in s for s in p["suggestions"])  # 定性缺口 → 指向 web 搜索源
+    assert loop.stall_diagnostic is not None  # step 层摘要的数据源
+
+
+def test_stall_diagnostic_suggests_hkex_for_hk_ticker(tmp_path):
+    """港股代码的停滞建议指向 HKEXnews（EDGAR 不覆盖港股披露）。"""
+    llm = MockLLM([AssistantReply(content="查不到")])
+    loop, _, events = make_loop(tmp_path, llm, max_rounds=1)
+    loop.run("stock", "2228.HK", objective="研究", now=NOW)
+    diag = events.read("live-1", types={"research/stall_diagnostic"})
+    assert any("HKEXnews" in s for s in diag[0].payload["suggestions"])

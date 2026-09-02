@@ -93,7 +93,14 @@ class DecisionLoop:
         self.last_outcome: str | None = None  # issued | declined | rejected
         self.last_rejection: str | None = None
 
-    def run(self, entity_kind: str, entity_id: str, *, now: datetime | None = None) -> str | None:
+    def run(
+        self,
+        entity_kind: str,
+        entity_id: str,
+        *,
+        now: datetime | None = None,
+        context_note: str | None = None,  # P4：投资委员会 CIO 综合等上游判断摘要
+    ) -> str | None:
         """跑一次决策，返回 card_id；被拒或模型选择不出卡 → None。"""
         # 决策时刻：eval 回放 = T；生产 = 当前
         if self._manifest.mode is RunMode.EVAL:
@@ -177,7 +184,13 @@ class DecisionLoop:
             max_steps=self._max_steps,
         )
         self._rejection: str | None = None
-        kernel.run_turn(f"请基于 {entity_kind}:{entity_id} 的档案给出投资建议。")
+        brief = f"请基于 {entity_kind}:{entity_id} 的档案给出投资建议。"
+        if context_note:
+            brief += (
+                "\n\n投资委员会记录（上游四视角+空头+CIO 综合，判断性参考——"
+                f"评级/仓位由你裁定）：\n{context_note}"
+            )
+        kernel.run_turn(brief)
         card_id = issued.get("card_id")
         self.last_outcome = "issued" if card_id else ("rejected" if self._rejection else "declined")
         self.last_rejection = self._rejection

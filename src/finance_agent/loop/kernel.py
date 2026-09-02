@@ -132,6 +132,11 @@ class AgentKernel:
         return final_content
 
     def _execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        # 模型输出的工具参数 JSON 损坏 → 明确错误回给模型自我修正（不熔断 turn）
+        if isinstance(arguments, dict) and "__parse_error__" in arguments:
+            return {"content": f"error: 工具参数 JSON 解析失败（模型输出格式错误）。"
+                               f"请重新调用 {name}，arguments 用合法 JSON。",
+                    "provenance": []}
         fn = self._tools.get(name)
         if fn is None:
             return {"content": f"error: 未注册的工具 {name}", "provenance": []}

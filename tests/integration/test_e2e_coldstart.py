@@ -19,8 +19,11 @@ def cold_app(tmp_path, monkeypatch):
     monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})
     from finance_agent.llm.router import LLMRouter
 
-    monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
+    monkeypatch.setattr("finance_agent.cli._router", lambda data_dir=None: LLMRouter.from_env())
     orch = build_orchestrator(tmp_path)  # 真实装配（serve 同一路径）
+    # 预检探活属网络边界（工程约定 2）——冷启动测试主题是 LLM/配置失败可见性，
+    # 实例级 stub 掉数据源探活，防离线环境影响断言。
+    orch["command_runner"]._deps.gateway.preflight = lambda **kw: {}  # noqa: SLF001
     return TestClient(create_app(
         kb=orch["kb"], events=orch["events"], decisions=orch["decisions"].decisions,
         evals_dir=orch["evals_dir"], chat_service=orch["chat_service"],
@@ -44,14 +47,18 @@ def test_coldstart_without_provider_actionable_reply(tmp_path, monkeypatch):
 
 
 def test_coldstart_dead_provider_visible_failure(tmp_path, monkeypatch):
+    # 本测试主题是失败可见性而非退避耐力：重试预算降为 1（否则 4 次退避 × 慢响应超轮询窗口）
+    monkeypatch.setenv("FINANCE_AGENT_LLM_RETRY_ATTEMPTS", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-x")
     monkeypatch.setattr("finance_agent.llm.router._read_dotenv", lambda *a: {})
     from finance_agent.llm.router import LLMRouter
 
-    monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
+    monkeypatch.setattr("finance_agent.cli._router", lambda data_dir=None: LLMRouter.from_env())
     orch = build_orchestrator(tmp_path)
+    # 预检探活属网络边界（工程约定 2）：stub 为全通过，防离线环境影响断言
+    orch["command_runner"]._deps.gateway.preflight = lambda **kw: {}  # noqa: SLF001
     client = TestClient(create_app(
         kb=orch["kb"], events=orch["events"], decisions=orch["decisions"].decisions,
         evals_dir=orch["evals_dir"], chat_service=orch["chat_service"],

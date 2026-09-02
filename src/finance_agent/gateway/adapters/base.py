@@ -15,3 +15,11 @@ class SourceAdapter(Protocol):
     def capability(self) -> SourceCapability: ...
 
     def query(self, request: dict, as_of: datetime | None = None) -> list[DataRecord]: ...
+
+    def healthcheck(self) -> dict:
+        """探活（command 启动前预检用，research-capability-upgrade §4.9）。
+
+        返回 {"ok": bool, "detail": str}；短超时（≤8s），实现不得抛异常——
+        探活的意义就是把「源挂了」变成可读报告，不是制造新异常。
+        """
+        ...

@@ -29,6 +29,9 @@ def make_client(tmp_path, *, monkeypatch=None, dead_provider=False, approval_tim
         monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
 
     orch = build_orchestrator(tmp_path)  # 真实装配（与 serve 同一条路径）
+    # 预检探活属网络边界（工程约定 2 的可注入接缝）——本组测试主题是失败可见性，
+    # 不是数据源健康；实例级 stub 为全通过，防离线环境干扰断言。
+    orch["command_runner"]._deps.gateway.preflight = lambda **kw: {}  # noqa: SLF001
     if approval_timeout_s is not None:
         orch["command_runner"]._approval_timeout = approval_timeout_s
     app = create_app(
@@ -50,6 +53,7 @@ def wait_event(events, run_id, pred, timeout=8.0):
 
 
 def test_mid_run_failure_three_channels(tmp_path, caplog, monkeypatch):
+    monkeypatch.setenv("FINANCE_AGENT_LLM_RETRY_ATTEMPTS", "1")  # 同上：测可见性不是退避耐力
     """provider 配了但端点不可达 → 研究 step 中途失败：事件 + ERROR 日志 + 会话状态 error。"""
     client, events = make_client(tmp_path, monkeypatch=monkeypatch, dead_provider=True)
     logger = setup_logging("finance_agent_test_l1")

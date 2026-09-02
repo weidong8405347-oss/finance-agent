@@ -32,6 +32,20 @@ class StooqPricesAdapter:
             description="Stooq 日线 OHLCV（CSV，免费无 key）；available_at = 交易日 +1d",
         )
 
+    def healthcheck(self) -> dict:
+        """探活：取 AAPL 近 7 天日线；空结果即视为不健康（反爬/限流）。"""
+        try:
+            recs = self.query({
+                "ticker": "AAPL",
+                "start": (date.today() - timedelta(days=7)).isoformat(),
+                "end": date.today().isoformat(),
+            })
+            if recs:
+                return {"ok": True, "detail": "CSV 日线可取"}
+            return {"ok": False, "detail": "空结果（疑似反爬/限流）"}
+        except Exception as e:
+            return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
     def query(self, request: dict, as_of: datetime | None = None) -> list[DataRecord]:
         import httpx  # lazy：核心与测试不依赖网络库
 
