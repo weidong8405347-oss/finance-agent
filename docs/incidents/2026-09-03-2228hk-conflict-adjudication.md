@@ -4,8 +4,13 @@
 
 `merge-entity 02228.HK → 2228.HK` 恢复重放后，两条研究线的平行断言叠加，浮现
 **6 个字段、21 条冲突版本**（见 `2026-09-03-knowledge-verify-gate.md` 遗留项）。
-本文档按统一口径给出每字段的 keep 建议，**未经确认不执行**（执行入口：
-`POST /api/knowledge/stock/2228.HK/resolve`，详情页「以此版本为准」按钮同源）。
+本文档按统一口径给出每字段的 keep 建议。
+
+**已执行（2026-09-03，用户确认「入库」）**：六字段逐个走
+`POST /api/knowledge/stock/2228.HK/resolve`，审计事件（6 条 `fact/conflict_resolved`
++ 6 条补写 `fact/asserted`）全部落 `kb-stock-2228.HK` 审计 run。终态：
+冲突清零（23 个标记：21 遗留 + 2 个补写瞬时冲突随印随清），质量分 0.35 → **0.825**，
+实体 issues 只剩 peers 缺失（真缺口，归下轮研究）与 valuation 仅 C 级证据（归弱字段回流）。
 
 ## 裁决口径（按优先级）
 
@@ -32,6 +37,25 @@
 | valuation | v6/v7 | `fact-bc9482252abd`（v9） | 冲突实为**不同日期快照**（7-14 ~ 9-02，非数据矛盾）；v9 是最新快照（2026-09-02 当日 Yahoo 31.242B @ 7.26 × 43.03 亿股，服务端验算通过）且 kt 与快照同日（双时态自洽）；dict 结构化。v6 kt=07-17 却引 08-21 快照（时点错位）、v7 混两个日期快照；v4（07-15 月报表口径）留作历史版本自然演进 |
 | business_model | v7 | `fact-e5130672e60f`（v3） | B 级（PRNewswire 公司通稿 2026-08-19）；最新完整散文叙事（双板块 + 2026H1 AI4S 占比 49% + 平台化跃迁）；演进型字段取新叙述。v7（02228 旧链）是 2025-04 时点旧描述（仅 XtalFold 授权，无 DoveTree/GPCR 演进）。**A 级的 `fact-843c3a2c427b`（HKEX 2026-06-09 公告直证）内容最好但值是序列化 JSON 字符串——keep 会触发注意事项 ①**；建议后续以它为素材走弱字段回流重写成散文 |
 | risks | v2/v3/v4/v5/v6/v8/v9 | `fact-df039eb80bd9`（v8） | **唯一双 B 级证据**（新浪财经 + PRNewswire 通稿，均 available_at）；kt=中期公告次日（2026-08-20，干净）；结构化 3 点风险列表（BD 首付款依赖 / 研发侵蚀 / 股价波动）。**当前投影 v6 是 6 版本里最弱的**（jpmhk warrants 门户、单 C 级），且净亏损 2.51 亿 / 上年同期纯利 8,279.5 万是少数派口径——多数版本与全部 B 级证据一致为净亏 2.25 亿 / 上年同期 7,560.9 万；裁决即纠正投影 |
+
+## 执行记录（2026-09-03）
+
+| 字段 | keep（裁决依据版本） | 落版 fact_id（补写同值新版本） | 清除标记 |
+| --- | --- | --- | --- |
+| revenue_fy | fact-1dad38b0dad9 | fact-f3d4550e7ef2（v11） | 6 |
+| net_income_fy | fact-f159796965ad | fact-b982584a393e（v10） | 5 |
+| cash_flow | fact-0400919327ef | fact-7809d4ee8013（v9） | 2 |
+| valuation | fact-bc9482252abd | fact-d7bfef69567e（v10，人工落版） | 2 |
+| business_model | fact-e5130672e60f | fact-060d625806de（v9） | 1 |
+| risks | fact-df039eb80bd9 | fact-c60183695bfb（v12） | 7 |
+
+- valuation 特例：keep 版本是 version 链尾，resolve 端点不触发补写；但合并重放造成
+  version 序与 knowledge_time 序错位（v4 的 kt 更晚），若不落版则投影仍显示 v4（07-15
+  快照）。按 store `resolve_conflict` 的设计约定（「若 keep 的不是最新版本，调用方应再写
+  一条同值新事实落最新版」）经 ProfileWriter 补写同值事实（同一审计 run、全门禁、
+  `fact/asserted` 留痕），裁决值落到当前投影。
+- 裁决后弱字段（下一轮研究素材，走 weak 回流）：valuation 仅 C 级证据（待行情/月报表
+  双源核实）；peers 缺失（真缺口）。
 
 ## 注意事项
 
