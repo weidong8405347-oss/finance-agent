@@ -58,6 +58,24 @@ export interface ProvidersView {
   };
 }
 
+/** models 逗号分隔编辑态 → 模型 id 列表（唯一解析口径，save/validate/probe 共用）。 */
+export function parseModels(csv: string): string[] {
+  return csv.split(",").map((m) => m.trim()).filter(Boolean);
+}
+
+/** 表单中可选的 provider 别名集：includeBare 含裸 provider 名（校验面）；
+ *  否则只含 provider:model（下拉面——下拉只给具体模型，裸名兼容留给手写配置）。 */
+export function providerAliases(form: FormState, opts?: { includeBare?: boolean }): string[] {
+  const out: string[] = [];
+  for (const row of form.providers) {
+    const name = row.name.trim();
+    if (!name) continue;
+    if (opts?.includeBare) out.push(name);
+    for (const m of parseModels(row.models)) out.push(`${name}:${m}`);
+  }
+  return out;
+}
+
 /** 后端文件视图 → 表单态（无自有配置时给一行空白起步）。 */
 export function toFormState(file: ProvidersFile | null): FormState {
   if (!file) {
@@ -98,7 +116,7 @@ export function toPayload(form: FormState): Record<string, unknown> {
     providers[name] = {
       base_url: row.base_url.trim(),
       api_key: row.api_key.trim(),
-      models: row.models.split(",").map((m) => m.trim()).filter(Boolean),
+      models: parseModels(row.models),
     };
   }
   const role_map: Record<string, string> = {};
@@ -135,19 +153,13 @@ export function validateForm(form: FormState): string[] {
     names.add(name);
     if (!row.base_url.trim()) errors.push(`provider ${name}：base_url 必填`);
     if (!row.api_key.trim()) errors.push(`provider ${name}：api_key 必填（沿用已存请保持 ***）`);
-    if (row.models.split(",").map((m) => m.trim()).filter(Boolean).length === 0)
+    if (parseModels(row.models).length === 0)
       errors.push(`provider ${name}：models 至少一个（逗号分隔）`);
   }
   if (form.default_provider && !names.has(form.default_provider)) {
     errors.push(`default_provider ${form.default_provider} 不在 providers 列表中`);
   }
-  const aliases = new Set<string>();
-  for (const row of rows) {
-    for (const m of row.models.split(",").map((s) => s.trim()).filter(Boolean)) {
-      aliases.add(`${row.name.trim()}:${m}`);
-    }
-    aliases.add(row.name.trim());
-  }
+  const aliases = new Set(providerAliases(form, { includeBare: true }));
   for (const [role, target] of Object.entries(form.role_map)) {
     if (target && !aliases.has(target)) {
       errors.push(`role_map.${role} 指向未配置的 ${target}（须为 provider 名或 provider:model）`);
@@ -161,15 +173,7 @@ export function validateForm(form: FormState): string[] {
   return errors;
 }
 
-/** role_map 下拉的可选项：每个 provider 自身 + 每个 provider:model 别名。 */
+/** role_map 下拉的可选项：provider:model 别名（不含裸名——具体模型才可路由）。 */
 export function roleTargetOptions(form: FormState): string[] {
-  const out: string[] = [];
-  for (const row of form.providers) {
-    const name = row.name.trim();
-    if (!name) continue;
-    for (const m of row.models.split(",").map((s) => s.trim()).filter(Boolean)) {
-      out.push(`${name}:${m}`);
-    }
-  }
-  return out;
+  return providerAliases(form);
 }

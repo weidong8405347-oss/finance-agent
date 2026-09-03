@@ -1,6 +1,8 @@
 // P5 provider 自配页纯逻辑契约：表单态 ↔ 保存 payload、掩码继承透传、校验可操作。
 import { describe, expect, it } from "vitest";
 import {
+  parseModels,
+  providerAliases,
   KEY_MASK,
   roleTargetOptions,
   toFormState,
@@ -77,11 +79,30 @@ describe("validateForm", () => {
   });
 });
 
-describe("roleTargetOptions", () => {
-  it("每个 provider 的每个 model 出 provider:model 别名", () => {
+describe("roleTargetOptions / providerAliases", () => {
+  it("下拉只给 provider:model 具体别名", () => {
     expect(roleTargetOptions(toFormState(FILE))).toEqual([
       "dashscope:kimi-k3",
       "dashscope:GLM-5.3",
     ]);
+  });
+
+  it("校验面含裸 provider 名（手写配置兼容），与下拉面同源不漂移", () => {
+    expect(providerAliases(toFormState(FILE), { includeBare: true })).toEqual([
+      "dashscope",
+      "dashscope:kimi-k3",
+      "dashscope:GLM-5.3",
+    ]);
+  });
+});
+
+describe("parseModels", () => {
+  it("逗号分隔、去空白、滤空项", () => {
+    expect(parseModels("kimi-k3, GLM-5.3 ,, qwen3.8-flash ")).toEqual([
+      "kimi-k3",
+      "GLM-5.3",
+      "qwen3.8-flash",
+    ]);
+    expect(parseModels("")).toEqual([]);
   });
 });

@@ -7,6 +7,7 @@ import {
   EFFORT_LEVELS,
   FormState,
   KNOWN_ROLES,
+  parseModels,
   roleTargetOptions,
   toFormState,
   toPayload,
@@ -80,7 +81,7 @@ export default function ProvidersPage() {
 
   const probe = async (i: number) => {
     const row = form.providers[i];
-    const model = row.models.split(",").map((m) => m.trim()).filter(Boolean)[0] ?? "";
+    const model = parseModels(row.models)[0] ?? "";
     setProbes({ ...probes, [row.name]: { ok: false, latency_ms: 0, error: "测活中…" } });
     try {
       const r = await api.testProvider({
