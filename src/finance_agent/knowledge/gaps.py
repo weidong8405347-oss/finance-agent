@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from .schema import SCHEMAS, ProfileSchema
 from .store import BitemporalStore
+from .verify import field_issues
 
 STALE_WEIGHT = 0.5  # 陈旧字段按半分计入完整度
 
@@ -25,6 +26,10 @@ class GapReport(BaseModel):
     conflicts: list[str]
     completeness: float  # 0..1
     optional_missing: list[str] = []  # 可选维度缺口（引导，不计入完整度）
+    # 弱字段回流（2026-09-03 整改收尾）：必填字段中 field_issues 非空的
+    # （字段→人类可读原因）。只作研究引导，不计入完整度、不阻塞收敛——
+    # 完整度口径与 loop 判据保持不变，弱字段通过 round brief 引导下轮重写。
+    weak: dict[str, list[str]] = {}
 
 
 class GapAnalyzer:
@@ -50,6 +55,7 @@ class GapAnalyzer:
         profile = self._store.view(entity_kind, entity_id, as_of, namespace=namespace)
         missing: list[str] = []
         stale: list[str] = []
+        weak: dict[str, list[str]] = {}
         fresh_count = 0
         for field, policy in schema.required.items():
             rec = profile.get(field)
@@ -59,6 +65,10 @@ class GapAnalyzer:
                 stale.append(field)
             else:
                 fresh_count += 1
+            if rec is not None:  # 弱字段：有值但质检未过（含陈旧字段叠加的质量原因）
+                issues = field_issues(field, rec, _evidences(self._store, rec))
+                if issues:
+                    weak[field] = issues
 
         completeness = (fresh_count + STALE_WEIGHT * len(stale)) / len(schema.required)
         conflicts = [f.field for f in self._store.open_conflicts(entity_kind, entity_id, namespace=namespace)]
@@ -72,4 +82,16 @@ class GapAnalyzer:
             conflicts=conflicts,
             completeness=completeness,
             optional_missing=optional_missing,
+            weak=weak,
         )
+
+
+def _evidences(store: BitemporalStore, rec) -> list:
+    """字段绑定证据（缺失的静默跳过——投影层 verify_entity 会显式报证据缺失）。"""
+    out = []
+    for eid in rec.evidence_ids:
+        try:
+            out.append(store.get_evidence(eid))
+        except Exception:
+            continue
+    return out

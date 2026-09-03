@@ -1,7 +1,12 @@
-// Knowledge 页（R3 重做）：全部档案列表（点击选中 → 摘要联动）+ 详情页
-// （facts 证据锚点 / thesis / as_of 时光机 / HTML 存档版本查看器）。
+// Knowledge 页（R4）：全部档案列表（验收状态 + 质量分 + 完整度并排）+ 详情页
+// （结构化字段渲染 / 质量横幅 / thesis / as_of 时光机 / HTML 存档版本查看器）。
+//
+// 设计参照 open-design live-artifact：状态 pill（已验收/待验收/冲突）一屏可见，
+// 字段值结构化排版（list→表格、长文→段落）而非 JSON.stringify 一坨。
 import { Fragment, useEffect, useState } from "react";
-import { api, ArchiveRow, CompareItem, EntityProfile, EntityRow, SeriesPoint } from "../api";
+import {
+  api, ArchiveRow, CompareItem, EntityProfile, EntityRow, SeriesPoint,
+} from "../api";
 import { BarCompare, LineChart } from "../components/MiniChart";
 
 // 值 → 数值（图表用）：取首个数字片段（去逗号）；非数值字段返回 null
@@ -13,6 +18,105 @@ function toNumber(v: unknown): number | null {
 
 function fmtDate(iso: string | null): string {
   return iso ? iso.slice(0, 10) : "—";
+}
+
+// ---------- 验收状态 pill（与 HTML 存档 header 同一投影口径） ----------
+function QualityPill({ status, conflicts = 0 }: { status?: "verified" | "draft"; conflicts?: number }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {status === "verified" ? (
+        <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[11px] text-green-700">✓ 已验收</span>
+      ) : (
+        <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">◔ 待验收</span>
+      )}
+      {conflicts > 0 && (
+        <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-[11px] text-red-700">⚠ {conflicts} 冲突</span>
+      )}
+    </span>
+  );
+}
+
+// 存量兼容：硬门禁上线前落库的 JSON 字符串值，渲染层解析回结构化（历史不改写，投影可美化）
+function parseLegacyJson(value: string): unknown | null {
+  const s = value.trim();
+  if (!s || (s[0] !== "{" && s[0] !== "[")) return null;
+  try {
+    const parsed = JSON.parse(s);
+    return parsed !== null && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- 结构化字段值渲染（替代 JSON.stringify 一坨） ----------
+function FactValue({ value, compact = false }: { value: unknown; compact?: boolean }) {
+  if (value === null || value === undefined) return <span className="text-neutral-400">—</span>;
+  if (typeof value === "string") {
+    const legacy = parseLegacyJson(value);
+    if (legacy !== null) return <FactValue value={legacy} compact={compact} />;
+    const text = compact && value.length > 160 ? `${value.slice(0, 160)}…` : value;
+    return <span className="whitespace-pre-wrap break-words">{text}</span>;
+  }
+  if (typeof value === "boolean") {
+    return <span>{value ? "✓" : "—"}</span>;
+  }
+  if (typeof value === "number") {
+    return <span className="font-mono tabular-nums">{value.toLocaleString()}</span>;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="text-neutral-400">（空列表）</span>;
+    if (value.every((v) => v !== null && typeof v === "object" && !Array.isArray(v))) {
+      const dicts = value as Record<string, unknown>[];
+      const keys: string[] = [];
+      for (const item of dicts) {
+        for (const k of Object.keys(item)) {
+          if (k !== "evidence_ids" && !keys.includes(k)) keys.push(k);
+        }
+      }
+      return (
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr>{keys.map((k) => (
+              <th key={k} className="border-b border-neutral-200 px-1.5 py-1 text-left text-[10px] font-semibold uppercase tracking-wide text-neutral-400">{k}</th>
+            ))}</tr>
+          </thead>
+          <tbody>
+            {(compact ? dicts.slice(0, 5) : dicts).map((item, i) => (
+              <tr key={i} className="border-b border-neutral-100">
+                {keys.map((k) => (
+                  <td key={k} className="max-w-56 px-1.5 py-1 align-top">
+                    <FactValue value={item[k]} compact />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    return (
+      <ul className="list-disc space-y-0.5 pl-4">
+        {(compact ? value.slice(0, 6) : value).map((v, i) => (
+          <li key={i}><FactValue value={v} compact /></li>
+        ))}
+      </ul>
+    );
+  }
+  if (typeof value === "object") {
+    return (
+      <table className="w-full border-collapse text-xs">
+        <tbody>
+          {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
+            <tr key={k} className="border-b border-neutral-100">
+              <td className="w-32 px-1.5 py-1 align-top font-mono text-[11px] text-neutral-500">{k}</td>
+              <td className="px-1.5 py-1 align-top"><FactValue value={v} compact /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  return <span className="font-mono">{String(value)}</span>;
 }
 
 export default function KnowledgePage() {
@@ -36,8 +140,9 @@ export default function KnowledgePage() {
           <thead>
             <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[11px] text-neutral-500">
               <th className="px-3 py-2">实体</th><th className="px-3 py-2">类型</th>
+              <th className="px-3 py-2">验收</th><th className="px-3 py-2">质量分</th>
               <th className="px-3 py-2">完整度</th><th className="px-3 py-2">字段数</th>
-              <th className="px-3 py-2">陈旧</th><th className="px-3 py-2">冲突</th>
+              <th className="px-3 py-2">陈旧</th>
               <th className="px-3 py-2">最近可知</th><th className="px-3 py-2" />
             </tr>
           </thead>
@@ -53,19 +158,21 @@ export default function KnowledgePage() {
               >
                 <td className="px-3 py-2 font-mono text-xs font-semibold">{e.id}</td>
                 <td className="px-3 py-2 text-xs text-neutral-500">{e.kind}</td>
+                <td className="px-3 py-2" title={e.quality_issues?.join("\n") || "无待办问题"}>
+                  <QualityPill status={e.quality_status} conflicts={e.conflict_count} />
+                </td>
                 <td className="px-3 py-2">
                   <span className="mr-1 inline-block h-1.5 w-16 overflow-hidden rounded bg-neutral-100 align-middle">
-                    <span className="block h-full bg-green-600" style={{ width: `${e.completeness * 100}%` }} />
+                    <span
+                      className={`block h-full ${e.quality_status === "verified" ? "bg-green-600" : "bg-amber-500"}`}
+                      style={{ width: `${(e.quality_score ?? 0) * 100}%` }}
+                    />
                   </span>
-                  <span className="text-xs">{(e.completeness * 100).toFixed(0)}%</span>
+                  <span className="text-xs">{((e.quality_score ?? 0) * 100).toFixed(0)}%</span>
                 </td>
+                <td className="px-3 py-2 text-xs text-neutral-500">{(e.completeness * 100).toFixed(0)}%</td>
                 <td className="px-3 py-2 font-mono text-xs">{e.field_count}</td>
                 <td className="px-3 py-2 text-xs">{e.stale_count > 0 ? `${e.stale_count} 项` : "—"}</td>
-                <td className="px-3 py-2 text-xs">
-                  {e.conflict_count > 0
-                    ? <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700">{e.conflict_count}</span>
-                    : "0"}
-                </td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-500">{fmtDate(e.last_knowledge_time)}</td>
                 <td className="px-3 py-2">
                   <button
@@ -78,7 +185,7 @@ export default function KnowledgePage() {
               </tr>
             ))}
             {entities.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-8 text-center text-neutral-400">
+              <tr><td colSpan={9} className="px-3 py-8 text-center text-neutral-400">
                 暂无档案——在对话里说「研究一下 BE」或用 /research 开始
               </td></tr>
             )}
@@ -109,20 +216,36 @@ function EntitySummary({ kind, id, onDetail }: { kind: string; id: string; onDet
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="font-mono text-sm font-semibold">{kind}:{id}</h3>
-          <button onClick={onDetail} className="text-xs text-blue-700 hover:underline">查看详情 →</button>
+          <div className="flex items-center gap-2">
+            <QualityPill status={profile?.quality?.status} conflicts={profile?.quality?.fields.filter((f) => f.status === "conflict").length ?? 0} />
+            <button onClick={onDetail} className="text-xs text-blue-700 hover:underline">查看详情 →</button>
+          </div>
         </div>
+        {profile?.quality && profile.quality.issues.length > 0 && (
+          <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+            {profile.quality.issues.join("；")}
+          </div>
+        )}
         {facts.map(([field, f]) => (
-          <div key={field} className="flex justify-between border-b border-dashed border-neutral-100 py-1 text-xs">
-            <span className="text-neutral-600">{field}</span>
-            <span
-              className="max-w-[60%] truncate text-right font-mono"
+          <div key={field} className="border-b border-dashed border-neutral-100 py-1.5 text-xs">
+            <div className="mb-0.5 flex items-center justify-between">
+              <span className="text-neutral-600">{field}</span>
+              <span className="font-mono text-[10px] text-neutral-400">
+                v{f.version}
+                {f.conflict && <span className="ml-1 text-amber-600">⚠</span>}
+                {f.issues && f.issues.length > 0 && (
+                  <span className="ml-1 text-amber-600" title={f.issues.join("\n")}>◔{f.issues.length}</span>
+                )}
+              </span>
+            </div>
+            <div
+              className="text-neutral-800"
               title={f.evidence?.[0]
                 ? `${f.evidence[0].evidence_id} ·「${f.evidence[0].verbatim_quote}」· available ${f.evidence[0].available_at} · PIT-${f.evidence[0].pit_grade}`
                 : "无证据"}
             >
-              {JSON.stringify(f.value)}
-              {f.conflict && <span className="ml-1 text-amber-600">⚠</span>}
-            </span>
+              <FactValue value={f.value} compact />
+            </div>
           </div>
         ))}
         {facts.length === 0 && <div className="text-xs text-neutral-400">（无事实）</div>}
@@ -135,15 +258,14 @@ function EntitySummary({ kind, id, onDetail }: { kind: string; id: string; onDet
             <span className="text-neutral-400">{fmtDate(a.mtime)}</span>
           </div>
         ))}
-        {latest && (
-          <iframe
-            title="存档预览"
-            src={api.archiveUrl(kind, id, "latest.html")}
-            className="mt-2 h-64 w-full rounded-md border border-neutral-200"
-          />
-        )}
-        {archives.length === 0 && (
-          <div className="text-xs text-neutral-400">（暂无存档——跑过 /profile 或 /decide 后生成）</div>
+        {/* 存档是 KB 投影：latest.html 缺失时服务端读路径会自动补渲染（R4 惰性物化） */}
+        <iframe
+          title="存档预览"
+          src={api.archiveUrl(kind, id, "latest.html")}
+          className="mt-2 h-64 w-full rounded-md border border-neutral-200"
+        />
+        {latest === undefined && archives.length === 0 && (
+          <div className="mt-1 text-[11px] text-neutral-400">首次打开时自动生成存档投影</div>
         )}
       </div>
     </div>
@@ -281,13 +403,19 @@ function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: 
 
   const facts = Object.entries(profile?.facts ?? {});
   const thesis = profile?.facts?.thesis;
+  const quality = profile?.quality;
+  const conflictCount = quality?.fields.filter((f) => f.status === "conflict").length ?? 0;
   return (
     <div>
       <button onClick={onBack} className="mb-3 rounded border border-neutral-200 px-2.5 py-1 text-xs hover:bg-neutral-50">
         ← 返回全部档案
       </button>
-      <div className="mb-4 flex flex-wrap items-baseline gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <h2 className="font-mono text-lg font-bold">{kind}:{id}</h2>
+        <QualityPill status={quality?.status} conflicts={conflictCount} />
+        {quality && (
+          <span className="text-xs text-neutral-500">质量分 {(quality.quality_score * 100).toFixed(0)}%</span>
+        )}
         <span className="text-xs text-neutral-500">
           as_of <input type="date" value={asOf} onChange={(e) => { setAsOf(e.target.value); load(e.target.value ? `${e.target.value}T23:59:59Z` : undefined); }}
             className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs" /> 时光机
@@ -295,53 +423,59 @@ function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: 
         {profile && <span className="font-mono text-[11px] text-neutral-400">投影时刻 {profile.as_of.slice(0, 19)}Z</span>}
       </div>
 
+      {quality && quality.issues.length > 0 && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span className="font-semibold">验收待办：</span>{quality.issues.join("；")}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 items-start gap-4">
         <div className="space-y-4">
           {thesis && (
             <div className="rounded-lg border border-neutral-200 bg-white p-4">
               <h3 className="mb-1 text-sm font-semibold">投资论点（thesis v{thesis.version}）</h3>
-              <p className="text-sm leading-relaxed text-neutral-700">{String(thesis.value)}</p>
+              <div className="text-sm leading-relaxed text-neutral-700">
+                <FactValue value={thesis.value} />
+              </div>
             </div>
           )}
           <div className="rounded-lg border border-neutral-200 bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold">核心事实（hover 数字看证据原文）</h3>
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-neutral-200 text-left text-[10px] text-neutral-400">
-                  <th className="py-1">字段</th><th>值</th><th>event_time</th><th>knowledge_time</th><th>v</th>
-                </tr>
-              </thead>
-              <tbody>
-                {facts.filter(([f]) => f !== "thesis").map(([field, f]) => (
-                  <Fragment key={field}>
-                    <tr className="border-b border-neutral-100">
-                      <td className="py-1.5 font-mono">{field}</td>
-                      <td className="max-w-40 truncate py-1.5 font-mono"
-                        title={f.evidence?.map((ev) =>
-                          `${ev.evidence_id} · ${ev.source_id}\n「${ev.verbatim_quote}」\navailable ${ev.available_at} · PIT-${ev.pit_grade}`
-                        ).join("\n\n") || "无证据"}
-                      >
-                        <span className="border-b border-dotted border-neutral-400">
-                          {JSON.stringify(f.value)}
-                        </span>
-                        {f.conflict && <span className="ml-1 text-amber-600">⚠冲突</span>}
-                      </td>
-                      <td className="py-1.5 font-mono text-neutral-500">{f.event_time?.slice(0, 10) ?? "—"}</td>
-                      <td className="py-1.5 font-mono text-neutral-500">{f.knowledge_time.slice(0, 10)}</td>
-                      <td className="py-1.5 font-mono text-neutral-400">v{f.version}</td>
-                    </tr>
-                    {f.conflict && (
-                      <tr className="border-b border-neutral-100">
-                        <td colSpan={5} className="bg-amber-50/40 px-3 py-2">
-                          <ConflictResolver kind={kind} id={id} field={field} factId={f.fact_id}
-                            onResolved={() => load(asOf ? `${asOf}T23:59:59Z` : undefined)} />
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
+            <h3 className="mb-2 text-sm font-semibold">核心事实（hover 字段名看证据原文）</h3>
+            {facts.filter(([f]) => f !== "thesis").map(([field, f]) => (
+              <Fragment key={field}>
+                <div className="border-b border-neutral-100 py-2.5">
+                  <div className="mb-1 flex flex-wrap items-baseline gap-2">
+                    <span
+                      className="cursor-help border-b border-dotted border-neutral-400 font-mono text-xs font-semibold"
+                      title={f.evidence?.map((ev) =>
+                        `${ev.evidence_id} · ${ev.source_id}\n「${ev.verbatim_quote}」\navailable ${ev.available_at} · PIT-${ev.pit_grade}`
+                      ).join("\n\n") || "无证据"}
+                    >
+                      {field}
+                    </span>
+                    <span className="font-mono text-[10px] text-neutral-400">
+                      v{f.version} · event {f.event_time?.slice(0, 10) ?? "—"} · 可知 {f.knowledge_time.slice(0, 10)}
+                    </span>
+                    {f.conflict && <span className="text-[11px] text-amber-600">⚠冲突</span>}
+                    {f.issues?.map((issue) => (
+                      <span key={issue} className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{issue}</span>
+                    ))}
+                  </div>
+                  <div className="text-xs leading-relaxed text-neutral-800">
+                    <FactValue value={f.value} />
+                  </div>
+                  {f.conflict && (
+                    <div className="mt-2 rounded bg-amber-50/40 px-3 py-2">
+                      <ConflictResolver kind={kind} id={id} field={field} factId={f.fact_id}
+                        onResolved={() => load(asOf ? `${asOf}T23:59:59Z` : undefined)} />
+                    </div>
+                  )}
+                </div>
+              </Fragment>
+            ))}
+            {facts.filter(([f]) => f !== "thesis").length === 0 && (
+              <div className="py-4 text-center text-xs text-neutral-400">（无事实）</div>
+            )}
           </div>
         </div>
 
@@ -360,6 +494,7 @@ function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: 
               </button>
             ))}
           </div>
+          {/* latest.html 缺失时服务端读路径自动补渲染（R4 惰性物化），不会再 404 */}
           <iframe
             key={archiveView}
             title="档案存档"

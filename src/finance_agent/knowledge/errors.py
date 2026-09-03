@@ -25,3 +25,10 @@ class KnowledgeInvariantError(KnowledgeError):
 
 class NumericGuardError(KnowledgeError):
     """数字保护校验失败：数值未在证据原文摘录中出现（原则 8）。"""
+
+
+class KnowledgeQualityError(KnowledgeError):
+    """准入质检失败：空值/占位符/JSON 字符串腐化/结构化字段类型违例。
+
+    知识的品格由它拒绝的东西定义——过不了 verify 的内容不进知识库。
+    """

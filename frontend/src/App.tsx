@@ -19,7 +19,15 @@ const NAV: { key: Page; label: string }[] = [
 ];
 
 export default function App() {
-  const [page, setPage] = useState<Page>("sessions");
+  // hash 深链：/#knowledge 直达页面，刷新/分享不丢上下文
+  const [page, setPageState] = useState<Page>(() => {
+    const h = window.location.hash.slice(1) as Page;
+    return NAV.some((n) => n.key === h) ? h : "sessions";
+  });
+  const setPage = (p: Page) => {
+    setPageState(p);
+    window.location.hash = p;
+  };
   // ProfileCard 等组件经自定义事件请求跳页（对话流 → 档案钻取）
   useEffect(() => {
     const h = (e: Event) => setPage((e as CustomEvent).detail as Page);

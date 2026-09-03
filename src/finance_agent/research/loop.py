@@ -57,10 +57,13 @@ _DIMENSION_GROUPS_INDUSTRY: dict[str, tuple[str, ...]] = {
 
 def _dimension_groups(
     missing: list[str], stale: list[str], optional_missing: list[str],
-    *, entity_kind: str = "stock",
+    *, entity_kind: str = "stock", weak: list[str] | None = None,
 ) -> list[tuple[str, list[str]]]:
     """缺口字段（缺失+陈旧+可选）按维度分组；未登记进组的字段轮转分配。
-    注：player_landscape 永不分组（F2 专属产出，见 _DIMENSION_GROUPS_INDUSTRY 注释）。"""
+    注：player_landscape 永不分组（F2 专属产出，见 _DIMENSION_GROUPS_INDUSTRY 注释）。
+    弱字段回流（2026-09-03 整改收尾）：weak 只挂进「因缺口已激活」的本维度组，
+    让专职组顺带重写；不新建组、不轮转（weak 是引导不是缺口，不许扩大并行面）。
+    无对应激活组 → 本轮不回流（serial 路径的 brief 全量投影仍可见）。"""
     table = _DIMENSION_GROUPS_INDUSTRY if entity_kind == "industry" else _DIMENSION_GROUPS_STOCK
     pending = [f for f in dict.fromkeys([*missing, *stale, *optional_missing])
                if f != "player_landscape"]
@@ -77,6 +80,14 @@ def _dimension_groups(
             groups[i % len(groups)][1].append(f)
         else:
             groups.append(["misc", [f]])
+    for f in weak or []:
+        if f in assigned or f == "player_landscape":
+            continue
+        for g in groups:
+            if f in table.get(g[0], ()):
+                g[1].append(f)
+                assigned.add(f)
+                break
     return [(g, fs) for g, fs in groups]
 
 logger = logging.getLogger("finance_agent.research")
@@ -174,7 +185,7 @@ class ResearchLoop:
             if len(self._worker_llms) > 1:
                 groups = _dimension_groups(
                     gaps_before.missing, gaps_before.stale, gaps_before.optional_missing,
-                    entity_kind=entity_kind,
+                    entity_kind=entity_kind, weak=list(gaps_before.weak),
                 )
                 workers = self._worker_llms
                 group_results: list[tuple[str, list[str], list[dict]]] = []
@@ -316,8 +327,16 @@ class ResearchLoop:
             Event(run_id=group_run_id, type=CONTEXT_INJECT,
                   payload={"role": "system", "content": GROUNDING_CONTRACT})
         )
+        # 组内弱字段单独挂（不混进「缺失」谎报）：专职组看到的 brief 区分
+        # 「缺失字段」与「待改进字段（已有值但未过质检）」，避免跨组重写同一弱字段。
+        weak_scoped = {f: list(v) for f, v in gaps_before.weak.items() if f in set(fields)}
         group_gaps = gaps_before.model_copy(
-            update={"missing": list(fields), "stale": [], "optional_missing": []}
+            update={
+                "missing": [f for f in fields if f not in weak_scoped],
+                "stale": [],
+                "optional_missing": [],
+                "weak": weak_scoped,
+            }
         )
         brief = (
             build_round_brief(

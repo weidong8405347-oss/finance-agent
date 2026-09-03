@@ -48,6 +48,9 @@ export interface EntityRow {
   stale_count: number;
   conflict_count: number;
   last_knowledge_time: string | null;
+  quality_score: number;
+  quality_status: "verified" | "draft";
+  quality_issues: string[];
 }
 
 export interface ArchiveRow {
@@ -103,7 +106,25 @@ export interface FactJson {
   knowledge_time: string;
   version: number;
   conflict: boolean;
+  issues?: string[];
   evidence: EvidenceJson[];
+}
+
+export interface FieldQuality {
+  field: string;
+  status: "ok" | "weak" | "stale" | "conflict" | "missing";
+  issues: string[];
+  required: boolean;
+}
+
+export interface EntityQuality {
+  entity_kind: string;
+  entity_id: string;
+  as_of: string;
+  fields: FieldQuality[];
+  quality_score: number;
+  status: "verified" | "draft";
+  issues: string[];
 }
 
 export interface EntityProfile {
@@ -111,6 +132,7 @@ export interface EntityProfile {
   id: string;
   as_of: string;
   namespace: string;
+  quality?: EntityQuality;
   facts: Record<string, FactJson>;
 }
 

@@ -70,6 +70,22 @@ class TestDimensionGroups:
         # talent_density 已登记进 risk_mgmt 组（与 management 同根，都是「人」的维度）
         assert set(groups["risk_mgmt"]) == {"management", "talent_density"}
 
+    def test_weak_fields_attach_to_active_groups_only(self):
+        """弱字段回流：挂进因缺口已激活的本维度组；不新建组、不无中生有研究。
+
+        weak 是引导不是缺口——moat 虽弱但 business 组未激活就不回流；
+        财务组的 net_income_fy 顺带进 financial 组交专职研究员重写。
+        """
+        groups = dict(
+            _dimension_groups(["revenue_fy"], [], [], weak=["net_income_fy", "moat", "peers"])
+        )
+        assert set(groups["financial"]) == {"revenue_fy", "net_income_fy"}
+        # 未激活的维度组不因 weak 而创建，并行面不扩大
+        assert list(groups) == ["financial"]
+
+        # 全无缺口时 weak 不触发任何组（收敛判据不受 weak 影响）
+        assert _dimension_groups([], [], [], weak=["moat"]) == []
+
     def test_parallel_groups_isolated_and_both_write(self, tmp_path):
         """两 worker 并行：各自维度组写入互不干扰；group_end 事件留痕；chunk 编号不撞车。"""
         loop, kb, events = make_loop(tmp_path, MockLLM([]), max_rounds=1)

@@ -36,6 +36,14 @@ def build_round_brief(
         parts.append("缺失字段：" + ", ".join(gaps.missing))
     if gaps.stale:
         parts.append("待更新（陈旧）字段：" + ", ".join(gaps.stale))
+    if gaps.weak:
+        # 弱字段回流（准入闭环）：字段在但质检未过（内容过短/缺数值锚点/仅 C 级证据）→
+        # 列出「字段（原因）」引导下轮用更可靠的证据重写替换旧值。软引导，不列入
+        # 「只研究缺口字段」的硬约束，也不阻塞收敛。
+        weak_line = "、".join(
+            f"{field}（{'；'.join(issues)}）" for field, issues in gaps.weak.items()
+        )
+        parts.append(f"待改进字段（已有值但未过质检，优先重写替换）：{weak_line}")
     if gaps.optional_missing:
         parts.append("可选维度（有能力就补）：" + ", ".join(gaps.optional_missing))
     if gaps.conflicts:

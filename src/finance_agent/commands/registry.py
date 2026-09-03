@@ -75,10 +75,13 @@ class ParsedCommand:
 
 
 def parse_target(raw: str) -> tuple[str, str]:
-    """标的解析：'industry:<slug>' → 行业；否则股票（代码大写归一）。"""
+    """标的解析：'industry:<slug>' → 行业；否则股票（代码经 normalize 归一，
+    防 2228.HK/02228.HK 双档案事故重演）。"""
+    from ..knowledge.normalize import normalize_entity_id
+
     if raw.lower().startswith("industry:"):
         return "industry", raw.split(":", 1)[1].strip().lower()
-    return "stock", raw.upper()
+    return "stock", normalize_entity_id("stock", raw)
 
 
 def parse_command(text: str) -> ParsedCommand | None:

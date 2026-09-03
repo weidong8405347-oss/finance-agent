@@ -280,6 +280,11 @@ knowledge/
 ### 5.2 S2 Profile 更新（知识库写入）
 
 - **单写者**：只有 ProfileWriter 能写知识库。并行研究子代理产出的是「候选结论 + 证据」，由 ProfileWriter 原子合并。
+- **verify 准入闸（2026-09-03 整改，对应验收事故「完整度 100% 但点进去没内容」）**：
+  - **写侧硬门禁**（ProfileWriter 落库前，fail-closed）：空值/占位符（「待补充」之类整体占位）/序列化 JSON 字符串/结构化字段类型违例 → 拒写并落 `hook/verdict`（verify-gate）事件。品格由它拒绝的东西定义：残次品不进知识库。
+  - **读侧质量投影**（`verify_entity`，纯投影无状态）：每字段软检查（内容过短/缺数值锚点/仅 C 级证据/开放冲突/陈旧）→ per-field status、`quality_score`（0-1）与实体 status（verified/draft）。UI 列表与 HTML 存档 header 的状态 pill 同源——「完整度」（schema 覆盖度）与「质量分」并排展示，前者不再单独撒谎。
+  - **实体 ID 归一**（`normalize_entity_id`，三层纵深）：命令解析/研究工具/单写者都归一（HK 去前导零补 4 位，02228.HK→2228.HK；CN 补 6 位；US 大写）——同一标的只允许一个档案。
+  - **存档惰性物化**：HTML 存档是 KB 的纯投影（内容寻址幂等），读路径缺档即同步重渲染——研究走非 command 路径不再导致详情页 404。
 - 写入即事件：`fact.asserted / fact.superseded / fact.conflict_raised / thesis.revised`，全部入 L0。
 - **L3 方法论晋升**：跨标的/跨行业反复出现 ≥N 次的模式（如「高换手策略在该行业滑点敏感」），由晋升流程写入 methodology/，只存规则与证据引用，不存具体数字。单次偶然不晋升。
 - 每次写入后更新 `kb_snapshot_id`（内容寻址哈希）——决策卡与评估都引用它，保证「这个决策是基于哪一版知识」可复现。

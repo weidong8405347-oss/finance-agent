@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -161,8 +162,13 @@ def create_app(
 
     @app.get("/api/knowledge/entities")
     def list_entities(namespace: str = "prod") -> list[dict[str, Any]]:
-        """档案列表投影：完整度/陈旧/冲突/最近可知时刻（Knowledge 页的数据源）。"""
+        """档案列表投影：完整度/陈旧/冲突/最近可知时刻 + verify 准入质量投影。
+
+        完整度只回答「schema 字段有没有值」；质量分/验收状态回答「值配不配进知识库」
+        （验收事故：完整度 100% 但点进去没内容——两个口径从此并排展示）。
+        """
         from ..knowledge.gaps import GapAnalyzer
+        from ..knowledge.verify import verify_entity
 
         rows = kb._conn.execute(  # noqa: SLF001
             "SELECT entity_kind, entity_id, COUNT(DISTINCT field), MAX(knowledge_time) FROM facts"
@@ -171,18 +177,25 @@ def create_app(
         ).fetchall()
         analyzer = GapAnalyzer(kb)
         now = datetime.now(UTC)
-        return [
-            {
-                "kind": r[0],
-                "id": r[1],
-                "field_count": r[2],
-                "last_knowledge_time": r[3],
-                "completeness": (g := analyzer.analyze(r[0], r[1], now, namespace=namespace)).completeness,
-                "stale_count": len(g.stale),
-                "conflict_count": len(g.conflicts),
-            }
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            g = analyzer.analyze(r[0], r[1], now, namespace=namespace)
+            q = verify_entity(kb, r[0], r[1], now, namespace=namespace)
+            out.append(
+                {
+                    "kind": r[0],
+                    "id": r[1],
+                    "field_count": r[2],
+                    "last_knowledge_time": r[3],
+                    "completeness": g.completeness,
+                    "stale_count": len(g.stale),
+                    "conflict_count": len(g.conflicts),
+                    "quality_score": q.quality_score,
+                    "quality_status": q.status,
+                    "quality_issues": q.issues,
+                }
+            )
+        return out
 
     @app.get("/api/knowledge/{kind}/{entity_id}")
     def entity_profile(
@@ -193,11 +206,23 @@ def create_app(
     ) -> dict[str, Any]:
         t = as_of or datetime.now(UTC)
         profile = kb.view(kind, entity_id, t, namespace=namespace)
+        from ..knowledge.verify import field_issues, verify_entity
+
+        quality = verify_entity(kb, kind, entity_id, t, namespace=namespace)
+
+        def _issues(rec: Any) -> list[str]:
+            evidences = []
+            for eid in rec.evidence_ids:
+                with contextlib.suppress(Exception):
+                    evidences.append(kb.get_evidence(eid))
+            return field_issues(rec.field, rec, evidences)
+
         return {
             "kind": kind,
             "id": entity_id,
             "as_of": t.isoformat(),
             "namespace": namespace,
+            "quality": quality.model_dump(mode="json"),
             "facts": {
                 field: {
                     "fact_id": rec.fact_id,
@@ -206,6 +231,7 @@ def create_app(
                     "knowledge_time": rec.knowledge_time.isoformat(),
                     "version": rec.version,
                     "conflict": rec.conflict_flag,
+                    "issues": _issues(rec),
                     "evidence": [_evidence_json(kb, eid) for eid in rec.evidence_ids],
                 }
                 for field, rec in sorted(profile.items())
@@ -368,10 +394,22 @@ def create_app(
 
     @app.get("/api/knowledge/{kind}/{entity_id}/archives/{name}")
     def read_archive(kind: str, entity_id: str, name: str) -> Any:
-        """读取某个版本的 HTML 存档（路径穿越防护：必须落在 archive 目录内）。"""
+        """读取某个版本的 HTML 存档（路径穿越防护：必须落在 archive 目录内）。
+
+        latest.html 缺失时惰性物化：存档是 KB 的纯投影（内容寻址幂等），
+        读路径缺档即同步重渲染——根治「研究走了非 command 路径 → 档案无存档 →
+        详情页 404」的事故（2026-09-03 验收：20/28 个实体无存档）。
+        """
         from fastapi.responses import FileResponse
 
+        from ..knowledge.render import maybe_archive
+
         archive_dir = (knowledge_path / f"{kind}s" / entity_id / "archive").resolve()
+        if name == "latest.html" and not (archive_dir / "latest.html").is_file():
+            try:
+                maybe_archive(kb, knowledge_path, kind, entity_id, namespace="prod")
+            except Exception:
+                logger.warning("存档惰性物化失败 %s:%s", kind, entity_id, exc_info=True)
         candidate = (archive_dir / name).resolve()
         if not name.endswith(".html") or not candidate.is_relative_to(archive_dir) or not candidate.is_file():
             raise HTTPException(status_code=404, detail="archive not found")

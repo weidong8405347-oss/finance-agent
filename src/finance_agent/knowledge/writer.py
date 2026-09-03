@@ -22,7 +22,9 @@ from ..harness.manifest import RunManifest, RunMode
 from .errors import KnowledgeInvariantError, KnowledgeLeakError
 from .guard import assert_numeric_consistent
 from .models import Fact
+from .normalize import normalize_entity_id
 from .store import BitemporalStore
+from .verify import assert_value_admissible
 
 
 class ProfileWriter:
@@ -33,10 +35,26 @@ class ProfileWriter:
     def write_fact(self, fact: Fact, *, run: RunManifest, namespace: str = "prod") -> str:
         """写入一条事实。硬门禁（必达，不过即拒）：
 
+        0. 准入质检：空值/占位符/JSON 字符串/结构化字段类型违例 → 拒写
+           （不是所有研究产出都配进知识库——verify 准入闸，防线 0）；
         1. knowledge-time 不变量：事实不可能比它的证据更早可知；
         2. eval 防线：证据 available_at ≤ eval_as_of（防线 2，纵深防御）；
         3. numeric-guard：数值必须与证据原文摘录逐字一致（原则 8）。
         """
+        # 0) verify 准入：残次品直接拒（HOOK_VERDICT 事件可审计）
+        try:
+            assert_value_admissible(fact.field, fact.value)
+        except Exception:
+            self._verdict(
+                run.run_id, "verify-gate", fact.field, f"值未过准入质检：{fact.value!r}"[:200]
+            )
+            raise
+
+        # 实体 ID 归一（兜底）：同一标的只允许有一个档案（2228.HK vs 02228.HK 事故）
+        canonical = normalize_entity_id(fact.entity_kind, fact.entity_id)
+        if canonical != fact.entity_id:
+            fact = fact.model_copy(update={"entity_id": canonical})
+
         evidences = [self._store.get_evidence(eid) for eid in fact.evidence_ids]
 
         # 1) knowledge_time ≥ max(evidence.available_at)

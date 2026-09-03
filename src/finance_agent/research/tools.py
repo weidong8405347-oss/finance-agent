@@ -22,7 +22,9 @@ from ..eventstore.store import EventStore
 from ..harness.manifest import RunManifest
 from ..knowledge.errors import KnowledgeError
 from ..knowledge.models import Fact
+from ..knowledge.normalize import normalize_entity_id
 from ..knowledge.store import BitemporalStore
+from ..knowledge.verify import STRUCTURED_LIST_FIELDS
 from ..knowledge.writer import ProfileWriter
 from .calc import CALC_TOOL_SCHEMA, calc_tool
 from .evidence_desk import ChunkStore, EvidenceVerificationError, verify_and_build
@@ -32,13 +34,10 @@ FetchDocument = Callable[[str], str]
 
 _WS = re.compile(r"\s+")
 
-#: 结构化字段校验（2026-09-01 实测：模型把 player_landscape 写成 JSON 字符串，
-#: 下游 F3 读到 1491 个字符——类型不校验的静默腐化）：值必须是 list[dict]，
-#: 且每条含必备键。
-_STRUCTURED_LIST_FIELDS: dict[str, tuple[str, ...]] = {
-    "player_landscape": ("ticker", "evidence_ids"),
-    "sub_sectors": ("name",),
-}
+#: 结构化字段校验注册表的唯一来源是 knowledge.verify.STRUCTURED_LIST_FIELDS
+#: （2026-09-01 实测：模型把 player_landscape 写成 JSON 字符串，下游 F3 读到
+#: 1491 个字符——类型不校验的静默腐化）。本层保留早期友好报错，硬门禁在 writer。
+_STRUCTURED_LIST_FIELDS = STRUCTURED_LIST_FIELDS
 
 
 class _Tracker:
@@ -107,6 +106,8 @@ def make_research_tools(
     def propose_fact(args: dict[str, Any]) -> dict[str, Any]:
         field = args["field"]
         evidence_ids: list[str] = args["evidence_ids"]
+        # 实体 ID 归一（写入口纵深防御；writer 层还有兜底）：同标的只允许一个档案
+        canonical_id = normalize_entity_id(entity_kind, entity_id)
         # 结构化字段类型校验（写侧 fail-loud，防 JSON 字符串腐化下游）
         if field in _STRUCTURED_LIST_FIELDS:
             required_keys = _STRUCTURED_LIST_FIELDS[field]
@@ -127,7 +128,7 @@ def make_research_tools(
             knowledge_time = max(known) if known else datetime.now(UTC)
             fact = Fact(
                 entity_kind=entity_kind,
-                entity_id=entity_id,
+                entity_id=canonical_id,
                 field=field,
                 value=args["value"],
                 event_time=datetime.fromisoformat(args["event_time"]) if args.get("event_time") else None,

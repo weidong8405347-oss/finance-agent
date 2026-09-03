@@ -379,7 +379,30 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     serve.add_argument("--no-build", action="store_true", help="不自动构建前端")
+    merge = sub.add_parser("merge-entity", help="合并重复档案（如 02228.HK → 2228.HK）")
+    merge.add_argument("--kind", required=True, choices=["stock", "industry"])
+    merge.add_argument("--from", dest="from_id", required=True)
+    merge.add_argument("--to", dest="to_id", required=True)
+    merge.add_argument("--data-dir", default="./data")
     args = parser.parse_args(argv)
+
+    if args.cmd == "merge-entity":
+        from .knowledge.migrate import merge_entity
+        from .knowledge.normalize import normalize_entity_id
+
+        data_dir = Path(args.data_dir)
+        store = BitemporalStore(data_dir / "kb.db")
+        try:
+            report = merge_entity(
+                store, args.kind,
+                args.from_id,  # 源 id 保持原始形态（要清理的往往是不规范的旧 id）
+                normalize_entity_id(args.kind, args.to_id),
+                knowledge_dir=data_dir / "knowledge",
+            )
+        finally:
+            store.close()
+        print(f"合并完成：{report}")  # noqa: T201 - CLI 输出
+        return 0
 
     if args.cmd == "serve":
         return _serve(
