@@ -224,3 +224,58 @@ def test_resolve_conflict_unknown_target_returns_404(tmp_path):
         json={"field": "nope", "keep_fact_id": "whatever"},
     )
     assert r2.status_code == 404 and "nope" in r2.json()["detail"]
+
+
+def test_resolve_lands_kept_value_when_version_tail_diverges_from_projection(tmp_path):
+    """合并重放残留：version 尾 ≠ 投影（kt 序错位）→ 仍按投影补写落版。
+
+    旧触发看版本链尾：keep=尾 → 不补写 → 投影仍指 kt 更晚的旧值，
+    裁决值不可见（2026-09-03 valuation 实测，当时靠人工补落版）。
+    """
+    client, kb, _events = conflict_seeded(tmp_path)
+    # v3：version 更大但 knowledge_time 早于 v2 → 链尾是 v3、投影是 v2
+    kb.assert_fact(
+        Fact(
+            entity_kind="stock", entity_id="AAPL", field="revenue_fy", value=200,
+            event_time=datetime(2023, 12, 31, tzinfo=UTC),
+            knowledge_time=OLD, evidence_ids=["ev-2"], run_id="run-replay",
+        )
+    )
+    v3 = kb.history("stock", "AAPL", "revenue_fy")[-1]
+    assert v3.knowledge_time == OLD
+
+    resp = client.post(
+        "/api/knowledge/stock/AAPL/resolve",
+        json={"field": "revenue_fy", "keep_fact_id": v3.fact_id},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["new_fact_id"] is not None  # 旧触发在此返回 None，裁决值落不了地
+    after = client.get("/api/knowledge/stock/AAPL").json()["facts"]["revenue_fy"]
+    assert after["fact_id"] == body["new_fact_id"] and after["conflict"] is False
+
+
+def test_resolve_rejects_gate_failing_kept_value_with_409(tmp_path):
+    """keep 门禁上线前的序列化 JSON 字符串旧形态 → 409 明确出路，不报 500。
+
+    裁决失败不留半截状态：冲突标记原样保留、无新版本落库。
+    """
+    client, kb, _events = conflict_seeded(tmp_path)
+    kb.assert_fact(
+        Fact(
+            entity_kind="stock", entity_id="AAPL", field="revenue_fy",
+            value='{"revenue": 100}',  # 写侧门禁上线前的旧形态
+            event_time=datetime(2023, 12, 31, tzinfo=UTC),
+            knowledge_time=OLD, evidence_ids=["ev-1"], run_id="run-legacy",
+        )
+    )
+    v3 = kb.history("stock", "AAPL", "revenue_fy")[-1]
+
+    resp = client.post(
+        "/api/knowledge/stock/AAPL/resolve",
+        json={"field": "revenue_fy", "keep_fact_id": v3.fact_id},
+    )
+    assert resp.status_code == 409
+    assert "准入闸" in resp.json()["detail"]
+    assert len(kb.history("stock", "AAPL", "revenue_fy")) == 3
+    assert kb.open_conflicts("stock", "AAPL")

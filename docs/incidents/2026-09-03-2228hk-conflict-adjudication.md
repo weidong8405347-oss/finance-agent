@@ -59,12 +59,14 @@
 
 ## 注意事项
 
-1. **resolve × 写侧门禁交互（潜在 500）**：resolve 对非链尾版本会经
-   ProfileWriter 补写同值新版本，值若为门禁上线前的序列化 JSON 字符串
+1. **resolve × 写侧门禁交互（已根治，后续提交）**：resolve 对非「当前投影」版本会经
+   ProfileWriter 补写同值新版本，值若为门禁上线前的序列化 JSON 字符串旧形态
    （revenue_fy v1/v4、net_income_fy v3、cash_flow v3、valuation v3/v4、
-   business_model v2/v4/v5、risks v2/v3/v4）会被 `assert_value_admissible`
-   拒写 → 接口 500。上表建议全部避开这类值；后续可考虑 resolve 对「人工
-   显式裁决」给出明确 4xx 报错或豁免通道（政策决策，未改）。
+   business_model v2/v4/v5、risks v2/v3/v4）会被 `assert_value_admissible` 拒写。
+   端点现返回 **409 + 出路提示**（改选版本或先以合规形态重写），不再 500；
+   豁免通道不开——准入闸 fail-closed 对裁决入口同样成立。补写触发判据同步从
+   「版本链尾」改为「当前投影」，合并重放的 version/kt 序错位不再需要人工补落版
+   （本表 valuation 一例即该错位的实测）。
 2. valuation 为时点快照字段（max_age 180d）：裁决只清冲突，不冻结估值——
    下一轮研究会自然刷新。
 3. 21 条冲突版本裁决后全部保留在版本链中（append-only），仅清除冲突标记并落

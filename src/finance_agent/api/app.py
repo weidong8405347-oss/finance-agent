@@ -44,6 +44,11 @@ from ..eventstore.events import (
 from ..eventstore.store import EventStore
 from ..harness.approvals import ApprovalService
 from ..harness.manifest import RunManifest, RunMode
+from ..knowledge.errors import (
+    KnowledgeInvariantError,
+    KnowledgeQualityError,
+    NumericGuardError,
+)
 from ..knowledge.models import Fact
 from ..knowledge.store import BitemporalStore
 from ..knowledge.writer import ProfileWriter
@@ -244,8 +249,12 @@ def create_app(
     ) -> dict[str, Any]:
         """人工裁决字段的开放冲突（详情页「以此版本为准」按钮的后端入口）。
 
-        - keep 指向非最新版本 → 经 ProfileWriter 补写一条同值新版本（append-only，
-          证据/事件时点沿用被裁决版本），让「以此为准」落到当前投影；
+        - keep 与「当前投影」不同 → 经 ProfileWriter 补写一条同值新版本（append-only，
+          证据/事件时点沿用被裁决版本），让「以此为准」落到当前投影。落版判据看投影
+          而非版本链尾：合并重放可使 version 序与 knowledge_time 序错位，链尾未必是
+          投影（2026-09-03 实测 valuation 裁决曾需人工补落版）；
+        - 被保留值未过写侧准入闸（如门禁上线前的序列化 JSON 字符串旧形态）→ 409 明确
+          报错并给出出路，不报 500；豁免通道不开——准入闸 fail-closed 对裁决入口同样成立；
         - 随后清除该字段全部竞争版本标记，落 fact/conflict_resolved（可审计）；
         - 审计事件落 kb-<kind>-<entity_id> 维护 run（非会话，sessions 列表排除 kb-*）；
         - 仅 prod 命名空间：eval 命名空间的裁决权属于回放纪律，不升人工入口（铁律 6）。
@@ -260,20 +269,30 @@ def create_app(
             )
         run = RunManifest(run_id=f"kb-{kind}-{entity_id}", mode=RunMode.LIVE)
         new_fact_id: str | None = None
-        if kept.fact_id != history[-1].fact_id:
-            new_fact_id = kb_writer.write_fact(
-                Fact(
-                    entity_kind=kind,
-                    entity_id=entity_id,
-                    field=req.field,
-                    value=kept.value,
-                    event_time=kept.event_time,
-                    knowledge_time=datetime.now(UTC),
-                    evidence_ids=kept.evidence_ids,
-                    run_id=run.run_id,
-                ),
-                run=run,
-            )
+        current = kb.view(kind, entity_id, datetime.now(UTC)).get(req.field)
+        if current is None or kept.fact_id != current.fact_id:
+            try:
+                new_fact_id = kb_writer.write_fact(
+                    Fact(
+                        entity_kind=kind,
+                        entity_id=entity_id,
+                        field=req.field,
+                        value=kept.value,
+                        event_time=kept.event_time,
+                        knowledge_time=datetime.now(UTC),
+                        evidence_ids=kept.evidence_ids,
+                        run_id=run.run_id,
+                    ),
+                    run=run,
+                )
+            except (KnowledgeQualityError, KnowledgeInvariantError, NumericGuardError) as e:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"被保留版本的值未过写侧准入闸：{e}——"
+                        "请改选其他版本，或先以合规形态（散文/结构化对象）重写该值后再裁决"
+                    ),
+                ) from e
         cleared = kb_writer.resolve_conflict(
             kind,
             entity_id,
