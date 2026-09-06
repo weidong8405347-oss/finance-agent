@@ -1,0 +1,846 @@
+{
+ "industry:ai-for-science": [
+  {
+   "field": "competition",
+   "decision": "自动高置信",
+   "keep": "fact-502dc1c7ef59",
+   "why": "B 级证据×1；其他来源；kt 真实；散文；时点 2026-08-24",
+   "versions": 2,
+   "score": 6.9,
+   "runner_up": null,
+   "note": []
+  },
+  {
+   "field": "player_landscape",
+   "decision": "自动高置信",
+   "keep": "fact-43695813880c",
+   "why": "B 级证据×32；公司通稿；kt 真实；列表结构化",
+   "versions": 3,
+   "score": 7.9,
+   "runner_up": null,
+   "note": []
+  },
+  {
+   "field": "policy",
+   "decision": "人工确认",
+   "keep": "fact-39d6962c881d",
+   "why": "B 级证据×3；财经媒体；kt 真实；散文；时点 2026-07-01",
+   "versions": 3,
+   "score": 7.5,
+   "runner_up": "fact-c381eb0830f6",
+   "note": []
+  },
+  {
+   "field": "sub_sectors",
+   "decision": "需先重写",
+   "keep": null,
+   "why": "全部版本值形态不过准入闸——需先以合规形态重写再裁决",
+   "versions": 2,
+   "score": null,
+   "runner_up": null,
+   "note": []
+  },
+  {
+   "field": "value_chain",
+   "decision": "人工确认",
+   "keep": "fact-e7a23d70b549",
+   "why": "B 级证据×2；其他来源；kt 真实；散文",
+   "versions": 3,
+   "score": 6.7,
+   "runner_up": "fact-ea389d48c680",
+   "note": []
+  }
+ ],
+ "industry:ai-for-science-美股港股": [
+  {
+   "field": "growth_rate",
+   "decision": "人工确认",
+   "keep": "fact-5357f3f40718",
+   "why": "B 级证据×1；其他来源；kt 真实；散文；时点 2026-01-19",
+   "versions": 3,
+   "score": 7.213,
+   "runner_up": "fact-6758048cd997",
+   "note": []
+  },
+  {
+   "field": "market_size",
+   "decision": "人工确认",
+   "keep": "fact-9d5df56e2f3c",
+   "why": "C 级证据×1；其他来源；kt 真实；散文；时点 2025-05-09",
+   "versions": 3,
+   "score": 6.0,
+   "runner_up": "fact-12bb3d4fff83",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  }
+ ],
+ "stock:1548.HK": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-eeeadf24b052",
+   "why": "B 级证据×2；交易所/监管披露；kt 真实；散文",
+   "versions": 2,
+   "score": 7.7,
+   "runner_up": "fact-c9cf222a575b",
+   "note": []
+  },
+  {
+   "field": "moat",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-1c816d2adf95",
+   "why": "B 级证据×1；其他来源；kt 真实；散文；时点 2026-08-16",
+   "versions": 4,
+   "score": 6.9,
+   "runner_up": "fact-a50a6f762cd7",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "自动高置信",
+   "keep": "fact-136dcdd6c657",
+   "why": "B 级证据×3；公司通稿；kt 真实；散文；时点 2025-12-31",
+   "versions": 4,
+   "score": 8.4,
+   "runner_up": "fact-b24fad1740a5",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "自动高置信",
+   "keep": "fact-fbd2e9b8a371",
+   "why": "B 级证据×3；交易所/监管披露；kt 真实；散文；时点 2025-12-31",
+   "versions": 5,
+   "score": 8.9,
+   "runner_up": "fact-1dd4b20e4a8d",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "人工确认",
+   "keep": "fact-29ba3fd73372",
+   "why": "C 级证据×2；财经媒体；kt 真实；散文；时点 2026-02-04",
+   "versions": 2,
+   "score": 5.9,
+   "runner_up": "fact-e9f1c157c19c",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "valuation",
+   "decision": "人工确认",
+   "keep": "fact-9615bacbcba0",
+   "why": "C 级证据×3；其他来源；kt 真实；散文；时点 2026-08-28",
+   "versions": 3,
+   "score": 6.6,
+   "runner_up": "fact-1084a53e1b4e",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  }
+ ],
+ "stock:2315.HK": [
+  {
+   "field": "business_model",
+   "decision": "人工改判",
+   "keep": "fact-54aa90c8ad39",
+   "why": "叙事取更全（5000+ 模型/海外占比 70%/Top10 药企覆盖），证据等级相同",
+   "versions": 3,
+   "score": 5.9,
+   "runner_up": "fact-54aa90c8ad39",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-d6722970295d",
+   "why": "C 级证据×1；其他来源；kt 真实；散文；时点 2025-12-31",
+   "versions": 4,
+   "score": 6.0,
+   "runner_up": "fact-3f2cf1c50318",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工确认",
+   "keep": "fact-6ffc8942ea65",
+   "why": "C 级证据×2；其他来源；kt 真实；散文；时点 2025-12-31",
+   "versions": 4,
+   "score": 6.3,
+   "runner_up": "fact-ad8e3e7e12b4",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "risks",
+   "decision": "人工确认",
+   "keep": "fact-7e72d21188f6",
+   "why": "B 级证据×1；其他来源；kt 真实；散文；时点 2026-03-31",
+   "versions": 4,
+   "score": 6.9,
+   "runner_up": "fact-0d127fcec330",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "人工改判",
+   "keep": "fact-79c94e10ce3f",
+   "why": "快照取更新+服务端验算（09-02 diff 0.0009%）；初筛 B 级是 04-28 旧快照且自认市值未知",
+   "versions": 4,
+   "score": 7.6,
+   "runner_up": "fact-79c94e10ce3f",
+   "note": []
+  }
+ ],
+ "stock:300857.SZ": [
+  {
+   "field": "valuation",
+   "decision": "需先重写",
+   "keep": null,
+   "why": "全部版本值形态不过准入闸——需先以合规形态重写再裁决",
+   "versions": 2,
+   "score": null,
+   "runner_up": null,
+   "note": []
+  }
+ ],
+ "stock:3696.HK": [
+  {
+   "field": "bd_lilly_2026",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-c3467b127312",
+   "why": "C 级证据×1；交易所/监管披露；kt 真实；散文；时点 2026-03-29",
+   "versions": 2,
+   "score": 6.6,
+   "runner_up": "fact-93275ddc3d57",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "bd_takeda_2026",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-8dfc3272948e",
+   "why": "C 级证据×1；交易所/监管披露；kt 真实；散文；时点 2026-07-02",
+   "versions": 2,
+   "score": 6.6,
+   "runner_up": "fact-d038bdc22a13",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "moat",
+   "decision": "人工确认",
+   "keep": "fact-693303b532d8",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文；时点 2026-07-08",
+   "versions": 2,
+   "score": 9.2,
+   "runner_up": "fact-52617e28f2f8",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "人工确认",
+   "keep": "fact-2b7ce50e0954",
+   "why": "B 级证据×2；其他来源；kt 真实；散文；时点 2026-06-30",
+   "versions": 4,
+   "score": 7.6,
+   "runner_up": "fact-8e0e09e04af3",
+   "note": []
+  },
+  {
+   "field": "pipeline_milestone",
+   "decision": "自动高置信",
+   "keep": "fact-6ee3601c5fb6",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文",
+   "versions": 2,
+   "score": 8.4,
+   "runner_up": "fact-fa7aa79d0590",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工确认",
+   "keep": "fact-b59f43f305ac",
+   "why": "B 级证据×3；其他来源；kt 真实；散文；时点 2026-06-30",
+   "versions": 5,
+   "score": 7.873,
+   "runner_up": "fact-569f4abdebca",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "人工改判",
+   "keep": "fact-954cfb7d9444",
+   "why": "风险综述取全面版（BD 依赖/临床/摊薄/轨迹全覆盖）；初筛 A 级仅可转债单一风险",
+   "versions": 5,
+   "score": 9.2,
+   "runner_up": "fact-954cfb7d9444",
+   "note": []
+  }
+ ],
+ "stock:7666.HK": [
+  {
+   "field": "cash_flow",
+   "decision": "自动高置信",
+   "keep": "fact-30a49a1c7b26",
+   "why": "B 级证据×1；交易所/监管披露；kt 真实；散文；时点 2026-06-30",
+   "versions": 5,
+   "score": 8.3,
+   "runner_up": "fact-d800ea95f889",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "人工确认",
+   "keep": "fact-c8a1ab503eda",
+   "why": "B 级证据×1；其他来源；kt 真实；散文；时点 2025-12-31",
+   "versions": 3,
+   "score": 6.998,
+   "runner_up": "fact-5f00515d4528",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工改判",
+   "keep": "fact-b6b545383f86",
+   "why": "年字段取年报口径（FY2025 1.05 亿+收入结构）；初筛仅中期口径",
+   "versions": 6,
+   "score": 8.3,
+   "runner_up": "fact-b6b545383f86",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "人工确认",
+   "keep": "fact-d76807695956",
+   "why": "B 级证据×2；其他来源；kt 真实；散文；时点 2026-08-25",
+   "versions": 4,
+   "score": 7.598,
+   "runner_up": "fact-daf0f78f7b1b",
+   "note": []
+  }
+ ],
+ "stock:ABCL": [
+  {
+   "field": "business_model",
+   "decision": "人工确认",
+   "keep": "fact-97ca4a3c7ae6",
+   "why": "A 级证据×4；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 7,
+   "score": 9.73,
+   "runner_up": "fact-9de4d1a89378",
+   "note": []
+  },
+  {
+   "field": "cash_flow",
+   "decision": "人工确认",
+   "keep": "fact-ed98ddc0811f",
+   "why": "A 级证据×4；官方披露直采；kt 真实；dict 结构化；时点 2026-06-30",
+   "versions": 5,
+   "score": 10.2,
+   "runner_up": "fact-b5b91956c43a",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "自动高置信",
+   "keep": "fact-e017853774a1",
+   "why": "A 级证据×1；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 5,
+   "score": 9.3,
+   "runner_up": "fact-861fc410901d",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "自动高置信",
+   "keep": "fact-1d5083166bb3",
+   "why": "A 级证据×1；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 5,
+   "score": 9.3,
+   "runner_up": "fact-f0c35787ab21",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "人工确认",
+   "keep": "fact-fb3b41a3d12d",
+   "why": "A 级证据×5；官方披露直采；kt 真实；dict 结构化",
+   "versions": 6,
+   "score": 9.4,
+   "runner_up": "fact-3e1d8986a103",
+   "note": []
+  }
+ ],
+ "stock:ABSI": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-2b78eeb4a0cd",
+   "why": "C 级证据×2；交易所/监管披露；kt 真实；散文；时点 2026-06-30",
+   "versions": 4,
+   "score": 6.9,
+   "runner_up": "fact-5bf944e3c2b5",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "cash_flow",
+   "decision": "人工确认",
+   "keep": "fact-7e27e765ec42",
+   "why": "C 级证据×1；交易所/监管披露；kt 真实；散文；时点 2026-06-30",
+   "versions": 5,
+   "score": 7.0,
+   "runner_up": "fact-d81d8541ee72",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "自动高置信",
+   "keep": "fact-4a274fe2931f",
+   "why": "C 级证据×2；交易所/监管披露；kt 真实；散文；时点 2026-06-30",
+   "versions": 3,
+   "score": 7.3,
+   "runner_up": "fact-c57edd9aec61",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工改判",
+   "keep": "fact-bd21c6a7654c",
+   "why": "PIT 优先（B>C），数值一致",
+   "versions": 5,
+   "score": 7.3,
+   "runner_up": "fact-bd21c6a7654c",
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  }
+ ],
+ "stock:BEAM": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-051628ccc8b7",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-12-31",
+   "versions": 5,
+   "score": 8.9,
+   "runner_up": "fact-daf41dcb3ffa",
+   "note": []
+  },
+  {
+   "field": "moat",
+   "decision": "自动高置信",
+   "keep": "fact-d073e9bdc09d",
+   "why": "B 级证据×2；交易所/监管披露；kt 真实；散文",
+   "versions": 2,
+   "score": 7.7,
+   "runner_up": "fact-5ff9a546eded",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "人工确认",
+   "keep": "fact-eebb5e3a6310",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-12-31",
+   "versions": 4,
+   "score": 8.998,
+   "runner_up": "fact-22cbcc0d2822",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工确认",
+   "keep": "fact-f93302206881",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-12-31",
+   "versions": 4,
+   "score": 8.998,
+   "runner_up": "fact-c24ad5fb38e3",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "人工确认",
+   "keep": "fact-c1b8de8acbaf",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文",
+   "versions": 5,
+   "score": 8.7,
+   "runner_up": "fact-df298cbc0ee5",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "自动高置信",
+   "keep": "fact-a7bdec40c05c",
+   "why": "C 级证据×1；其他来源；kt 真实；散文；时点 2026-08-27",
+   "versions": 2,
+   "score": 6.0,
+   "runner_up": null,
+   "note": [
+    "仅 C 级证据(弱回流素材)"
+   ]
+  }
+ ],
+ "stock:EXAI": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-1daa9d7d3cb2",
+   "why": "A 级证据×3；官方披露直采；kt 真实；dict 结构化",
+   "versions": 3,
+   "score": 9.2,
+   "runner_up": "fact-0dba730910c9",
+   "note": []
+  },
+  {
+   "field": "cash_flow",
+   "decision": "人工确认",
+   "keep": "fact-75c23124b2bf",
+   "why": "A 级证据×2；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 4,
+   "score": 9.6,
+   "runner_up": "fact-b62c771929b4",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "自动高置信",
+   "keep": "fact-ff100ca67d02",
+   "why": "A 级证据×3；官方披露直采；kt 真实；dict 结构化；时点 2026-07-31",
+   "versions": 5,
+   "score": 9.9,
+   "runner_up": "fact-b1faddc7b490",
+   "note": []
+  }
+ ],
+ "stock:GENB": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-25a6615cdaf1",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文；时点 2026-02-26",
+   "versions": 4,
+   "score": 9.2,
+   "runner_up": "fact-443097c9af03",
+   "note": []
+  },
+  {
+   "field": "cash_flow",
+   "decision": "人工改判",
+   "keep": "fact-c7dedf964f61",
+   "why": "初筛 kt(02-27) 早于其内容(2026-06-30 余额)=双时态违例；改判版 kt 自洽且含融资活动拆分",
+   "versions": 5,
+   "score": 9.9,
+   "runner_up": "fact-c7dedf964f61",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "人工确认",
+   "keep": "fact-380f9e27bac5",
+   "why": "A 级证据×1；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 5,
+   "score": 9.0,
+   "runner_up": "fact-1508b915e310",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-a64af62b54f5",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-12-31",
+   "versions": 5,
+   "score": 9.3,
+   "runner_up": "fact-73430a7c128e",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "人工确认",
+   "keep": "fact-482b55096228",
+   "why": "A 级证据×3；官方披露直采；kt 真实；散文；时点 2026-02-04",
+   "versions": 4,
+   "score": 9.463,
+   "runner_up": "fact-3a56985b54cf",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "人工确认",
+   "keep": "fact-04cd823cebc9",
+   "why": "A 级证据×3；官方披露直采；kt 真实；散文",
+   "versions": 4,
+   "score": 9.4,
+   "runner_up": "fact-aed63f0f6c39",
+   "note": []
+  }
+ ],
+ "stock:LODE": [
+  {
+   "field": "net_income_fy",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-b99d3cf74c39",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-12-31",
+   "versions": 2,
+   "score": 9.0,
+   "runner_up": "fact-a87e8dc86421",
+   "note": []
+  }
+ ],
+ "stock:RLAY": [
+  {
+   "field": "moat",
+   "decision": "需先重写",
+   "keep": null,
+   "why": "全部版本值形态不过准入闸——需先以合规形态重写再裁决",
+   "versions": 3,
+   "score": null,
+   "runner_up": null,
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "人工确认",
+   "keep": "fact-682b0eae7eb2",
+   "why": "A 级证据×2；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 2,
+   "score": 9.6,
+   "runner_up": "fact-486e48b314ae",
+   "note": []
+  }
+ ],
+ "stock:RSSS": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-a7ac19018973",
+   "why": "A 级证据×3；官方披露直采；kt 真实；散文；时点 2025-06-30",
+   "versions": 3,
+   "score": 9.5,
+   "runner_up": "fact-cc368ed89a4e",
+   "note": []
+  },
+  {
+   "field": "cash_flow",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-97249e7a3177",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文；时点 2025-06-30",
+   "versions": 4,
+   "score": 9.6,
+   "runner_up": "fact-3d5113b9bae0",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-c106ac2701bc",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-06-30",
+   "versions": 3,
+   "score": 9.3,
+   "runner_up": "fact-733832d7e2d3",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工改判",
+   "keep": "fact-97901a17b3d5",
+   "why": "同级同时点取含分部拆分的超集",
+   "versions": 3,
+   "score": 9.6,
+   "runner_up": "fact-97901a17b3d5",
+   "note": []
+  }
+ ],
+ "stock:RXRX": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-80adfc21c20c",
+   "why": "A 级证据×3；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 3,
+   "score": 9.6,
+   "runner_up": "fact-468256c28639",
+   "note": []
+  },
+  {
+   "field": "cash_flow",
+   "decision": "人工确认",
+   "keep": "fact-4e22909fb985",
+   "why": "A 级证据×2；官方披露直采；kt 真实；dict 结构化；时点 2026-06-30",
+   "versions": 5,
+   "score": 9.3,
+   "runner_up": "fact-cbffdd6430bc",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "人工改判",
+   "keep": "fact-480990b91379",
+   "why": "同级同时点取三年序列结构化 dict",
+   "versions": 5,
+   "score": 9.3,
+   "runner_up": "fact-480990b91379",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-550944072a20",
+   "why": "A 级证据×1；官方披露直采；kt 真实；散文；时点 2025-12-31",
+   "versions": 5,
+   "score": 9.3,
+   "runner_up": "fact-04819d1672d0",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "自动(值一致取证据强)",
+   "keep": "fact-465c31c33999",
+   "why": "A 级证据×5；官方披露直采；kt 真实；列表结构化；时点 2025-12-31",
+   "versions": 3,
+   "score": 10.2,
+   "runner_up": "fact-9ace94ad7198",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "人工改判",
+   "keep": "fact-05fe5c0f852f",
+   "why": "初筛值 market_cap=missing（无估值）；改判版含验算市值（kt 疤痕在案，下轮刷新修）",
+   "versions": 6,
+   "score": 9.397,
+   "runner_up": "fact-05fe5c0f852f",
+   "note": []
+  }
+ ],
+ "stock:SDGR": [
+  {
+   "field": "business_model",
+   "decision": "自动高置信",
+   "keep": "fact-4fea907b40ac",
+   "why": "A 级证据×3；官方披露直采；kt 真实；散文；时点 2026-06-30",
+   "versions": 3,
+   "score": 9.5,
+   "runner_up": "fact-248b9b13ffd1",
+   "note": []
+  },
+  {
+   "field": "moat",
+   "decision": "人工确认",
+   "keep": "fact-749b4e01f8ea",
+   "why": "A 级证据×4；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 2,
+   "score": 10.1,
+   "runner_up": "fact-f7ff9764ddc0",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工改判",
+   "keep": "fact-e3baccb4e786",
+   "why": "年字段取 FY2025 年报；初筛是 H1 分部",
+   "versions": 8,
+   "score": 9.3,
+   "runner_up": "fact-e3baccb4e786",
+   "note": []
+  },
+  {
+   "field": "risks",
+   "decision": "人工改判",
+   "keep": "fact-e8cf3031dc3e",
+   "why": "取具体现时风险（临床死亡事件/收入下滑/稀释）；初筛为 10-K 通用类目罗列",
+   "versions": 4,
+   "score": 10.2,
+   "runner_up": "fact-e8cf3031dc3e",
+   "note": []
+  }
+ ],
+ "stock:TEM": [
+  {
+   "field": "cash_flow",
+   "decision": "人工确认",
+   "keep": "fact-85f4781722bf",
+   "why": "A 级证据×3；官方披露直采；kt 真实；dict 结构化；时点 2026-06-30",
+   "versions": 4,
+   "score": 9.9,
+   "runner_up": "fact-4650e2b68e25",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工确认",
+   "keep": "fact-b8545a9776ef",
+   "why": "A 级证据×1；官方披露直采；kt 真实；dict 结构化；时点 2025-12-31",
+   "versions": 4,
+   "score": 8.998,
+   "runner_up": "fact-cfc0d87add66",
+   "note": []
+  }
+ ],
+ "stock:TWST": [
+  {
+   "field": "business_model",
+   "decision": "人工确认",
+   "keep": "fact-3313fe07f720",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文；时点 2026-06-30",
+   "versions": 3,
+   "score": 9.2,
+   "runner_up": "fact-9c909dc608c4",
+   "note": []
+  },
+  {
+   "field": "cash_flow",
+   "decision": "人工确认",
+   "keep": "fact-e83d35f5c776",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文；时点 2026-06-30",
+   "versions": 5,
+   "score": 9.542,
+   "runner_up": "fact-b73c44517d11",
+   "note": []
+  },
+  {
+   "field": "net_income_fy",
+   "decision": "自动高置信",
+   "keep": "fact-76e0d9b6bf65",
+   "why": "A 级证据×2；官方披露直采；kt 真实；散文；时点 2026-06-30",
+   "versions": 2,
+   "score": 9.6,
+   "runner_up": "fact-1a80c798a129",
+   "note": []
+  },
+  {
+   "field": "revenue_fy",
+   "decision": "人工确认",
+   "keep": "fact-00a7c626363c",
+   "why": "A 级证据×3；交易所/监管披露；kt 真实；散文；时点 2026-06-30",
+   "versions": 6,
+   "score": 9.848,
+   "runner_up": "fact-8adcdeb96f88",
+   "note": []
+  },
+  {
+   "field": "valuation",
+   "decision": "人工改判",
+   "keep": "fact-d4642bc64b5f",
+   "why": "初筛值日期(08-31)与其 kt(08-19)矛盾；改判版双时态自洽",
+   "versions": 6,
+   "score": 9.6,
+   "runner_up": "fact-d4642bc64b5f",
+   "note": []
+  }
+ ]
+}
