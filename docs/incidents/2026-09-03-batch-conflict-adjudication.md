@@ -219,3 +219,16 @@
 用户逐实体/逐字段确认后，按 json 伴生文件批量调 resolve（同 2228.HK 流程：
 补写落版 + 清冲突标记 + `fact/conflict_resolved` 审计）。「需先重写」3 条走研究轮或
 人工合规重写后再裁决。
+
+## 执行记录（2026-09-03，用户确认「入库」）
+
+- 75 字段逐一走 `POST /api/knowledge/{kind}/{id}/resolve`：**0 失败**；清除冲突标记
+  159 个；补写同值新版本 62 条（keep ≠ 当前投影者）；审计事件按
+  `kb-{kind}-{entity_id}` run 留痕（fact/conflict_resolved + fact/asserted）。
+- 3 条「需先重写」跳过，仍处开放冲突：ai-for-science·sub_sectors、300857.SZ·valuation、
+  RLAY·moat（2 个带标记版本）——前端列表残余 3 个冲突徽标与之对应。
+- 质量分（裁决前 → 后）：ai-for-science 0.58→1.0；RXRX 0.48→1.0；ABCL/EXAI/SDGR/TEM
+  →0.95；ai-for-science-美股港股 0.72→0.92；3696.HK/7666.HK 0.47→0.825；BEAM 0.30→0.78；
+  GENB 0.23→0.75；RSSS 0.42→0.78；TWST 0.31→0.75；1548.HK 0.30→0.73；2315.HK 0.26→0.50；
+  ABSI 0.38→0.58；LODE 0.49→0.58；RLAY 0.68→0.76；300857.SZ 不变（唯一冲突字段待重写）。
+- 残余弱字段（仅 C 级证据等）归弱字段回流，随下轮研究/刷新消化。
