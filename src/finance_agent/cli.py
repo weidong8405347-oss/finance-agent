@@ -96,7 +96,7 @@ def _router(data_dir: Path | None = None):
 
 def _all_tool_schemas() -> dict:
     """全部工具的 schema 合集（真实 provider 的 function calling 下发用）。"""
-    from .commands.steps import PROFILE_TOOL_SCHEMAS
+    from .commands.steps import PROFILE_TOOL_SCHEMAS, SYNTHESIZE_TOOL_SCHEMAS
     from .decision.loop import DECISION_TOOL_SCHEMAS
     from .gateway.tools import GATEWAY_TOOL_SCHEMAS
     from .main_agent import MAIN_AGENT_TOOL_SCHEMAS
@@ -107,6 +107,7 @@ def _all_tool_schemas() -> dict:
         **GATEWAY_TOOL_SCHEMAS,
         **MAIN_AGENT_TOOL_SCHEMAS,
         **PROFILE_TOOL_SCHEMAS,
+        **SYNTHESIZE_TOOL_SCHEMAS,
         **DECISION_TOOL_SCHEMAS,
     }
 
@@ -160,6 +161,16 @@ def build_orchestrator(data_dir: Path):
     events = EventStore(data_dir / "events.db")
     kb = BitemporalStore(data_dir / "kb.db")
     writer = ProfileWriter(store=kb, events=events)
+    # 档案升级（knowledge-dossier-research-redesign）：typed 观测/研究产物/快照索引
+    from .dossier.projector import DossierProjector
+    from .dossier.service import DossierService
+    from .knowledge.metric_store import MetricStore
+    from .knowledge.metric_writer import TypedMetricWriter
+    from .research.calculations import CalculationService
+
+    metrics = MetricStore(data_dir / "metrics.db")
+    metric_writer = TypedMetricWriter(store=metrics, kb=kb, events=events)
+    calculations = CalculationService(metrics, events=events)
     gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
     gateway.register(EdgarAdapter())
     gateway.register(YFinancePricesAdapter())
@@ -258,6 +269,13 @@ def build_orchestrator(data_dir: Path):
             "report_path": str(evals_dir / report.eval_run_id / "report.json"),
         }
 
+    decisions_store = decisions.decisions  # DecisionStore（dossier 投影用 decision_refs）
+    dossier_projector = DossierProjector(kb=kb, metrics=metrics, decisions=decisions_store)
+    dossier_service = DossierService(
+        kb=kb, metrics=metrics, projector=dossier_projector,
+        events=events, decisions=decisions_store,
+    )
+
     deps = StepDeps(
         events=events,
         kb=kb,
@@ -272,6 +290,10 @@ def build_orchestrator(data_dir: Path):
         knowledge_dir=data_dir / "knowledge",  # 档案 HTML 存档（自包含于数据目录）
         eval_runner=eval_runner,
         fetch_document=fetch_filing_text,
+        metrics=metrics,
+        metric_writer=metric_writer,
+        calculations=calculations,
+        dossier_service=dossier_service,
     )
     command_runner = CommandRunner(deps)  # wake 在 chat_service 建成后接线
     knowledge_dir = data_dir / "knowledge"
@@ -317,6 +339,10 @@ def build_orchestrator(data_dir: Path):
         "knowledge_dir": knowledge_dir,
         "reports_dir": data_dir / "reports",
         "capabilities_info": capabilities_info,
+        # v2 档案路由装配（create_app 消费）
+        "metrics": metrics,
+        "dossier_service": dossier_service,
+        "calculations": calculations,
     }
 
 
@@ -361,6 +387,9 @@ def _serve(data_dir: Path, host: str, port: int, *, open_browser: bool, auto_bui
         capabilities_info=orch["capabilities_info"],
         data_dir=data_dir,
         router_factory=lambda: _router(data_dir),  # P5 自配页：有效配置视图（每次新建=热生效）
+        metrics=orch["metrics"],
+        dossier_service=orch["dossier_service"],
+        calculation_service=orch["calculations"],
     )
     uvicorn.run(app, host=host, port=port)
     return 0

@@ -27,8 +27,9 @@ class CommandSpec:
 COMMANDS: dict[str, CommandSpec] = {
     "research": CommandSpec(
         name="research",
-        summary="S1 深度研究（轮次制）→ 报告合成 + 过程评估",
-        usage="/research <标的> [研究目标]（标的可写 industry:<slug> 研究行业）",
+        summary="S1 问题驱动深度研究（冻结计划→证据/分析/反证→充分度评估）→ 结构化报告 + 过程评估",
+        usage=("/research <标的> [研究目标] [--depth=standard|deep|refresh|targeted] [--focus=<问题>]"
+               "（标的可写 industry:<slug> 研究行业；--refresh 等价 --depth=refresh）"),
         steps=("research", "synthesize", "process_eval"),
     ),
     "profile": CommandSpec(
@@ -95,11 +96,24 @@ def parse_command(text: str) -> ParsedCommand | None:
     rest = tokens[1:]
     no_approval = False
     positional: list[str] = []
+    # 研究升级参数（knowledge-dossier-research-redesign §7.1）：命令解析层处理并进 manifest
+    extra: dict[str, str] = {}
     for tok in rest:
         if tok == "--no-approval":
             no_approval = True
+        elif tok == "--refresh":
+            extra["depth"] = "refresh"
+        elif tok.startswith("--depth="):
+            extra["depth"] = tok.split("=", 1)[1].strip().lower()
+        elif tok.startswith("--focus="):
+            extra["focus"] = tok.split("=", 1)[1].strip()
         else:
             positional.append(tok)
+    if extra.get("depth") not in (None, "", "standard", "deep", "refresh", "targeted"):
+        # 非法 depth 不猜不默默降级——回 usage_error（确定性入口纪律）
+        return ParsedCommand(
+            name=name, raw_input=text, extra={"error": f"未知 --depth: {extra['depth']}"}
+        )
     ticker, config, objective = "", "", ""
     if name == "evaluate":
         config = positional[0] if positional else ""
@@ -111,7 +125,7 @@ def parse_command(text: str) -> ParsedCommand | None:
         objective = " ".join(positional[1:]).strip()
     return ParsedCommand(
         name=name, raw_input=text, ticker=ticker, objective=objective,
-        config=config, no_approval=no_approval,
+        config=config, no_approval=no_approval, extra=extra,
     )
 
 

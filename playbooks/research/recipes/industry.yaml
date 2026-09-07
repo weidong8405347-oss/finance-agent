@@ -1,0 +1,101 @@
+# 行业实体研究配方（knowledge-dossier-research-redesign §7.5）
+# 行业页面展示产业链、瓶颈、候选池、比较与淘汰逻辑——不套用个股 EPS 页面
+id: industry
+version: "1"
+name: 行业实体
+entity_kind: industry
+
+modules:
+  - investment_snapshot
+  - industry_chain
+  - key_kpi
+  - candidate_pool
+  - catalysts_risks
+  - research_sources
+
+kpis:
+  - key: market_size
+    label: 市场规模
+    unit_hint: currency
+    required: true
+    definition: top-down 与 bottom-up 口径分开；来源与年份注明
+  - key: growth_rate
+    label: 增速
+    unit_hint: ratio
+    required: true
+  - key: capacity_supply
+    label: 供给/产能
+    unit_hint: units
+    required: false
+
+core_questions:
+  - id: value-chain
+    text: 产业链各环节是什么？价值与利润集中在哪一环？
+    why: 瓶颈层定位决定「投哪个环节」而非「投不投行业」
+    priority: high
+    evidence_types: [industry_report, filing, news]
+    acceptance: 链条分层有证据；利润池排序有依据（非直觉）
+    module: industry_chain
+  - id: bottleneck
+    text: 当前瓶颈环节是什么？瓶颈松动/加剧的信号？
+    priority: high
+    evidence_types: [industry_report, news, filing]
+    acceptance: 瓶颈判断绑定供需证据；信号可监测
+    module: industry_chain
+  - id: demand-supply
+    text: 供需格局：需求驱动与供给约束分别是什么？
+    priority: high
+    evidence_types: [industry_report, policy_document, news]
+    acceptance: 需求分层（政策/经济/技术）；供给约束（产能/技术/资源）各有证据
+    module: key_kpi
+  - id: technology-routes
+    text: 技术路线之争：主流与替代路线的成熟度与成本曲线？
+    priority: medium
+    evidence_types: [publication, industry_report, news]
+    acceptance: 路线对比表 + 各自代表公司；不虚构公司报表
+    module: industry_chain
+  - id: policy
+    text: 政策与监管如何塑造行业（补贴/准入/地缘）？
+    priority: medium
+    evidence_types: [policy_document, news]
+    acceptance: 政策原文与生效时间；退坡/变化风险标注
+    module: catalysts_risks
+  - id: candidate-pool
+    text: 各环节的代表公司有哪些？入选/淘汰逻辑是什么？
+    why: F2 标的池的档案侧投影——保留未入选原因与数据不足的区别
+    priority: high
+    evidence_types: [filing, news, industry_report]
+    acceptance: 每个候选绑赛道归属证据；淘汰留原因（超时/数据不足/研究否定分开）
+    module: candidate_pool
+  - id: counter-evidence
+    text: 行业叙事最强的反方证据（过剩/替代/需求证伪）？
+    priority: high
+    evidence_types: [news, industry_report, short_report]
+    acceptance: steelman 反方 + 争议事实清单
+    module: catalysts_risks
+
+extended_questions:
+  - id: cycle-position
+    text: 行业处于周期什么位置（库存/资本开支/价格）？
+    priority: medium
+    evidence_types: [industry_report, market_data]
+    acceptance: 周期指标有历史序列或明确缺口
+    module: key_kpi
+  - id: global-comparison
+    text: 跨区域（美/欧/中）政策与竞争格局差异？
+    priority: low
+    evidence_types: [policy_document, industry_report]
+    acceptance: 区域对比表；数据来源与年份注明
+    module: industry_chain
+
+models:
+  horizontal_comparison:
+    applicable_when: candidates_have_comparable_metrics
+    note: 横向比较与需求情景；不展示虚构公司报表
+
+freshness:
+  market_size_days: 365
+  growth_days: 180
+  policy_days: 180
+
+detection_hints: []

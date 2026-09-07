@@ -84,6 +84,10 @@ class StepContext:
     config: str
     should_cancel: Callable[[], bool]
     entity_kind: str = "stock"  # industry:<slug> 标的形态 → industry
+    # 研究升级参数（§7.1）：命令解析层 → manifest → ResearchPlan
+    depth: str = "standard"  # standard/deep/refresh/targeted
+    focus: str = ""
+    base_snapshot: str = ""
 
 
 @dataclass
@@ -112,6 +116,12 @@ class StepDeps:
                                                        # ReplayEngine 自带）
     max_rounds: int | None = None  # None → 动态预算（P3 §4.2：0%→5 轮/>50%→3 轮/仅刷新→1 轮）
     max_steps_per_round: int = 16
+    # ---- 档案升级（knowledge-dossier-research-redesign §12.1）：typed 观测/计算/快照 ----
+    metrics: Any | None = None  # MetricStore（缺省 = 新链路不启用，旧管线行为不变）
+    metric_writer: Any | None = None  # TypedMetricWriter
+    calculations: Any | None = None  # CalculationService
+    dossier_service: Any | None = None  # DossierService（synthesize 后发布快照）
+    research_plan_enabled: bool = True  # 灰度开关（§11.3）
     #: 维度并行 worker 池工厂（P3 §4.4）：n → n 个 flash LLM；None → 单模型串行
     worker_llm_for: Callable[[int], list[LLM]] | None = None
     completeness_target: float = 0.8
@@ -146,6 +156,9 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
     if ctx.should_cancel():
         return _cancelled(ctx)
     manifest = _open_child(deps, ctx, "research")
+    # 问题驱动研究（§7）：冻结 ResearchPlan 后，终止由问题覆盖+字段覆盖+预算共同决定；
+    # 已有 100% 档案遇到新目标仍创建计划（只复用有效证据，不宣告「无需研究」）
+    plan_id = _prepare_research_plan(deps, ctx)
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -161,6 +174,10 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
         worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
+        plan_id=plan_id,
+        metrics=deps.metrics,
+        metric_writer=deps.metric_writer,
+        calculations=deps.calculations,
     )
     reports = loop.run(
         ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
@@ -196,7 +213,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         )
         return StepResult(status="completed", summary=summary)
     if not reports:
-        summary = f"档案完整度已达标（{gaps.completeness:.0%}），无需新一轮研究"
+        summary = f"档案完整度已达标（{gaps.completeness:.0%}）且无待回答问题，无需新一轮研究"
     else:
         last = reports[-1]
         summary = (
@@ -204,7 +221,75 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
             f"完整度 {last.completeness_before:.0%} → {last.completeness_after:.0%}，"
             f"写入 {len(last.facts_written)} 字段"
         )
+        typed_out = (
+            len(last.observations_written) + len(last.claims_written) + len(last.calculations_done)
+        )
+        if typed_out:
+            summary += f"，typed 产出 {typed_out} 项（观测/论断/计算）"
+    # 研究充分度（§7.6）：字段完整 ≠ 研究充分——评估结果进摘要（RunStatus 与产物状态分离）
+    if loop.assessment is not None:
+        a = loop.assessment
+        cov = a.question_coverage
+        summary += (
+            f"；研究充分度 {a.verdict}（问题覆盖 {cov.answered}/{cov.applicable}，"
+            f"硬门禁{'通过' if a.hard_gate_passed else '未过'}）"
+        )
+        if a.gaps:
+            summary += f"；缺口：{'；'.join(a.gaps[:3])}"
     return StepResult(status="completed", summary=summary)
+
+
+def _prepare_research_plan(deps: StepDeps, ctx: StepContext) -> str | None:
+    """创建并冻结 ResearchPlan（§7.1/§7.5）：配方识别 + 问题模板 + 缺口提级。
+
+    新存储未装配或开关关闭 → None（旧管线行为不变，§11.3 灰度）。"""
+    if deps.metrics is None or not deps.research_plan_enabled:
+        return None
+    from ..research.plan import build_plan, load_recipe, select_recipe
+
+    try:
+        gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
+        hints = ""
+        view = deps.kb.view(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
+        for field in ("business_model", "moat", "peers", "value_chain"):
+            rec = view.get(field)
+            if rec is not None and isinstance(rec.value, str):
+                hints += " " + rec.value
+        recipe_id, basis = select_recipe(
+            ctx.entity_kind, hint_text=hints[:2000],
+            explicit=(
+                ctx.focus
+                if ctx.focus in ("general", "industrial_equipment", "biotech", "industry")
+                else None
+            ),
+        )
+        recipe = load_recipe(recipe_id)
+        mode = ctx.depth if ctx.depth in ("standard", "deep", "refresh", "targeted") else "standard"
+        if ctx.focus and mode == "standard":
+            mode = "targeted"  # 显式 focus 默认升级为 targeted（一个问题簇）
+        plan = build_plan(
+            entity_kind=ctx.entity_kind,
+            entity_id=ctx.ticker,
+            objective=ctx.objective or f"深度研究 {ctx.ticker}",
+            mode=mode,
+            recipe=recipe,
+            focus=ctx.focus,
+            missing_fields=list(gaps.missing),
+            stale_fields=list(gaps.stale),
+            base_snapshot_id=ctx.base_snapshot or None,
+            run_id=ctx.child_run_id,
+        )
+        payload = plan.model_dump(mode="json")
+        logger.info("研究计划冻结 %s（%s，配方 %s：%s）", plan.plan_id, mode, recipe_id, basis)
+        return deps.metrics.save_plan(plan_id=plan.plan_id, namespace="prod", payload=payload)
+    except Exception as e:
+        # 计划创建失败不阻断旧管线（降级可见：事件+日志），但必须留痕
+        logger.warning("研究计划创建失败（降级为字段驱动研究）：%s", e, exc_info=True)
+        deps.events.append(
+            Event(run_id=ctx.child_run_id, type="research/error",
+                  payload={"reason": f"研究计划创建失败（降级）: {type(e).__name__}: {e}"})
+        )
+        return None
 
 
 def _write_research_artifact(
@@ -241,9 +326,36 @@ _SYNTHESIZE_CONTRACT = """\
    ## 风险与反方 / ## 估值锚点 / ## 未知与缺口。
 """
 
+_SYNTHESIZE_CONTRACT_V2 = """\
+你是 CIO（首席投资官）。基于档案事实、typed 观测与研究论断，提交一份结构化研究报告。
+工作流：
+1. query_kb 读旧字段档案；query_observations 读结构化指标观测；query_claims 读研究论断；
+   read_evidence 核对证据原文。
+2. 用 submit_report_document 提交结构化报告（固定 block 类型）：
+   - heading/paragraph：每章「结论—证据—推导—限制」，结论尽量短；
+   - claim：引用已登记 claim_id（不要重写论断文本）；
+   - metric_table/chart_ref：数值单元格给 observation_id（服务端以引用值为准，
+     禁止自由改写数字）；图表只用 registry 内的 chart_id（metric_line/segment_bar/
+   peer_bar/sensitivity_table）；
+   - assumption_table：估值/情景假设 + calculation_ref；
+   - source_ref：证据/文档引用；gap_notice：缺口显式声明。
+3. 段落里引用证据写 [ev-xxx]；引用关键数值写 {{metric:<observation_id>}}（服务端插值）。
+   未登记的 id 会被验证拒绝——不要编造引用。
+4. 章节顺序：执行摘要 → 变化与核心问题 → 商业与行业 → 财务与 KPI → 预期 →
+   估值假设 → 竞争与管理层 → 风险与反方 → 催化/监测 → 分歧与缺口 → 来源/方法。
+   数据不足的章节用 gap_notice 明确降级，不以空图宣称完成。
+5. 不发布买卖评级、仓位与目标价区间（那是 /decide 的域，D1 边界）。
+"""
+
 
 def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
-    """研究轮收敛后的报告合成：档案 + 证据 → 结构化研报（ResearchFoldCard 的内容源）。"""
+    """研究轮收敛后的报告合成：档案 + 证据 + typed 观测/论断 → 结构化研报。
+
+    v2（新存储装配时）：LLM 产候选 ReportDocument block 结构，服务端验证引用后
+    渲染 Markdown（report.md、档案概览、Sessions 摘要同源，§7.8），冻结为
+    ResearchArtifact；产物状态（draft/validated）与研究充分度（sufficiency）分离，
+    运行完成（completed）不再被误读为「可用研报」。
+    """
     if ctx.should_cancel():
         return _cancelled(ctx)
     now = datetime.now(UTC)
@@ -251,11 +363,14 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
     manifest = _open_child(deps, ctx, "synthesize")
 
     report_title = f"{ctx.ticker} 研究报告"
-    if not view:
+    if not view and deps.metrics is None:
         summary = "档案为空，无内容可合成（先跑研究）"
         artifact = _write_text_artifact(deps, ctx, "report.md", f"# {report_title}\n\n{summary}\n")
         _publish_report(deps, ctx, report_title, summary, artifact, ["evidence-gap"])
         return StepResult(status="completed", summary=summary)
+    if not view:
+        # 空档案 + 新链路：仍发布缺口说明，但产物 sufficiency=blocked（状态与内容质量分离）
+        return _synthesize_empty_v2(deps, ctx, report_title, now)
 
     def query_kb(_args: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -295,21 +410,64 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             ],
         }
 
+    tools: dict[str, Any] = {"query_kb": query_kb, "read_evidence": read_evidence}
+    submitted: dict[str, Any] | None = None
+    contract = _SYNTHESIZE_CONTRACT
+    if deps.metrics is not None:
+        contract = _SYNTHESIZE_CONTRACT_V2
+
+        def query_observations(_args: dict[str, Any]) -> dict[str, Any]:
+            obs = deps.metrics.observations_as_of(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
+            return {"content": json.dumps([
+                {"observation_id": o.observation_id, "metric_key": o.metric_key,
+                 "value": o.value, "unit": o.unit, "currency": o.currency,
+                 "period": o.period.fiscal_label or o.period.end.isoformat(),
+                 "frequency": o.period.frequency, "nature": o.nature, "basis": o.basis,
+                 "dimensions": o.dimensions, "status": o.status,
+                 "evidence_refs": o.evidence_refs}
+                for o in obs
+            ][:200], ensure_ascii=False), "provenance": []}
+
+        def query_claims(_args: dict[str, Any]) -> dict[str, Any]:
+            claims = deps.metrics.claims_as_of(
+                ctx.entity_kind, ctx.ticker, datetime.now(UTC),
+                statuses=("draft", "validated"),
+            )
+            return {"content": json.dumps(claims[:100], ensure_ascii=False), "provenance": []}
+
+        def submit_report_document(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal submitted
+            submitted = args
+            return {"content": json.dumps({"accepted": True, "blocks": len(args.get("blocks") or [])},
+                                          ensure_ascii=False), "provenance": []}
+
+        tools.update({
+            "query_observations": query_observations,
+            "query_claims": query_claims,
+            "submit_report_document": submit_report_document,
+        })
+
     deps.events.append(
         Event(
             run_id=ctx.child_run_id,
             type=CONTEXT_INJECT,
-            payload={"role": "system", "content": _SYNTHESIZE_CONTRACT},
+            payload={"role": "system", "content": contract},
         )
     )
     kernel = AgentKernel(
         store=deps.events,
         llm=deps.llm_for("research"),
         manifest=manifest,
-        tools={"query_kb": query_kb, "read_evidence": read_evidence},
-        max_steps=8,
+        tools=tools,
+        max_steps=12 if deps.metrics is not None else 8,
     )
     report_md = kernel.run_turn(f"为 {ctx.entity_kind}:{ctx.ticker} 写研究报告。")
+
+    if deps.metrics is not None:
+        return _finalize_artifact_v2(
+            deps, ctx, report_title, view, report_md, submitted, now
+        )
+
     artifact = _write_text_artifact(deps, ctx, "report.md", report_md or "（空报告）")
     # 摘要 = 报告首个「## 摘要」节的文本（取不到就首段）
     summary = _extract_summary(report_md) or "报告已生成"
@@ -321,6 +479,224 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
         flags.append(f"conflict: {len(gaps.conflicts)} 项待裁决")
     _publish_report(deps, ctx, report_title, summary, artifact, flags)
     return StepResult(status="completed", summary=summary)
+
+
+# ---------------- v2 报告产物（ReportDocument/ResearchArtifact，§7.8） ----------------
+
+SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
+    "query_observations": {
+        "name": "query_observations",
+        "description": "查询当前实体的 typed 指标观测（结构化数值，带 observation_id/期间/口径/证据）",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "query_claims": {
+        "name": "query_claims",
+        "description": "查询当前实体的研究论断（claim_id/statement/kind/status/支持反方引用）",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "submit_report_document": {
+        "name": "submit_report_document",
+        "description": (
+            "提交结构化研究报告（固定 block 类型，服务端验证引用后冻结）。"
+            "blocks 每项带 type：heading{level,text} / paragraph{text} / claim{claim_id,note} / "
+            "metric_table{title,columns,rows[[{label,value,observation_id,unit,note}]]} / "
+            "chart_ref{chart_id,title,metric_refs,caption}（chart_id 限：metric_line/segment_bar/"
+            "peer_bar/sensitivity_table）/ comparison{title,items} / "
+            "assumption_table{title,assumptions,calculation_ref} / source_ref{refs,note} / "
+            "gap_notice{module,message}。段落内证据锚点 [ev-xxx]，数值插值 {{metric:<observation_id>}}。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "blocks": {"type": "array", "items": {"type": "object"}},
+                "limitations": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["blocks"],
+        },
+    },
+}
+
+
+def _latest_assessment(deps: StepDeps, entity: str) -> dict[str, Any] | None:
+    """最新 research/assessment 事件投影（研究 step 与 synthesize step 跨子 run 接力）。"""
+    try:
+        rows = deps.events._conn.execute(  # noqa: SLF001 - 投影层只读
+            "SELECT payload FROM events WHERE type = 'research/assessment'"
+            " AND json_extract(payload, '$.entity') = ? ORDER BY seq DESC LIMIT 1",
+            (entity,),
+        ).fetchall()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    payload = rows[0][0]
+    return json.loads(payload) if isinstance(payload, str) else payload
+
+
+def _synthesize_empty_v2(
+    deps: StepDeps, ctx: StepContext, report_title: str, now: datetime
+) -> StepResult:
+    """空档案 + 新链路：发布缺口说明产物（sufficiency=blocked，status=draft）。"""
+    from ..research.artifacts import (
+        GapNoticeBlock,
+        HeadingBlock,
+        ReportDocument,
+        ResearchArtifact,
+    )
+
+    summary = "档案为空，无内容可合成（先跑研究）；产物已标记 sufficiency=blocked"
+    doc = ReportDocument(
+        title=report_title, entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+        blocks=[
+            HeadingBlock(level=1, text="缺口说明"),
+            GapNoticeBlock(module="research_sources", message=summary),
+        ],
+    ).with_id()
+    artifact = ResearchArtifact(
+        entity_kind=ctx.entity_kind, entity_id=ctx.ticker, title=report_title,
+        report_document=doc, status="draft", sufficiency="blocked",
+        created_at=now, run_id=ctx.child_run_id,
+        markdown=f"# {report_title}\n\n{summary}\n",
+    ).with_id()
+    deps.metrics.save_artifact(
+        artifact_id=artifact.artifact_id, namespace="prod", payload=artifact.model_dump(mode="json")
+    )
+    deps.events.append(Event(
+        run_id=ctx.child_run_id, type="research/artifact_created",
+        payload={"artifact_id": artifact.artifact_id, "title": report_title,
+                 "status": "draft", "sufficiency": "blocked",
+                 "entity": f"{ctx.entity_kind}:{ctx.ticker}"},
+    ))
+    path = _write_text_artifact(deps, ctx, "report.md", artifact.markdown)
+    _publish_report(deps, ctx, report_title, summary, path, ["evidence-gap", "sufficiency: blocked"])
+    return StepResult(status="completed", summary=summary)
+
+
+def _finalize_artifact_v2(
+    deps: StepDeps,
+    ctx: StepContext,
+    report_title: str,
+    view: dict[str, Any],
+    report_md: str | None,
+    submitted: dict[str, Any] | None,
+    now: datetime,
+) -> StepResult:
+    """验证→冻结→发布：ReportDocument → ResearchArtifact → report.md → 档案快照。
+
+    同源纪律（§7.8）：report.md 由冻结产物渲染，不从 LLM 自由文本直接落盘；
+    验证硬 issue（引用不可解析）存在时产物只能是 draft（不得 validated）。
+    """
+    from ..research.artifacts import (
+        ArtifactValidator,
+        ReportDocument,
+        ResearchArtifact,
+        document_from_markdown,
+        render_markdown,
+    )
+
+    parse_error: str | None = None
+    doc: Any = None
+    if submitted is not None:
+        try:
+            doc = ReportDocument.model_validate({
+                "title": submitted.get("title") or report_title,
+                "entity_kind": ctx.entity_kind,
+                "entity_id": ctx.ticker,
+                "blocks": submitted.get("blocks") or [],
+                "limitations": submitted.get("limitations") or [],
+            }).with_id()
+        except Exception as e:  # 结构非法 → 降级解析 Markdown（可见，不静默）
+            parse_error = f"{type(e).__name__}: {e}"
+            logger.warning("submit_report_document 结构非法（降级 Markdown 解析）：%s", e)
+    if doc is None:
+        doc = document_from_markdown(
+            report_md or "", title=report_title,
+            entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+        )
+        if parse_error:
+            doc.limitations.append(f"结构化提交解析失败，降级自 Markdown：{parse_error[:200]}")
+
+    assessment = _latest_assessment(deps, f"{ctx.entity_kind}:{ctx.ticker}")
+    sufficiency = (assessment or {}).get("verdict") or "partial"
+    if sufficiency not in ("sufficient", "partial", "blocked"):
+        sufficiency = "partial"
+    plans = deps.metrics.plans_for(ctx.entity_kind, ctx.ticker, limit=1)
+    plan_id = plans[0].get("plan_id") if plans else None
+    claims = deps.metrics.claims_as_of(
+        ctx.entity_kind, ctx.ticker, now, statuses=("draft", "validated")
+    )
+    artifact = ResearchArtifact(
+        entity_kind=ctx.entity_kind, entity_id=ctx.ticker, title=report_title,
+        report_document=doc,
+        claim_ids=[c["claim_id"] for c in claims],
+        calculation_ids=[],
+        plan_id=plan_id,
+        status="draft",
+        sufficiency=sufficiency,  # type: ignore[arg-type]
+        created_at=now,
+        evidence_cutoff=now,
+        run_id=ctx.child_run_id,
+    ).with_id()
+    # 服务端验证（integrity 硬门禁的执行点）
+    issues = ArtifactValidator(kb=deps.kb, metric_store=deps.metrics).validate(artifact)
+    artifact.validation_issues = issues
+    hard_failed = any(i.hard for i in issues)
+    artifact.status = "draft" if (hard_failed or sufficiency == "blocked") else "validated"
+    artifact.markdown = render_markdown(artifact, store=deps.metrics, kb=deps.kb)
+    deps.metrics.save_artifact(
+        artifact_id=artifact.artifact_id, namespace="prod",
+        payload=artifact.model_dump(mode="json"),
+    )
+    deps.events.append(Event(
+        run_id=ctx.child_run_id, type="research/artifact_created",
+        payload={
+            "artifact_id": artifact.artifact_id,
+            "entity": f"{ctx.entity_kind}:{ctx.ticker}",
+            "title": report_title,
+            "status": artifact.status,
+            "sufficiency": artifact.sufficiency,
+            "plan_id": plan_id,
+            "claim_ids": artifact.claim_ids,
+            "validation_issues": [i.model_dump(mode="json") for i in issues[:20]],
+        },
+    ))
+    if hard_failed:
+        logger.warning(
+            "研究产物 %s 硬校验未过（%d 项），保持 draft：%s",
+            artifact.artifact_id, len([i for i in issues if i.hard]),
+            [i.message for i in issues if i.hard][:5],
+        )
+    # report.md 与页面同源：由冻结产物渲染（不再直接落 LLM 自由文本）
+    path = _write_text_artifact(deps, ctx, "report.md", artifact.markdown)
+    summary = _extract_summary(artifact.markdown) or "报告已生成"
+    gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, now)
+    flags: list[str] = []
+    if gaps.missing:
+        flags.append(f"evidence-gap: {len(gaps.missing)} 项缺口")
+    if gaps.conflicts:
+        flags.append(f"conflict: {len(gaps.conflicts)} 项待裁决")
+    flags.append(f"artifact: {artifact.status}/{artifact.sufficiency}")
+    _publish_report(deps, ctx, report_title, summary, path, flags)
+
+    # 档案快照发布（dossier/published 事件由 service 落；失败不阻断报告发布，
+    # 但必须可见：service 内部落 dossier/publish_failed + 日志）
+    snapshot_id = None
+    if deps.dossier_service is not None:
+        try:
+            snap, _created = deps.dossier_service.open(
+                ctx.entity_kind, ctx.ticker, run_id=ctx.session_run_id
+            )
+            snapshot_id = snap["context"]["snapshot_id"]
+        except Exception as e:
+            logger.error("档案快照发布失败 %s:%s: %s", ctx.entity_kind, ctx.ticker, e, exc_info=True)
+    result_summary = (
+        f"{summary}（产物 {artifact.status}/充分度 {artifact.sufficiency}"
+        + (f"，快照 {snapshot_id}" if snapshot_id else "")
+        + (f"，硬校验 {len([i for i in issues if i.hard])} 项未过" if hard_failed else "")
+        + "）"
+    )
+    return StepResult(status="completed", summary=result_summary)
 
 
 def _write_text_artifact(deps: StepDeps, ctx: StepContext, name: str, content: str) -> Path:

@@ -1,0 +1,154 @@
+# 通用非金融研究配方（knowledge-dossier-research-redesign §7.5）
+# 问题模板 = 研究的硬契约之一：build_plan 从这里生成 ResearchPlan.questions
+id: general
+version: "1"
+name: 通用非金融
+entity_kind: stock
+
+modules:
+  - investment_snapshot
+  - business_engine
+  - key_kpi
+  - financial_quality
+  - catalysts_risks
+  - research_sources
+  - revenue_segments
+  - expectations
+  - valuation_lab
+  - peers
+
+kpis:
+  - key: revenue
+    label: 收入
+    unit_hint: currency
+    required: true
+    definition: 合并口径总收入（GAAP/IFRS，标注会计准则）
+  - key: gross_margin
+    label: 毛利率
+    unit_hint: ratio
+    required: true
+    definition: 毛利 / 收入（同口径同期）
+  - key: cfo
+    label: 经营现金流
+    unit_hint: currency
+    required: true
+    definition: 现金流量表 CFO（不与净利润混用）
+  - key: capex
+    label: 资本开支
+    unit_hint: currency
+    required: true
+  - key: net_debt
+    label: 净债务
+    unit_hint: currency
+    required: false
+    definition: 有息负债 − 现金及等价物（未知不得默认为零）
+  - key: share_dilution
+    label: 股本稀释
+    unit_hint: ratio
+    required: false
+    definition: 稀释加权股数同比变化（基本/稀释分开）
+
+core_questions:
+  - id: business-model
+    text: 谁付钱、为什么付钱？收费与成本怎样形成？
+    why: 商业模式决定收入质量与可持续性，是所有判断的地基
+    priority: high
+    evidence_types: [filing, ir_page]
+    acceptance: 客户、产品、收费方式、成本结构、现金流路径各有直接证据
+    module: business_engine
+  - id: revenue-engine
+    text: 增长由什么驱动——量、价、组合、交付还是续费？
+    why: 驱动结构决定增长可持续性与预期差方向
+    priority: high
+    evidence_types: [filing, earnings_release]
+    acceptance: 指出 2-4 个主要驱动并给证据；证据不足处明确标注
+    module: revenue_segments
+    computable_checks: [yoy_growth]
+  - id: financial-quality
+    text: 利润是否兑现为现金？一次性因素是什么？
+    why: 利润与现金流背离是财务质量的核心信号
+    priority: high
+    evidence_types: [filing]
+    acceptance: 近可得期间（目标 5FY+8Q）的收入/利润率/CFO/Capex/负债/稀释有序列或明确缺口
+    module: financial_quality
+    computable_checks: [fcf_from_cfo, net_margin]
+  - id: demand-space
+    text: 需求由谁推动？TAM 与公司可获得市场的差别在哪？
+    why: top-down 与 bottom-up 口径差异常是最大的乐观偏差来源
+    priority: medium
+    evidence_types: [filing, ir_page, industry_report]
+    acceptance: 两种口径分开陈述，不相加；约束条件有证据
+    module: business_engine
+  - id: moat-competition
+    text: 竞争优势能否维持？替代方案与切换成本是什么？
+    why: 护城河侵蚀通常先于财务恶化
+    priority: medium
+    evidence_types: [filing, news, industry_report]
+    acceptance: 优势的证据与侵蚀因素并列；同业对比同口径
+    module: peers
+  - id: management-delivery
+    text: 管理层承诺是否兑现？资本配置花在哪里？
+    why: 指引—实际差距与资本配置记录是治理质量的直接证据
+    priority: medium
+    evidence_types: [earnings_release, transcript, filing]
+    acceptance: 指引与实际同期对比；投资/回购/稀释/并购有记录
+    module: management
+  - id: catalysts-risks
+    text: 什么事件将验证或证伪核心逻辑？领先信号是什么？
+    why: 没有时间窗口的判断无法监测
+    priority: high
+    evidence_types: [filing, earnings_release, news]
+    acceptance: 催化与风险各有时间范围、触发条件与受影响 claim；未知概率不填百分比
+    module: risks
+  - id: counter-evidence
+    text: 最强的反对理由是什么？双方依据差别在哪？
+    why: 反证义务（DESIGN.md §5.1）：不因 optional 被跳过
+    priority: high
+    evidence_types: [news, filing, short_report]
+    acceptance: steelman 反方 + 争议事实/假设清单 + 下一步验证方式
+    module: risks
+
+extended_questions:
+  - id: expectations-gap
+    text: 市场、公司、自建模型分别期待什么？预期差在哪？
+    why: 价格反映预期而非事实
+    priority: medium
+    evidence_types: [guidance, consensus_snapshot, earnings_release]
+    acceptance: actual/guidance/consensus 分层；缺 consensus 单独说明，不虚构
+    module: expectations
+  - id: valuation-assumptions
+    text: 当前价格隐含了怎样的经营假设？哪个假设最能改变估值？
+    why: 反向求解把「贵/便宜」翻译为可检验的增长/利润率假设
+    priority: medium
+    evidence_types: [market_data, filing]
+    acceptance: 倍数口径一致；反向求解记录假设与收敛状态；不适用时明确禁用原因
+    module: valuation
+  - id: technology-talent
+    text: 技术与人才能力如何转化为产品与经济结果？
+    why: 能力密度是长期竞争力的领先指标
+    priority: low
+    evidence_types: [filing, hiring_pages, news]
+    acceptance: 核心岗位/成果/流失及业务意义；未披露密度留空
+    module: management
+  - id: segment-depth
+    text: 分部/分地区/分产品的收入与利润结构如何变化？
+    why: 合并数字掩盖结构变化
+    priority: medium
+    evidence_types: [filing]
+    acceptance: 同口径分部序列；分部合计与总额差异显示未分配/抵销
+    module: revenue_segments
+
+models:
+  multiples:
+    applicable_when: always
+  reverse_dcf:
+    applicable_when: profitable_and_fcf_modelable
+    note: 可盈利、现金流可建模的非金融公司才开放；负 FCF/亏损明确禁用
+
+freshness:
+  financials_days: 120
+  kpi_days: 120
+  risks_days: 180
+  management_days: 365
+
+detection_hints: []

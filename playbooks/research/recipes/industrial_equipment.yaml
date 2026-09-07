@@ -1,0 +1,175 @@
+# 工业/能源设备研究配方（knowledge-dossier-research-redesign §7.5）
+# 覆盖场景：燃料电池/燃机/电气设备等——订单驱动、交付周期长、backlog 口径复杂
+id: industrial_equipment
+version: "1"
+name: 工业/能源设备
+entity_kind: stock
+
+modules:
+  - investment_snapshot
+  - business_engine
+  - key_kpi
+  - financial_quality
+  - catalysts_risks
+  - research_sources
+  - revenue_segments
+  - expectations
+  - valuation_lab
+  - peers
+
+kpis:
+  - key: orders
+    label: 订单
+    unit_hint: currency_or_units
+    required: true
+    definition: 当期新签订单（区分框架协议与 firm order——不可混同）
+  - key: firm_backlog
+    label: 确定性积压订单
+    unit_hint: currency
+    required: true
+    definition: firm backlog（有约束力订单）；框架/意向不计入
+  - key: capacity
+    label: 产能
+    unit_hint: units
+    required: true
+    definition: 年化产能（MW/台/片，标注单位与口径）
+  - key: deliveries
+    label: 交付量
+    unit_hint: units
+    required: true
+  - key: service_obligations
+    label: 服务义务
+    unit_hint: currency
+    required: false
+    definition: 长期服务协议下的未来义务与收入
+  - key: revenue
+    label: 收入
+    unit_hint: currency
+    required: true
+  - key: gross_margin
+    label: 毛利率
+    unit_hint: ratio
+    required: true
+  - key: cfo
+    label: 经营现金流
+    unit_hint: currency
+    required: true
+
+core_questions:
+  - id: business-model
+    text: 谁付钱、为什么付钱？设备销售与服务/发电收入的构成如何？
+    why: 设备商常有多种收费模式（卖设备/卖电/长协服务），现金特征完全不同
+    priority: high
+    evidence_types: [filing, ir_page]
+    acceptance: 客户类型、收费模式、成本结构、现金流路径各有直接证据
+    module: business_engine
+  - id: order-to-revenue
+    text: 订单能否按计划转为收入和现金？
+    why: 订单≠收入：交付约束、验收条款、取消权决定转化率与时滞
+    priority: high
+    evidence_types: [filing, earnings_release]
+    acceptance: 框架协议与 firm order 区分清楚；交付约束与验收条款有证据；转化率未披露则明确「无法量化」，不以模型猜测完成事实采集
+    module: key_kpi
+    computable_checks: [yoy_growth]
+  - id: capacity-utilization
+    text: 产能扩张与利用率能否支撑交付计划？
+    why: 产能瓶颈是设备商最常见的增长失效点
+    priority: high
+    evidence_types: [filing, earnings_call, ir_page]
+    acceptance: 产能、爬坡时间表、当前利用率有证据；单位经济性（单台/单 MW 成本与价格）可得或明确缺口
+    module: key_kpi
+    module: key_kpi
+  - id: financial-quality
+    text: 利润是否兑现为现金？垫资/保证金/应收结构如何？
+    why: 长交付周期业务的营运资本吞噬现金
+    priority: high
+    evidence_types: [filing]
+    acceptance: CFO/Capex/应收增速与收入增速对比；一次性因素标注
+    module: financial_quality
+    computable_checks: [fcf_from_cfo]
+  - id: demand-drivers
+    text: 下游需求由谁推动（政策/电价/数据中心/脱碳）？持续性如何？
+    why: 设备需求常是政策与资本开支周期的派生需求
+    priority: high
+    evidence_types: [filing, industry_report, policy_document]
+    acceptance: 需求驱动分层（政策/经济/技术），各给证据与失效条件
+    module: business_engine
+  - id: customer-concentration
+    text: 客户集中度与单一客户依赖风险有多大？
+    why: 设备商大客户订单波动直接击穿收入
+    priority: medium
+    evidence_types: [filing]
+    acceptance: 前 N 大客户占比有序列或明确未披露；应收增速与收入增速对比
+    module: risks
+  - id: catalysts-risks
+    text: 什么事件将验证或证伪核心逻辑（订单公告/产能投产/政策变化）？
+    why: 没有时间窗口的判断无法监测
+    priority: high
+    evidence_types: [earnings_release, news, policy_document]
+    acceptance: 催化时间线 + 风险触发条件 + 受影响 claim
+    module: risks
+  - id: counter-evidence
+    text: 最强反对理由：延期、取消、竞争技术、补贴退坡的证据？
+    why: 反证义务；设备商的乐观叙事常掩盖交付记录
+    priority: high
+    evidence_types: [news, filing, short_report]
+    acceptance: steelman 反方 + 历史交付延期/取消记录 + 下一步验证
+    module: risks
+
+extended_questions:
+  - id: unit-economics
+    text: 单台/单 MW 的价格与成本走势如何？规模效应是否兑现？
+    why: 单位经济性决定扩产是创造价值还是毁灭价值
+    priority: medium
+    evidence_types: [filing, earnings_call]
+    acceptance: 单价与单位成本序列（可得范围内）；管理层指引与实际对比
+    module: key_kpi
+  - id: service-revenue
+    text: 服务/长协收入的占比、期限与定价机制？
+    why: 服务收入是设备商估值重估的关键（经常性 vs 一次性）
+    priority: medium
+    evidence_types: [filing]
+    acceptance: 服务义务披露、剩余履约义务（RPO 类）口径清楚
+    module: revenue_segments
+  - id: expectations-gap
+    text: 市场对公司交付与订单转化的预期是什么？差在哪？
+    priority: medium
+    evidence_types: [guidance, consensus_snapshot]
+    acceptance: actual/guidance/consensus 分层；缺 consensus 单独说明
+    module: expectations
+  - id: valuation-assumptions
+    text: 当前价格隐含了怎样的产能×利用率×单价假设？
+    priority: medium
+    evidence_types: [market_data, filing]
+    acceptance: 产能模型输入齐全才可计算；否则明确禁用原因
+    module: valuation
+
+models:
+  multiples:
+    applicable_when: always
+  capacity_model:
+    applicable_when: capacity_and_utilization_disclosed
+    formula_hint: 产能 × 利用率 × 单价
+    note: 订单不直接等于收入（§7.5）
+  reverse_dcf:
+    applicable_when: profitable_and_fcf_modelable
+
+freshness:
+  orders_days: 120
+  backlog_days: 120
+  financials_days: 120
+  capacity_days: 180
+
+detection_hints:
+  - fuel cell
+  - turbine
+  - 燃料电池
+  - 燃机
+  - equipment
+  - 设备
+  - industrial
+  - energy storage
+  - 储能
+  - solar manufacturing
+  - electrolyzer
+  - 电解槽

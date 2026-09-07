@@ -92,6 +92,9 @@ def create_app(
     capabilities_info: Callable[[], dict[str, Any]] | None = None,
     data_dir: str | Path = "data",
     router_factory: Callable[[], Any] | None = None,  # 有效 LLMRouter（cli 注入，P5 自配页用）
+    metrics: Any | None = None,  # MetricStore（v2 档案路由；缺省 = v2 不挂载）
+    dossier_service: Any | None = None,  # DossierService
+    calculation_service: Any | None = None,  # CalculationService（估值预览）
 ) -> FastAPI:
     app = FastAPI(title="finance-agent", version="0.2.0")
     app.add_middleware(
@@ -684,6 +687,21 @@ def create_app(
         if not report_file.exists():
             return {"error": "not found"}
         return json.loads(report_file.read_text())
+
+    # ---------------- /api/v2 档案与研究路由（knowledge-dossier-research-redesign §10.1） ----------------
+    if metrics is not None and dossier_service is not None:
+        from .dossier import create_dossier_router
+
+        app.include_router(
+            create_dossier_router(
+                kb=kb,
+                metrics=metrics,
+                dossier=dossier_service,
+                calculations=calculation_service,
+                command_runner=command_runner,
+                exports_dir=Path(data_dir) / "exports",
+            )
+        )
 
     # ---------------- 前端静态伺服（一条命令 = API + UI，参考 dsh web） ----------------
     _mount_static(app, static_dir)

@@ -18,6 +18,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from ..eventstore.events import Event
 from ..eventstore.store import EventStore
 from ..harness.manifest import RunManifest
 from ..knowledge.errors import KnowledgeError
@@ -40,11 +41,50 @@ _WS = re.compile(r"\s+")
 _STRUCTURED_LIST_FIELDS = STRUCTURED_LIST_FIELDS
 
 
+def _ref_resolvable(kb: BitemporalStore, metrics: Any, ref: str) -> bool:
+    """引用可解析性（integrity 门禁的最小单元）：按 id 前缀路由到对应存储。"""
+    try:
+        if ref.startswith("ev-"):
+            kb.get_evidence(ref)
+            return True
+        if ref.startswith("obs-"):
+            return metrics.get_observation(ref) is not None
+        if ref.startswith("calc-"):
+            return metrics.get_calculation(ref) is not None
+        if ref.startswith("claim-"):
+            return metrics.get_claim(ref) is not None
+        if ref.startswith("artifact-"):
+            return metrics.get_artifact(ref) is not None
+        if ref.startswith("plan-"):
+            return metrics.get_plan(ref) is not None
+        if ref.startswith("fact-"):
+            row = kb._conn.execute(  # noqa: SLF001 - 只读存在性检查
+                "SELECT 1 FROM facts WHERE fact_id = ?", (ref,)
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False
+    return False
+
+
 class _Tracker:
     def __init__(self) -> None:
         self.written: list[str] = []
         self.rejected: list[dict] = []
         self.registered: list[str] = []  # 已登记证据 id（囤证据检测：登记多而写入少 = 空转）
+        # 研究升级（§7.7）：进展不仅记录 facts_written，还记录观测/论断/计算/问题，
+        # 防止「有价值分析但没写字段」被误判 stalled
+        self.observations: list[str] = []
+        self.claims: list[str] = []
+        self.calculations: list[str] = []
+        self.questions_advanced: list[str] = []
+
+    @property
+    def any_progress(self) -> bool:
+        return bool(
+            self.written or self.observations or self.claims
+            or self.calculations or self.questions_advanced
+        )
 
 
 def _windows(text: str, query: str, *, width: int = 1600, max_windows: int = 4) -> list[str]:
@@ -74,7 +114,11 @@ def make_research_tools(
     namespace: str = "prod",
     chunk_store: ChunkStore,
     fetch_document: FetchDocument | None = None,
-    events: EventStore | None = None,  # noqa: ARG001 - 预留给工具级审计
+    events: EventStore | None = None,
+    metrics: Any | None = None,  # MetricStore（typed 观测/论断/计算；缺省 = 新工具不注入）
+    metric_writer: Any | None = None,  # TypedMetricWriter
+    calculations: Any | None = None,  # CalculationService
+    plan_id: str | None = None,  # 冻结的研究计划（answer_question 的落点）
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -192,6 +236,291 @@ def make_research_tools(
         "resolve_conflict": resolve_conflict,
         "calc": calc_tool,  # §4.7：数字保护双保险（逐字 + 计算一致性）
     }
+
+    # ---------------- typed 工具（档案升级 §6.2/§7.3/§8.1；未装配新存储则不注入） ----------------
+    if metrics is not None and metric_writer is not None:
+        from ..knowledge.metrics import (
+            ConsensusObservation,
+            GuidanceObservation,
+            MetricPeriod,
+            RawValue,
+            ReportedObservation,
+        )
+        from ..knowledge.normalization import NormalizationStep, normalize_raw
+        from .artifacts import ResearchClaim
+
+        def propose_metric(args: dict[str, Any]) -> dict[str, Any]:
+            """typed 观测写入：原文值文本 + 显式换算 → 标准化十进制值。
+
+            数字保护升级：value_text 的数字必须在所绑证据摘录中逐字出现（同旧 guard）；
+            换算链服务端重算（不信任模型自报的最终值）；knowledge_time 由证据推导。
+            """
+            from ..knowledge.guard import _numbers
+
+            metric_key = str(args.get("metric_key") or "")
+            value_text = str(args.get("value_text") or "")
+            evidence_ids = [str(e) for e in (args.get("evidence_ids") or [])]
+            if not metric_key or not value_text or not evidence_ids:
+                return {"content": "rejected: metric_key/value_text/evidence_ids 均必填", "provenance": []}
+            try:
+                evidences = [store.get_evidence(e) for e in evidence_ids]
+            except Exception as e:
+                tracker.rejected.append({"metric": metric_key, "reason": str(e)})
+                return {"content": f"rejected: {e}", "provenance": []}
+            # 数字逐字保护：value_text 中的数字必须出现在摘录里（防自编自引）
+            quote_numbers = {n for ev in evidences for n in _numbers(ev.verbatim_quote)}
+            for n in _numbers(value_text):
+                if not any(abs(n - q) <= max(abs(q) * 1e-9, 1e-12) for q in quote_numbers):
+                    tracker.rejected.append(
+                        {"metric": metric_key, "reason": f"值文本数字 {n} 未在摘录中逐字出现"}
+                    )
+                    return {
+                        "content": f"rejected: 值文本中的数字 {n} 未在任何证据摘录中逐字出现",
+                        "provenance": [],
+                    }
+            known = [e.available_at for e in evidences if e.available_at is not None]
+            knowledge_time = max(known) if known else datetime.now(UTC)
+            grades = [e.pit_grade.value for e in evidences]
+            pit = "A" if "A" in grades else ("B" if "B" in grades else "C")
+            period_args = args.get("period") or {}
+            try:
+                period = MetricPeriod.model_validate({
+                    "start": period_args.get("start"),
+                    "end": period_args.get("end"),
+                    "frequency": period_args.get("frequency", "FY"),
+                    "fiscal_label": period_args.get("fiscal_label", ""),
+                })
+            except Exception as e:
+                tracker.rejected.append({"metric": metric_key, "reason": f"period 非法: {e}"})
+                return {"content": f"rejected: period 非法: {e}", "provenance": []}
+            try:
+                extra_steps = [
+                    NormalizationStep.model_validate(s)
+                    for s in (args.get("normalization") or [])
+                ]
+                value, steps = normalize_raw(
+                    value_text, str(args.get("unit_text") or args.get("unit") or ""),
+                    extra_steps=extra_steps,
+                )
+            except Exception as e:
+                tracker.rejected.append({"metric": metric_key, "reason": f"标准化失败: {e}"})
+                return {"content": f"rejected: 标准化失败: {e}", "provenance": []}
+            common: dict[str, Any] = {
+                "entity_kind": entity_kind, "entity_id": normalize_entity_id(entity_kind, entity_id),
+                "metric_key": metric_key, "period": period,
+                "dimensions": {str(k): str(v) for k, v in (args.get("dimensions") or {}).items()},
+                "basis": args.get("basis", "GAAP"),
+                "value": value,
+                "unit": str(args.get("unit") or args.get("unit_text") or ""),
+                "currency": args.get("currency"),
+                "raw": RawValue(value_text=value_text, unit_text=str(args.get("unit_text") or ""),
+                                quote_ref=evidence_ids[0]),
+                "normalization": [s.model_dump(mode="json") for s in steps],
+                "evidence_refs": evidence_ids,
+                "document_refs": [str(d) for d in (args.get("document_refs") or [])],
+                "knowledge_time": knowledge_time,
+                "source_available_at": max(known) if known else None,
+                "retrieved_at": datetime.now(UTC),
+                "created_at": datetime.now(UTC),
+                "pit_grade": pit,
+                "run_id": manifest.run_id,
+            }
+            nature = str(args.get("nature") or "reported")
+            try:
+                if nature == "reported":
+                    obs: Any = ReportedObservation(**common)
+                elif nature == "guidance":
+                    g = args.get("guidance") or {}
+                    tp = g.get("target_period") or {}
+                    obs = GuidanceObservation(
+                        **common, issuer=str(g.get("issuer") or ""),
+                        guidance_published_at=datetime.fromisoformat(
+                            str(g.get("published_at") or knowledge_time.isoformat())
+                        ),
+                        target_period=MetricPeriod.model_validate(tp),
+                    )
+                elif nature == "consensus":
+                    c = args.get("consensus") or {}
+                    obs = ConsensusObservation(
+                        **common, vendor=str(c.get("vendor") or ""),
+                        consensus_snapshot_at=datetime.fromisoformat(
+                            str(c.get("snapshot_at") or knowledge_time.isoformat())
+                        ),
+                    )
+                else:
+                    return {
+                        "content": f"rejected: 工具只接受 reported/guidance/consensus（收到 {nature}）；"
+                                   "calculated 用 calculate_metric，model_estimate 属于冻结产物",
+                        "provenance": [],
+                    }
+            except Exception as e:
+                tracker.rejected.append({"metric": metric_key, "reason": f"模型校验失败: {e}"})
+                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+            try:
+                observation_id, created = metric_writer.write_observation(
+                    obs, run=manifest, namespace=namespace
+                )
+            except Exception as e:
+                tracker.rejected.append({"metric": metric_key, "reason": str(e)})
+                return {"content": f"rejected: {e}", "provenance": []}
+            tracker.observations.append(metric_key)
+            return {
+                "content": json.dumps({
+                    "observation_id": observation_id, "metric_key": metric_key,
+                    "value": value, "created": created,
+                }, ensure_ascii=False),
+                "provenance": [
+                    {"source_id": e.source_id,
+                     "available_at": e.available_at.isoformat() if e.available_at else None,
+                     "pit_grade": e.pit_grade.value}
+                    for e in evidences
+                ],
+            }
+
+        def propose_claim(args: dict[str, Any]) -> dict[str, Any]:
+            """研究论断（分析层）：支持/反方引用可解析 → validated，否则 draft 留痕。"""
+            from ..eventstore.events import RESEARCH_CLAIM_VALIDATED
+
+            statement = str(args.get("statement") or "").strip()
+            support = [str(r) for r in (args.get("support_refs") or [])]
+            counter = [str(r) for r in (args.get("counter_refs") or [])]
+            if len(statement) < 4:
+                return {"content": "rejected: statement 过短（至少 4 字符）", "provenance": []}
+            kind = str(args.get("kind") or "inference")
+            if kind not in ("fact_summary", "inference", "hypothesis", "analysis"):
+                return {"content": f"rejected: 未知 kind {kind!r}", "provenance": []}
+            unresolved_refs = [r for r in support if not _ref_resolvable(store, metrics, r)]
+            status = "validated" if support and not unresolved_refs else "draft"
+            try:
+                claim = ResearchClaim(
+                    entity_kind=entity_kind,  # type: ignore[arg-type]
+                    entity_id=normalize_entity_id(entity_kind, entity_id),
+                    statement=statement, kind=kind,  # type: ignore[arg-type]
+                    question_id=args.get("question_id"),
+                    support_refs=support, counter_refs=counter,
+                    limitations=[str(x) for x in (args.get("limitations") or [])],
+                    status=status,  # type: ignore[arg-type]
+                    evidence_cutoff=datetime.now(UTC),
+                    run_id=manifest.run_id, namespace=namespace,
+                ).with_id()
+            except Exception as e:
+                tracker.rejected.append({"claim": statement[:40], "reason": str(e)})
+                return {"content": f"rejected: {e}", "provenance": []}
+            metrics.save_claim(
+                claim_id=claim.claim_id, namespace=namespace,
+                payload=claim.model_dump(mode="json"),
+            )
+            if status == "validated" and events is not None:
+                events.append(Event(run_id=manifest.run_id, type=RESEARCH_CLAIM_VALIDATED, payload={
+                    "claim_id": claim.claim_id, "entity": f"{entity_kind}:{entity_id}",
+                    "checks": ["support_refs_resolvable"],
+                }))
+            tracker.claims.append(claim.claim_id)
+            note = ""
+            if status != "validated" and (unresolved_refs or not support):
+                note = f"（draft：支持引用缺失或不可解析 {unresolved_refs}）"
+            return {"content": json.dumps({"claim_id": claim.claim_id, "status": status, "note": note},
+                                           ensure_ascii=False), "provenance": []}
+
+        def answer_question(args: dict[str, Any]) -> dict[str, Any]:
+            """更新冻结计划中问题的状态（§7.3 状态机 + §7.6 门禁）。"""
+            from ..eventstore.events import RESEARCH_QUESTION_UPDATED
+
+            if not plan_id:
+                return {"content": "rejected: 本轮无冻结研究计划（plan 未装配）", "provenance": []}
+            plan_payload = metrics.get_plan(plan_id)
+            if plan_payload is None:
+                return {"content": f"rejected: 计划不存在: {plan_id}", "provenance": []}
+            qid = str(args.get("question_id") or "")
+            question = next(
+                (q for q in plan_payload.get("questions", []) if q.get("question_id") == qid), None
+            )
+            if question is None:
+                return {
+                    "content": f"rejected: 问题不在冻结计划中: {qid}（计划范围不可扩展）",
+                    "provenance": [],
+                }
+            status = str(args.get("status") or "")
+            if status not in ("gathering", "answered", "disputed", "unavailable", "not_applicable"):
+                return {"content": f"rejected: 未知状态 {status!r}", "provenance": []}
+            conclusion = str(args.get("conclusion") or "").strip()
+            support = [str(r) for r in (args.get("support_refs") or [])]
+            counter = [str(r) for r in (args.get("counter_refs") or [])]
+            unresolved = [str(r) for r in (args.get("unresolved") or [])]
+            attempts = [str(r) for r in (args.get("attempts") or [])]
+            # 门禁：answered 需结论+引用；disputed/unavailable 需原因与尝试记录（硬规则）
+            if status == "answered":
+                if not conclusion:
+                    return {"content": "rejected: answered 必须给出 conclusion", "provenance": []}
+                if not support:
+                    return {
+                        "content": "rejected: answered 必须给出 support_refs（证据/观测/计算/论断 id）",
+                        "provenance": [],
+                    }
+                bad = [r for r in support if not _ref_resolvable(store, metrics, r)]
+                if bad:
+                    return {"content": f"rejected: 支持引用不可解析: {bad}", "provenance": []}
+            if status in ("disputed", "unavailable") and not (unresolved or attempts):
+                return {
+                    "content": f"rejected: {status} 必须记录原因（unresolved）与尝试（attempts）",
+                    "provenance": [],
+                }
+            question.update({
+                "status": status,
+                "conclusion": conclusion or question.get("conclusion"),
+                "support_refs": sorted(set([*question.get("support_refs", []), *support])),
+                "counter_refs": sorted(set([*question.get("counter_refs", []), *counter])),
+                "unresolved": sorted(set([*question.get("unresolved", []), *unresolved])),
+                "attempts": sorted(set([*question.get("attempts", []), *attempts])),
+            })
+            metrics.save_plan(plan_id=plan_id, namespace=namespace, payload=plan_payload)
+            if events is not None:
+                events.append(Event(run_id=manifest.run_id, type=RESEARCH_QUESTION_UPDATED, payload={
+                    "plan_id": plan_id, "question_id": qid, "status": status,
+                    "conclusion": conclusion or None,
+                    "entity": f"{entity_kind}:{entity_id}",
+                }))
+            tracker.questions_advanced.append(qid)
+            return {"content": json.dumps({"question_id": qid, "status": status}, ensure_ascii=False),
+                    "provenance": []}
+
+        tools.update({
+            "propose_metric": propose_metric,
+            "propose_claim": propose_claim,
+            "answer_question": answer_question,
+        })
+
+    if metrics is not None and calculations is not None:
+        from .calculations import CalculationError, InputRef
+
+        def calculate_metric(args: dict[str, Any]) -> dict[str, Any]:
+            """受控公式计算（input_refs 而非裸数字，§8.1）。"""
+            try:
+                inputs = [InputRef.model_validate(i) for i in (args.get("inputs") or [])]
+            except Exception as e:
+                return {"content": f"rejected: inputs 非法: {e}", "provenance": []}
+            try:
+                result = calculations.calculate(
+                    entity_kind=entity_kind,
+                    entity_id=normalize_entity_id(entity_kind, entity_id),
+                    formula_id=str(args.get("formula_id") or ""),
+                    inputs=inputs,
+                    assumptions={str(k): str(v) for k, v in (args.get("assumptions") or {}).items()},
+                    run_id=manifest.run_id, namespace=namespace,
+                )
+            except CalculationError as e:
+                tracker.rejected.append({"formula": args.get("formula_id"), "reason": str(e)})
+                return {"content": f"rejected: {e}", "provenance": []}
+            tracker.calculations.append(result.calculation_id)
+            out = result.to_payload()
+            return {"content": json.dumps({
+                "calculation_id": out["calculation_id"], "status": out["status"],
+                "result": out["result"], "unit": out["unit"],
+                "warnings": out["warnings"], "error": out["error"],
+                "extra": out.get("extra", {}),
+            }, ensure_ascii=False), "provenance": []}
+
+        tools["calculate_metric"] = calculate_metric
 
     if fetch_document is not None:
         def read_edgar_filing(args: dict[str, Any]) -> dict[str, Any]:
@@ -359,6 +688,141 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "evidence_id": {"type": "string", "description": "证据 id（ev- 前缀）"},
             },
             "required": ["evidence_id"],
+        },
+    },
+    # ---- typed 工具（档案升级；未装配 MetricStore 时路由层不会绑定） ----
+    "propose_metric": {
+        "name": "propose_metric",
+        "description": (
+            "登记一条 typed 指标观测（结构化数值，图表/计算只消费这里）。"
+            "value_text 必须是证据摘录中逐字出现的原文值（如 '1.2 billion'）；"
+            "服务端自动登记规模词换算并逐步重算；期间/口径/维度必填。"
+            "nature=guidance 时额外给 guidance={issuer,published_at,target_period}；"
+            "nature=consensus 时给 consensus={vendor,snapshot_at}。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metric_key": {"type": "string", "description": "语义键：revenue/capex/firm_backlog/arr..."},
+                "value_text": {"type": "string", "description": "原文值文本（逐字，含规模词）"},
+                "unit": {"type": "string", "description": "目标单位（USD/units/ratio...）"},
+                "unit_text": {"type": "string", "description": "原文单位文本（如 'USD millions'）"},
+                "currency": {"type": "string"},
+                "period": {
+                    "type": "object",
+                    "properties": {
+                        "start": {"type": "string", "description": "YYYY-MM-DD（instant 可省）"},
+                        "end": {"type": "string", "description": "YYYY-MM-DD"},
+                        "frequency": {"type": "string", "enum": ["FY", "Q", "H1", "TTM", "instant"]},
+                        "fiscal_label": {"type": "string", "description": "如 FY2025/2025Q3"},
+                    },
+                    "required": ["end", "frequency"],
+                },
+                "dimensions": {"type": "object", "description": "segment/geography/product 维度（字符串值）"},
+                "basis": {"type": "string", "enum": ["GAAP", "IFRS", "non_GAAP", "operating_metric"]},
+                "nature": {"type": "string", "enum": ["reported", "guidance", "consensus"]},
+                "evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "normalization": {
+                    "type": "array",
+                    "description": "额外显式换算步骤（如 fx_convert）；规模词换算自动登记",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "formula_id": {"type": "string"},
+                            "params": {"type": "object"},
+                        },
+                        "required": ["formula_id"],
+                    },
+                },
+                "guidance": {"type": "object"},
+                "consensus": {"type": "object"},
+                "document_refs": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["metric_key", "value_text", "period", "evidence_ids"],
+        },
+    },
+    "propose_claim": {
+        "name": "propose_claim",
+        "description": (
+            "提交一条研究论断（分析层，与事实分离）：kind=fact_summary 事实摘要 / "
+            "inference 推论 / hypothesis 待验证假设 / analysis 分析。"
+            "support_refs 全部可解析（ev-/obs-/calc-/fact-/claim-）才标 validated，否则 draft。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "statement": {"type": "string", "description": "论断一句话（结论尽量短）"},
+                "kind": {"type": "string", "enum": ["fact_summary", "inference", "hypothesis", "analysis"]},
+                "question_id": {"type": "string", "description": "关联的研究问题 id"},
+                "support_refs": {"type": "array", "items": {"type": "string"}},
+                "counter_refs": {"type": "array", "items": {"type": "string"}, "description": "反证引用"},
+                "limitations": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["statement", "kind", "support_refs"],
+        },
+    },
+    "answer_question": {
+        "name": "answer_question",
+        "description": (
+            "更新冻结计划中问题的状态：gathering/answered/disputed/unavailable/not_applicable。"
+            "answered 必须给 conclusion + 可解析的 support_refs；"
+            "disputed/unavailable 必须记录 unresolved（原因）与 attempts（尝试）。"
+            "找不到数据就标 unavailable，不能以模型猜测完成事实采集。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question_id": {"type": "string"},
+                "status": {"type": "string",
+                           "enum": ["gathering", "answered", "disputed", "unavailable", "not_applicable"]},
+                "conclusion": {"type": "string"},
+                "support_refs": {"type": "array", "items": {"type": "string"}},
+                "counter_refs": {"type": "array", "items": {"type": "string"}},
+                "unresolved": {"type": "array", "items": {"type": "string"}},
+                "attempts": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["question_id", "status"],
+        },
+    },
+    "calculate_metric": {
+        "name": "calculate_metric",
+        "description": (
+            "受控公式计算（Decimal，输入带引用可重算）："
+            "formula_id ∈ yoy_growth/cagr/margin/fcf_from_cfo/net_debt/enterprise_value/"
+            "share_dilution/guidance_delta/ttm_sum/reverse_dcf/sensitivity_grid/unit_conversion。"
+            "inputs=[{kind: observation|fact|calculation|assumption|market_data, label, "
+            "ref_id?, value?, unit?}]；"
+            "observation/calculation 必须给 ref_id（服务端解析并核对，禁止漂移）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "formula_id": {"type": "string"},
+                "inputs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["observation", "fact", "calculation",
+                                         "assumption", "market_data"],
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "公式输入名（current/prior/cfo/capex...）",
+                            },
+                            "ref_id": {"type": "string"},
+                            "value": {"type": "string", "description": "十进制字符串"},
+                            "unit": {"type": "string"},
+                            "currency": {"type": "string"},
+                        },
+                        "required": ["kind", "label"],
+                    },
+                },
+                "assumptions": {"type": "object", "description": "全字符串十进制参数（wacc/terminal_g/...）"},
+            },
+            "required": ["formula_id", "inputs"],
         },
     },
 }

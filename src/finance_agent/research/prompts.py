@@ -19,6 +19,32 @@ GROUNDING_CONTRACT = """\
 """
 
 
+def build_plan_brief(plan_payload: dict) -> str:
+    """冻结研究计划的问题队列投影（§7.3）：每轮 brief 附带，模型按问题推进。"""
+    lines = [
+        "本轮研究计划（已冻结，范围不可扩展；目标不是补齐字段而是回答这些问题）："
+    ]
+    for q in plan_payload.get("questions", []):
+        lines.append(
+            f"- [{q['question_id']}]（{q['priority']}/{q['status']}）{q['text']}"
+        )
+        if q.get("why"):
+            lines.append(f"  为何影响判断：{q['why']}")
+        if q.get("acceptance"):
+            lines.append(f"  完成条件：{q['acceptance']}")
+        if q.get("conclusion"):
+            lines.append(f"  当前结论：{q['conclusion']}")
+        if q.get("unresolved"):
+            lines.append(f"  未解决项：{'；'.join(q['unresolved'])}")
+    lines.append(
+        "推进纪律：结构化数值用 propose_metric（原文值+期间+证据）；分析结论用 propose_claim；"
+        "可重算关系用 calculate_metric；每完成一个问题立即 answer_question"
+        "（answered 需结论+可解析引用；找不到数据标 unavailable 并记录尝试，"
+        "不能以模型猜测完成事实采集）。"
+    )
+    return "\n".join(lines)
+
+
 def build_round_brief(
     entity_kind: str,
     entity_id: str,
@@ -26,6 +52,8 @@ def build_round_brief(
     gaps: GapReport,
     round_no: int,
     judge_feedback: str | None = None,
+    plan_payload: dict | None = None,
+    typed_tools: bool = False,
 ) -> str:
     parts = [
         f"研究目标：{objective}",
@@ -50,5 +78,13 @@ def build_round_brief(
         parts.append("存在冲突待裁决：" + ", ".join(gaps.conflicts))
     if judge_feedback:
         parts.append("上一轮评审反馈（软反馈，供参考）：" + judge_feedback)
-    parts.append("可用工具：register_evidence / propose_fact / query_kb / 数据源查询工具。")
+    tools_line = "可用工具：register_evidence / propose_fact / query_kb / 数据源查询工具。"
+    if typed_tools:
+        tools_line = (
+            "可用工具：register_evidence / propose_fact / propose_metric / propose_claim / "
+            "answer_question / calculate_metric / query_kb / 数据源查询工具。"
+        )
+    parts.append(tools_line)
+    if plan_payload:
+        parts.append(build_plan_brief(plan_payload))
     return "\n".join(parts)

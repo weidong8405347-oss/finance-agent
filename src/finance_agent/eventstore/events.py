@@ -39,6 +39,17 @@ RESEARCH_STALL_DIAGNOSTIC = "research/stall_diagnostic"
 # command 启动前数据源探活：{mode, results: {source_id: {ok, detail}}}（§4.9 预检）
 GATEWAY_PREFLIGHT = "gateway/preflight"
 
+# ---- 档案升级（knowledge-dossier-research-redesign §6.5 新业务事件） ----
+RESEARCH_PLAN_CREATED = "research/plan_created"      # {plan_id, mode, recipe, questions, budgets}
+RESEARCH_QUESTION_UPDATED = "research/question_updated"  # {plan_id, question_id, status, conclusion?}
+METRIC_ASSERTED = "metric/asserted"                  # 完整观测 payload（重建依据，metric_writer 落）
+CALCULATION_COMPLETED = "calculation/completed"      # {calculation_id, formula, input_refs, result}
+RESEARCH_CLAIM_VALIDATED = "research/claim_validated"  # {claim_id, checks}
+RESEARCH_ASSESSMENT = "research/assessment"          # {plan_id, coverage, integrity, verdict, stop_reason}
+RESEARCH_ARTIFACT_CREATED = "research/artifact_created"  # {artifact_id, status, sufficiency, refs}
+DOSSIER_PUBLISHED = "dossier/published"              # {snapshot_id, entity, changed_modules}
+DOSSIER_PUBLISH_FAILED = "dossier/publish_failed"    # {entity, reason}（失败可见，不静默）
+
 # ---- 编排层（command 制交互，redesign-interaction-orchestration.md §3.5） ----
 COMMAND_RUN = "command/run"            # {command_id, name, args, raw_input}
 COMMAND_DONE = "command/done"          # {command_id, outcome, summary}

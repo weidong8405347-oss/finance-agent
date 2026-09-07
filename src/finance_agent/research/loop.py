@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 
 from ..eventstore.events import (
     CONTEXT_INJECT,
+    RESEARCH_ASSESSMENT,
+    RESEARCH_PLAN_CREATED,
     RESEARCH_ROUND_END,
     RESEARCH_ROUND_START,
     RESEARCH_RUBRIC,
@@ -36,6 +38,18 @@ from .playbooks import load_playbook
 from .prompts import GROUNDING_CONTRACT, build_round_brief
 from .report import IterationReport
 from .tools import make_research_tools
+
+
+def _plan_coverage(plan_payload: dict | None) -> tuple[float | None, list[str]]:
+    """冻结计划的问题覆盖（§7.6）：返回 (coverage, violations)；无计划 = (None, [])。"""
+    if not plan_payload:
+        return None, []
+    from .assessment import coverage_of
+    from .plan import ResearchPlan
+
+    plan = ResearchPlan.model_validate(plan_payload)
+    cov = coverage_of(plan)
+    return cov.coverage, cov.violations
 
 #: 维度组定义（P3 §4.2）：字段 → 专职 researcher 组。按实体类型分表——
 #: 行业字段与股票字段不同集（2026-09-01 实测：行业字段全落 misc 单组，丢失并行性）
@@ -90,6 +104,21 @@ def _dimension_groups(
                 break
     return [(g, fs) for g, fs in groups]
 
+def _question_groups(plan_payload: dict) -> list[tuple[str, list[str]]]:
+    """计划问题 → 维度组（§7.2）：档案已满但计划未完时，按问题 module 分组保持并行。
+
+    fields 置空（问题组不绑字段缺口），组名 = module；问题子集由 _group_plan_view 投影。"""
+    modules: dict[str, int] = {}
+    for q in plan_payload.get("questions", []):
+        if q.get("status") in ("answered", "not_applicable"):
+            continue
+        mod = q.get("module") or "misc"
+        modules[mod] = modules.get(mod, 0) + 1
+    if not modules:
+        return []
+    return [(mod, []) for mod in modules]
+
+
 logger = logging.getLogger("finance_agent.research")
 
 
@@ -113,6 +142,11 @@ class ResearchLoop:
         should_stop: Callable[[], bool] | None = None,  # 取消闸（轮次边界检查）
         fetch_document: Callable[[str], str] | None = None,  # 文档正文抓取（live 才有）
         worker_llms: list[LLM] | None = None,  # 维度并行池（P3 §4.2）；None/单元素 → 串行兼容
+        # ---- 问题驱动研究（knowledge-dossier-research-redesign §7）----
+        plan_id: str | None = None,  # 冻结的 ResearchPlan（metrics 存储中）
+        metrics: object | None = None,  # MetricStore
+        metric_writer: object | None = None,  # TypedMetricWriter
+        calculations: object | None = None,  # CalculationService
     ):
         self._store = store
         self._events = events
@@ -130,9 +164,16 @@ class ResearchLoop:
         self._should_stop = should_stop
         self._fetch_document = fetch_document
         self._worker_llms = worker_llms or []
+        self._plan_id = plan_id
+        self._metrics = metrics
+        self._metric_writer = metric_writer
+        self._calculations = calculations
         self.stop_reason: str | None = None
         #: stalled 时填充缺口诊断卡（research-capability-upgrade §4.3 L3）
         self.stall_diagnostic: dict | None = None
+        #: 研究充分度评估（§7.6；有计划+新存储时填充）
+        self.assessment: object | None = None
+        self.plan_payload: dict | None = None
 
     def run(
         self,
@@ -160,6 +201,24 @@ class ResearchLoop:
         def _now() -> datetime:
             return fixed_now or datetime.now(UTC)
 
+        # 冻结计划（§7.1）：有计划时研究目标由问题队列定义——
+        # 已有 100% 档案遇到新目标仍继续研究，只复用有效证据，不宣告「无需研究」
+        typed = self._metrics is not None and self._metric_writer is not None
+        if self._plan_id and self._metrics is not None:
+            self.plan_payload = self._metrics.get_plan(self._plan_id)
+            if self.plan_payload is not None:
+                self._emit(RESEARCH_PLAN_CREATED, {
+                    "plan_id": self._plan_id,
+                    "entity": f"{entity_kind}:{entity_id}",
+                    "mode": self.plan_payload.get("mode"),
+                    "objective": self.plan_payload.get("objective"),
+                    "recipe_id": self.plan_payload.get("recipe_id"),
+                    "recipe_version": self.plan_payload.get("recipe_version"),
+                    "question_count": len(self.plan_payload.get("questions", [])),
+                    "budgets": self.plan_payload.get("budgets"),
+                    "acceptance": self.plan_payload.get("acceptance"),
+                })
+
         round_no = 0
         while True:
             if self._should_stop is not None and self._should_stop():
@@ -167,9 +226,22 @@ class ResearchLoop:
                 break
             round_no += 1
             gaps_before = analyzer.analyze(entity_kind, entity_id, _now(), namespace=self._namespace)
-            # 收敛 = 完整度达标 且 无陈旧字段（stale 必须触发刷新研究——
-            # 2026-08-30 用户实测：旧档案「完整但过时」被误判「无需研究」）
-            if gaps_before.completeness >= self._target and not gaps_before.stale:
+            # 每轮重读计划（问题状态由 answer_question 在存储中更新）
+            if self._plan_id and self._metrics is not None:
+                self.plan_payload = self._metrics.get_plan(self._plan_id)
+            coverage, violations = _plan_coverage(self.plan_payload)
+            target_coverage = (
+                (self.plan_payload or {}).get("budgets", {}).get("question_coverage_target", 0.8)
+                if self.plan_payload else 0.8
+            )
+            coverage_ok = coverage is None or (coverage >= target_coverage and not violations)
+            # 收敛 = 基础字段覆盖 且 无陈旧字段 且（有计划时）问题覆盖达标——
+            # 字段完整 ≠ 研究充分（§2.2）；无计划时保持旧判据（兼容）
+            if (
+                gaps_before.completeness >= self._target
+                and not gaps_before.stale
+                and coverage_ok
+            ):
                 self.stop_reason = "converged"
                 break
             if budget is None:
@@ -177,21 +249,29 @@ class ResearchLoop:
             if round_no > budget:
                 self.stop_reason = "budget"
                 break
-            self._emit(RESEARCH_ROUND_START, {"round": round_no, "gaps": gaps_before.model_dump(mode="json")})
+            self._emit(RESEARCH_ROUND_START, {
+                "round": round_no,
+                "gaps": gaps_before.model_dump(mode="json"),
+                "question_coverage": coverage,
+            })
 
             # 维度分组并行（P3 §4.2）：配置了 worker 池（>1）才启用——
             # 每组独立 child run / 独立 context / 独立步数预算；共享 ChunkStore（锁保护）。
             # 无池 → 旧式单 kernel 路径（单 LLM 被多组共享会互相抽干脚本，且没有必要隔离）。
+            trackers: list = []
             if len(self._worker_llms) > 1:
+                # 有计划时维度分组叠加问题归属（问题.module → 字段组）；无计划保持旧分组
                 groups = _dimension_groups(
                     gaps_before.missing, gaps_before.stale, gaps_before.optional_missing,
                     entity_kind=entity_kind, weak=list(gaps_before.weak),
                 )
+                if self.plan_payload and not any(g[1] for g in groups):
+                    # 档案已满但计划未完：按问题模块分组（§7.2 问题 → worker 组）
+                    groups = _question_groups(self.plan_payload)
                 workers = self._worker_llms
-                group_results: list[tuple[str, list[str], list[dict]]] = []
                 from concurrent.futures import ThreadPoolExecutor
 
-                with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+                with ThreadPoolExecutor(max_workers=max(1, len(groups))) as pool:
                     futures = [
                         pool.submit(
                             self._run_group, entity_kind, entity_id, objective,
@@ -202,8 +282,9 @@ class ResearchLoop:
                         for i, (gname, gfields) in enumerate(groups)
                     ]
                     group_results = [f.result() for f in futures]
-                written = [f for _, ws, _ in group_results for f in ws]
-                rejected = [r for _, _, rs in group_results for r in rs]
+                trackers = [tr for _, tr in group_results]
+                written = [f for tr in trackers for f in tr.written]
+                rejected = [r for tr in trackers for r in tr.rejected]
             else:
                 tools, tracker = make_research_tools(
                     store=self._store,
@@ -214,6 +295,11 @@ class ResearchLoop:
                     namespace=self._namespace,
                     chunk_store=chunk_store,
                     fetch_document=self._fetch_document,
+                    events=self._events,
+                    metrics=self._metrics,
+                    metric_writer=self._metric_writer,
+                    calculations=self._calculations,
+                    plan_id=self._plan_id,
                 )
                 for source_id in self._gateway_sources:
                     tools[f"query_{source_id}"] = make_gateway_tool(
@@ -235,11 +321,21 @@ class ResearchLoop:
                     build_round_brief(
                         entity_kind, entity_id, objective, gaps_before, round_no,
                         judge_feedback=judge_feedback,
+                        plan_payload=self.plan_payload,
+                        typed_tools=typed and set(tools) >= {"propose_metric", "answer_question"},
                     )
                 )
+                trackers = [tracker]
                 written, rejected = tracker.written, tracker.rejected
 
             gaps_after = analyzer.analyze(entity_kind, entity_id, _now(), namespace=self._namespace)
+            if self._plan_id and self._metrics is not None:
+                self.plan_payload = self._metrics.get_plan(self._plan_id)
+            coverage_after, violations_after = _plan_coverage(self.plan_payload)
+            target_coverage = (
+                (self.plan_payload or {}).get("budgets", {}).get("question_coverage_target", 0.8)
+                if self.plan_payload else 0.8
+            )
             report = IterationReport(
                 run_id=self._manifest.run_id,
                 round=round_no,
@@ -249,7 +345,13 @@ class ResearchLoop:
                 facts_written=written,
                 rejected=rejected,
                 missing_after=list(gaps_after.missing),
-                progress=bool(written),
+                # 进展 = 字段/观测/论断/计算/问题任一有成功产出（§7.7 防 stalled 误判）
+                progress=any(tr.any_progress for tr in trackers),
+                observations_written=[m for tr in trackers for m in tr.observations],
+                claims_written=[c for tr in trackers for c in tr.claims],
+                calculations_done=[c for tr in trackers for c in tr.calculations],
+                questions_advanced=[q for tr in trackers for q in tr.questions_advanced],
+                question_coverage=coverage_after,
             )
             self._emit(RESEARCH_ROUND_END, report.model_dump(mode="json"))
             reports.append(report)
@@ -257,7 +359,14 @@ class ResearchLoop:
 
             judge_feedback = self._judge_round(report)
 
-            if gaps_after.completeness >= self._target and not gaps_after.stale:
+            coverage_ok_after = coverage_after is None or (
+                coverage_after >= target_coverage and not violations_after
+            )
+            if (
+                gaps_after.completeness >= self._target
+                and not gaps_after.stale
+                and coverage_ok_after
+            ):
                 self.stop_reason = "converged"
                 break
             if not report.progress:
@@ -267,12 +376,71 @@ class ResearchLoop:
                 )
                 break
 
+        self._finalize_assessment(entity_kind, entity_id, _now(), reports)
         return reports
 
+    # ---------------- 研究充分度评估（§7.6） ----------------
+
+    def _finalize_assessment(
+        self, entity_kind: str, entity_id: str, now: datetime, reports: list[IterationReport],
+    ) -> None:
+        """终局评估：硬门禁由代码运行（rubric 满分不能覆盖引用失败）。"""
+        if self._metrics is None or self.plan_payload is None:
+            return
+        from .assessment import assess
+        from .plan import ResearchPlan
+
+        try:
+            plan = ResearchPlan.model_validate(self.plan_payload)
+        except Exception:
+            logger.warning("评估跳过：计划 payload 不可解析 %s", self._plan_id, exc_info=True)
+            return
+        claims = self._metrics.claims_as_of(
+            entity_kind, entity_id, now, namespace=self._namespace,
+            statuses=("draft", "validated"),
+        )
+        observations = self._metrics.observations_as_of(
+            entity_kind, entity_id, now, namespace=self._namespace
+        )
+        calculations = []
+        for tr_reports in reports:
+            for cid in tr_reports.calculations_done:
+                stored = self._metrics.get_calculation(cid)
+                if stored is not None:
+                    calculations.append(stored.payload)
+        analyzer = GapAnalyzer(self._store)
+        gaps = analyzer.analyze(entity_kind, entity_id, now, namespace=self._namespace)
+        open_conflicts = len(gaps.conflicts) + len(
+            set(self._metrics.conflicted_semantic_hashes(entity_kind, entity_id, namespace=self._namespace))
+            - {r.semantic_hash for r in self._metrics.resolutions_as_of(
+                entity_kind, entity_id, now, namespace=self._namespace)}
+        )
+        assessment = assess(
+            plan,
+            claims=claims,
+            observations=observations,
+            calculations=calculations,
+            open_conflicts=open_conflicts,
+            stale_fields=list(gaps.stale),
+            stop_reason=self.stop_reason or "",
+            now=now,
+        )
+        self.assessment = assessment
+        self._emit(RESEARCH_ASSESSMENT, assessment.model_dump(mode="json"))
+        self.plan_payload["status"] = "completed"
+        self._metrics.save_plan(
+            plan_id=plan.plan_id, namespace=self._namespace, payload=self.plan_payload
+        )
+
     def _effective_budget(self, gaps) -> int:
-        """预算动态化（§4.2）：显式 max_rounds 优先；否则按初始完整度定预算。"""
+        """预算动态化（§4.2）：显式 max_rounds 优先；其次冻结计划的模式预算（§7.7）；
+        否则按初始完整度定预算（旧行为兼容）。"""
         if self._max_rounds is not None:
             return self._max_rounds
+        if self.plan_payload:
+            plan_rounds = (self.plan_payload.get("budgets") or {}).get("max_rounds")
+            if plan_rounds:
+                return int(plan_rounds)
         if not gaps.missing and gaps.stale:
             return 1  # 仅刷新陈旧字段
         if gaps.completeness == 0:
@@ -294,8 +462,10 @@ class ResearchLoop:
         judge_feedback: str | None,
         playbook_text: str,
         chunk_store,
-    ) -> tuple[str, list[str], list[dict]]:
-        """单个维度组的一轮研究：独立 child run（context 隔离）+ 独立步数预算。"""
+    ) -> tuple[str, object]:
+        """单个维度组的一轮研究：独立 child run（context 隔离）+ 独立步数预算。
+
+        返回 (group, tracker)——tracker 携带字段/观测/论断/计算/问题全部进展。"""
         tools, tracker = make_research_tools(
             store=self._store,
             writer=self._writer,
@@ -305,6 +475,11 @@ class ResearchLoop:
             namespace=self._namespace,
             chunk_store=chunk_store,
             fetch_document=self._fetch_document,
+            events=self._events,
+            metrics=self._metrics,
+            metric_writer=self._metric_writer,
+            calculations=self._calculations,
+            plan_id=self._plan_id,
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(
@@ -342,6 +517,8 @@ class ResearchLoop:
             build_round_brief(
                 entity_kind, entity_id, objective, group_gaps, round_no,
                 judge_feedback=judge_feedback,
+                plan_payload=self._group_plan_view(group, fields),
+                typed_tools="propose_metric" in tools,
             )
             + f"\n\n你是「{group}」维度组的专职研究员。\n{playbook_text}"
             # 生产纪律（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）
@@ -377,10 +554,28 @@ class ResearchLoop:
                     "written": list(tracker.written),
                     "rejected": list(tracker.rejected),
                     "evidence_registered": len(tracker.registered),  # 囤证据检测
+                    "observations": list(tracker.observations),
+                    "claims": list(tracker.claims),
+                    "questions_advanced": list(tracker.questions_advanced),
                 },
             )
         )
-        return group, tracker.written, tracker.rejected
+        return group, tracker
+
+    def _group_plan_view(self, group: str, fields: list[str]) -> dict | None:
+        """维度组看到的计划子集：只挂本组相关问题（module 匹配组名/字段），
+        避免跨组重复回答同一问题。"""
+        if not self.plan_payload:
+            return None
+        questions = [
+            q for q in self.plan_payload.get("questions", [])
+            if q.get("module", "") == group
+            or q.get("question_id", "") in fields
+            or group in ("misc",)
+        ]
+        if not questions:
+            return None
+        return {**self.plan_payload, "questions": questions}
 
     def _emit_stall_diagnostic(
         self,

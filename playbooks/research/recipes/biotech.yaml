@@ -1,0 +1,158 @@
+# 生物科技研究配方（knowledge-dossier-research-redesign §7.5）
+# 特征：管线驱动、尚无或很少收入、现金 runway 是生死线、监管里程碑决定价值
+id: biotech
+version: "1"
+name: 生物科技
+entity_kind: stock
+
+modules:
+  - investment_snapshot
+  - business_engine
+  - key_kpi
+  - financial_quality
+  - catalysts_risks
+  - research_sources
+  - expectations
+  - valuation_lab
+  - peers
+
+kpis:
+  - key: pipeline
+    label: 管线
+    unit_hint: structured
+    required: true
+    definition: 在研项目 × 适应症 × 试验阶段（结构化列表，非一段文字）
+  - key: cash_runway
+    label: 现金可支撑期
+    unit_hint: quarters
+    required: true
+    definition: 现金及等价物 / 季度净消耗（管理层口径与自算口径分开）
+  - key: quarterly_burn
+    label: 季度净消耗
+    unit_hint: currency
+    required: true
+  - key: r_and_d
+    label: 研发费用
+    unit_hint: currency
+    required: true
+  - key: licensing_milestones
+    label: 授权里程碑
+    unit_hint: currency
+    required: false
+    definition: 对外授权/引进的首付款、里程碑与销售分成条款
+  - key: revenue
+    label: 收入（如有）
+    unit_hint: currency
+    required: false
+
+core_questions:
+  - id: pipeline-status
+    text: 核心管线针对什么适应症、处于什么阶段、主要终点是什么？
+    why: 管线阶段与终点设计决定价值兑现的时间与概率结构
+    priority: high
+    evidence_types: [filing, clinical_trial_registry, press_release]
+    acceptance: 每个核心资产有阶段、适应症、终点、时间线证据；未披露留空
+    module: key_kpi
+  - id: clinical-evidence
+    text: 已有临床数据（有效性/安全性）支持什么结论？
+    why: 数据质量是生物科技唯一硬通货
+    priority: high
+    evidence_types: [clinical_trial_registry, publication, conference_presentation]
+    acceptance: 关键试验的主要终点结果有来源；样本量/对照组/统计学意义注明
+    module: business_engine
+  - id: cash-runway
+    text: 现金还能支撑多久？融资方式与稀释代价是什么？
+    why: runway 耗尽前的融资行为决定股东价值稀释
+    priority: high
+    evidence_types: [filing, earnings_release]
+    acceptance: 现金、季度净消耗、管理层 runway 口径与自算口径并列；at-the-market/增发记录
+    module: financial_quality
+    computable_checks: [cash_runway_quarters]
+  - id: regulatory-path
+    text: 监管路径（FDA/EMA/NMPA）的关键节点与风险？
+    why: 审批决定是生物科技最大的单点失效
+    priority: high
+    evidence_types: [filing, regulatory_announcement]
+    acceptance: 申报/审评/决定时间点有证据；CRL/延迟历史标注
+    module: risks
+  - id: partnership-economics
+    text: 授权合作的经济条款（首付/里程碑/分成）与验证意义？
+    why: Big Pharma 背书与现金流补充的双重信号
+    priority: medium
+    evidence_types: [press_release, filing]
+    acceptance: 条款原文；里程碑不确认为收入（或有对价）
+    module: business_engine
+  - id: catalysts-risks
+    text: 未来 12 个月的数据读出/审批/融资催化与失效信号？
+    why: 事件驱动型标的必须有催化时间线
+    priority: high
+    evidence_types: [press_release, conference_presentation, filing]
+    acceptance: 催化时间线（日期精度注明）+ 风险触发条件 + 受影响 claim
+    module: risks
+  - id: counter-evidence
+    text: 最强反对理由：安全性信号、竞争疗法、专利悬崖、稀释历史？
+    why: 反证义务；生物科技叙事极易单边走热
+    priority: high
+    evidence_types: [publication, news, short_report, clinical_trial_registry]
+    acceptance: steelman 反方 + 竞争格局对比 + 下一步验证
+    module: risks
+  - id: business-model
+    text: 公司怎样赚钱（自营上市/授权分成/平台合作）？商业化能力如何？
+    why: 从研发到商业化的跨越是第二个死亡谷
+    priority: medium
+    evidence_types: [filing, ir_page]
+    acceptance: 商业化路径与销售/分销安排有证据；未上市则明确阶段
+    module: business_engine
+
+extended_questions:
+  - id: platform-value
+    text: 技术平台（而非单一资产）的可扩展性与验证记录？
+    priority: medium
+    evidence_types: [publication, patent_filing, ir_page]
+    acceptance: 平台产出的历史资产与外部验证；未披露密度留空
+    module: business_engine
+  - id: market-competition
+    text: 目标适应症的现有疗法、在研竞争与定价环境？
+    priority: medium
+    evidence_types: [industry_report, regulatory_announcement, publication]
+    acceptance: 竞争管线同适应症同阶段对比；差异化证据
+    module: peers
+  - id: expectations-gap
+    text: 市场对关键读出的预期（成功概率/峰值销售）是什么？
+    priority: medium
+    evidence_types: [consensus_snapshot, sell_side_summary]
+    acceptance: 预期快照有供应商与时点；缺则明确说明，不虚构概率
+    module: expectations
+  - id: valuation-assumptions
+    text: 当前市值隐含了怎样的成功概率与峰值销售假设？
+    priority: medium
+    evidence_types: [market_data, filing]
+    acceptance: rNPV 为可选模型；成功概率必须有来源或明确标注为模型假设
+    module: valuation
+
+models:
+  cash_runway:
+    applicable_when: cash_and_burn_disclosed
+  rnpv:
+    applicable_when: optional_later
+    note: 成功概率必须有来源或标模型假设（§7.5）；本期不实现
+  reverse_dcf:
+    applicable_when: disabled_for_pre_revenue
+    note: 未盈利/现金流不可建模 → 明确禁用，不硬套通用 EV/FCFF
+
+freshness:
+  pipeline_days: 120
+  runway_days: 120
+  catalysts_days: 90
+
+detection_hints:
+  - biotech
+  - pharma
+  - therapeutics
+  - clinical
+  - 生物
+  - 制药
+  - 医药
+  - pipeline
+  - oncology
+  - gene therapy

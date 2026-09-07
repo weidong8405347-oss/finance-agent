@@ -27,9 +27,14 @@ from ..eventstore.events import (
     COMMAND_RUN,
     CONTEXT_INJECT,
     DECISION_CARD,
+    DOSSIER_PUBLISHED,
     FACT_ASSERTED,
     FACT_CONFLICT,
     FACT_CONFLICT_RESOLVED,
+    RESEARCH_ARTIFACT_CREATED,
+    RESEARCH_ASSESSMENT,
+    RESEARCH_PLAN_CREATED,
+    RESEARCH_QUESTION_UPDATED,
     RESEARCH_ROUND_END,
     RESEARCH_STALL_DIAGNOSTIC,
     STEER_REQUESTED,
@@ -53,6 +58,12 @@ _BRIDGE_TYPES = {
     FACT_ASSERTED,
     FACT_CONFLICT,
     FACT_CONFLICT_RESOLVED,
+    # 档案升级：问题进度/评估/产物/快照事件桥接到父流（Sessions 可见，§10.3）
+    RESEARCH_PLAN_CREATED,
+    RESEARCH_QUESTION_UPDATED,
+    RESEARCH_ASSESSMENT,
+    RESEARCH_ARTIFACT_CREATED,
+    DOSSIER_PUBLISHED,
     "eval/report",
     "research/error",
     "decision/error",
@@ -246,6 +257,8 @@ class CommandRunner:
         if spec is None:
             known = "、".join(f"/{n}" for n in COMMANDS)
             return "unknown", f"未知命令 /{p.name}。可用命令：{known}"
+        if p.extra.get("error"):
+            return "usage_error", f"{p.extra['error']}。用法：{spec.usage}"
         if p.name == "evaluate":
             if not p.config:
                 configs = self._list_eval_configs()
@@ -318,6 +331,9 @@ class CommandRunner:
                 config=p.config,
                 should_cancel=cancel.is_set,
                 entity_kind=entity_kind,
+                depth=p.extra.get("depth", "standard"),
+                focus=p.extra.get("focus", ""),
+                base_snapshot=p.extra.get("base_snapshot", ""),
             )
             # 继承改向：该 command 此前的全部 steer 注入本 step 子 run（模型可见）。
             # 当前 step 运行中到达的 steer 由 steer() 直接注入，不在此重复。
@@ -482,4 +498,32 @@ def _progress_summary(e: StoredEvent) -> str:
         return f"出错：{p.get('reason', '')}"
     if e.type == "eval/report":
         return f"评估报告：verdict={p.get('verdict', '?')}"
+    if e.type == RESEARCH_PLAN_CREATED:
+        return (
+            f"📋 研究计划冻结：{p.get('mode', '?')} · {p.get('question_count', 0)} 个问题"
+            f" · 配方 {p.get('recipe_id', '?')}@{p.get('recipe_version', '?')}"
+        )
+    if e.type == RESEARCH_QUESTION_UPDATED:
+        return (
+            f"❓ 问题进展：{p.get('question_id', '?')} → {p.get('status', '?')}"
+            + (f"（{str(p.get('conclusion', ''))[:60]}）" if p.get("conclusion") else "")
+        )
+    if e.type == RESEARCH_ASSESSMENT:
+        cov = p.get("question_coverage", {})
+        return (
+            f"📊 研究充分度：{p.get('verdict', '?')} · 问题覆盖 "
+            f"{cov.get('answered', 0)}/{cov.get('applicable', 0)}"
+            f" · 硬门禁 {'通过' if p.get('hard_gate_passed') else '未过'}"
+        )
+    if e.type == RESEARCH_ARTIFACT_CREATED:
+        return (
+            f"📄 研究产物冻结：{p.get('title', p.get('artifact_id', '?'))}"
+            f"（{p.get('status', '?')}/{p.get('sufficiency', '?')}）"
+        )
+    if e.type == DOSSIER_PUBLISHED:
+        changed = p.get("changed_modules") or []
+        return (
+            f"🗂 档案快照发布：{p.get('snapshot_id', '?')}"
+            + (f" · 变化模块 {len(changed)} 个（{'、'.join(changed[:4])}）" if changed else "")
+        )
     return json.dumps(p, ensure_ascii=False)[:120]
