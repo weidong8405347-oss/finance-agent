@@ -83,7 +83,7 @@ uv run ruff check src tests
 | 前端 | hash 路由深链（实体/章节/时间/快照/证据）；KnowledgePage 研究档案列表；StockDossierPage 三层阅读（章节侧栏/时光机/来源抽屉/ECharts 按需十进制安全绘图+数据表回退）；ResearchReportPage；ComparePage；估值假设实验面板（debounce+assumption_hash，预览不写事实） |
 | 迁移 | `scripts/migrate_dossier.py`：inventory dry-run / shadow 对账（27/27 生产实体）/ apply-typed 保守映射（确定不了单位期间就标 needs_normalization，不批量猜） |
 
-验收：后端 454 passed（含 157 个新用例，覆盖 §13.1 九个测试组）+ 前端 37 passed；E2E：`/research --depth=targeted` → 计划→typed 产出→评估→validated 产物→快照发布→前后 diff 全链路集成测试。状态对照与已知边界：[实施状态文档](docs/knowledge-dossier-implementation-status.md)。
+验收：后端 454 passed（含 135 个新用例，覆盖 §13.1 九个测试组）+ 前端 37 passed；E2E：`/research --depth=targeted` → 计划→typed 产出→评估→validated 产物→快照发布→前后 diff 全链路集成测试。状态对照与已知边界：[实施状态文档](docs/knowledge-dossier-implementation-status.md)。
 
 **加固与联调已完成（P4 之后）**
 

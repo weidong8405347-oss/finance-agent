@@ -40,7 +40,7 @@
 | §11.1 迁移 | `scripts/migrate_dossier.py`（inventory dry-run / shadow 对账 / apply-typed 保守映射：显式币种+日期才转、规模词不猜量级、幂等 checkpoint、迁移值标 PIT-B） | 已落地（旧报告 [ev-id] 批量重链与 thesis→claim 批量迁移未做，读侧已兼容 legacy_analysis 投影） |
 | §11.3 发布与回滚 | 新链路装配缺省安全：`StepDeps.metrics=None` 时旧管线行为不变（等价 `typed_metrics_enabled=false`）；`research_plan_enabled` 开关已有；additive schema、回滚不删新表 | 部分（`dossier_ui_enabled` 前端灰度开关未做——新页面默认可用，旧「数据与审计」与 HTML 存档入口保留即回滚路径） |
 | §11.4 导出 | JSON + Markdown（绑定 data_hash/as_of/情景差异注明；历史导出默认不附加新情景） | 已落地（HTML/PDF 按计划后置） |
-| §13.1 正确性测试 | 数值语义/财务期间/来源/历史与评估/模型/研究/发布恢复/前端/兼容迁移 9 组 | 已落地（157 个新用例；浏览器 E2E 与截图验收未做，见下） |
+| §13.1 正确性测试 | 数值语义/财务期间/来源/历史与评估/模型/研究/发布恢复/前端/兼容迁移 9 组 | 已落地（135 个新用例；浏览器 E2E 与截图验收未做，见下） |
 | §13.2 对照样本评估 | 冻结样本 3 个已备（附录 A.1） | 部分（新旧管线盲评对照需真实研究运行，属实施后评估任务） |
 
 ## 已知边界与后续（如实清单）
@@ -55,7 +55,7 @@
 ## 验证入口
 
 ```bash
-uv run pytest tests                        # 454 passed, 9 skipped（含 157 个新用例）
+uv run pytest tests                        # 454 passed, 9 skipped（含 135 个新用例）
 cd frontend && npm test && npm run build   # 37 passed；主包 206KB + echarts 懒加载 chunk
 uv run python scripts/migrate_dossier.py --data-dir data inventory   # 迁移盘点（只读）
 uv run python -m finance_agent serve       # → #/knowledge 列表 → 实体档案 → 来源抽屉 → 补研
