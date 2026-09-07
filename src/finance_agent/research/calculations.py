@@ -149,7 +149,7 @@ def _f_cagr(i: dict[str, Decimal], a: dict[str, str]) -> FormulaOutcome:
 
 def _f_margin(i: dict[str, Decimal], a: dict[str, str]) -> FormulaOutcome:
     kind = a.get("margin_kind", "net")
-    numerator = {"gross": i["gross_profit"], "operating": i["operating_income"], "net": i["net_income"]}[kind]
+    numerator = i[_MARGIN_NUMERATORS[kind]]  # 惰性选择（_resolve_inputs 已验存在性）
     revenue = i["revenue"]
     r, err = _ratio(numerator, revenue, label=f"{kind}_margin")
     if r is None:

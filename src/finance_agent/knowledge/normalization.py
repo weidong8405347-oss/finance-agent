@@ -119,21 +119,45 @@ def apply_step(value: Decimal, step: NormalizationStep) -> Decimal:
     return fn(value, step.params)
 
 
+def _year_like(text: str) -> bool:
+    """年份形态：1900–2100 的 standalone 整数（「2026 revenue 1.2 billion」不取 2026）。"""
+    try:
+        d = Decimal(text)
+    except InvalidOperation:
+        return False
+    return d == d.to_integral_value() and 1900 <= int(d) <= 2100
+
+
 def parse_raw_number(value_text: str) -> Decimal:
-    """原文值文本 → Decimal 尾数（千分位容忍；规模词剥离交给 unit_word_scale）。"""
+    """原文值文本 → Decimal 尾数（千分位容忍；规模词剥离交给 unit_word_scale）。
+
+    歧义消解（数值语义测试组 §13.1）：
+    1. 规模词紧邻的数字优先（'2026 revenue 1.2 billion' → 1.2）；
+    2. 否则排除年份形态后取首个数字（'revenue 100 in 2026' → 100）；
+    3. 全是年份形态才退回首个数字。
+    """
     cleaned = value_text.strip().replace(",", "")
-    m = _NUM_RE.search(cleaned)
-    if m is None:
+    matches = [m.group(0) for m in _NUM_RE.finditer(cleaned)]
+    if not matches:
         raise NormalizationError(f"原文值文本中没有可解析数字: {value_text!r}")
-    return _dec(m.group(0))
+    word = detect_scale_word(value_text, "")
+    if word is not None:
+        pattern = re.compile(
+            rf"(-?\d[\d,]*\.?\d*)\s*{re.escape(word)}s?(?![a-z])", re.IGNORECASE
+        )
+        m = pattern.search(cleaned)
+        if m is not None:
+            return _dec(m.group(1))
+    non_year = [t for t in matches if not _year_like(t)]
+    return _dec(non_year[0] if non_year else matches[0])
 
 
 def detect_scale_word(value_text: str, unit_text: str) -> str | None:
-    """从原文值/单位文本中识别规模词（million/billion/亿…）；无则 None。"""
+    """从原文值/单位文本中识别规模词（million/billion/亿…，含复数）；无则 None。"""
     for text in (value_text, unit_text):
         low = text.strip().lower()
         for word in sorted(SCALE_WORDS, key=len, reverse=True):
-            if re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", low):
+            if re.search(rf"(?<![a-z]){re.escape(word)}s?(?![a-z])", low):
                 return word
     return None
 

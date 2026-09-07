@@ -223,8 +223,13 @@ def assess(
         notes.append("integrity 硬门禁未过——产物不能 validated（rubric 满分不能覆盖）")
         gaps.extend(c.detail for c in checks if not c.passed)
     elif cov.violations:
-        verdict = "partial"
         gaps.extend(cov.violations)
+        # 覆盖不足但有有效成果 → partial；一无所获 → blocked（不叫「充分完成」也不假装有部分成果）
+        if cov.answered or claims or observations or calculations:
+            verdict = "partial"
+        else:
+            verdict = "blocked"
+            gaps.append("无任何已回答问题/论断/观测")
     elif cov.applicable and cov.coverage >= target:
         verdict = "sufficient"
     elif cov.answered or claims or observations:

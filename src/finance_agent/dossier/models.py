@@ -147,16 +147,23 @@ class DossierSnapshot(BaseModel):
         return self.data_hash
 
     def compute_data_hash(self, inputs: dict[str, Any]) -> str:
+        """快照身份哈希（§6.6 可缓存键）：namespace/模式/输入版本集/配方/投影器版本。
+
+        live 模式的 as_of 不进哈希：「现在」只是服务端固定时刻，快照身份由
+        可见输入版本集决定——数据不变则重复打开复用同一冻结快照（幂等发布）；
+        historical/rebuilt 的 as_of 进哈希（同一实体不同截止时点是不同快照）。"""
+        ctx_part: dict[str, Any] = {
+            "mode": self.context.mode,
+            "namespace": self.context.namespace,
+            "projector_version": self.context.projector_version,
+            "recipe": self.recipe,
+        }
+        if self.context.mode != "live":
+            ctx_part["as_of"] = self.context.as_of.isoformat()
         canon = json.dumps(
             {
                 "entity": f"{self.entity.kind}:{self.entity.id}",
-                "context": {
-                    "mode": self.context.mode,
-                    "namespace": self.context.namespace,
-                    "as_of": self.context.as_of.isoformat(),
-                    "projector_version": self.context.projector_version,
-                    "recipe": self.recipe,
-                },
+                "context": ctx_part,
                 "inputs": inputs,
             },
             ensure_ascii=False, sort_keys=True, default=str,

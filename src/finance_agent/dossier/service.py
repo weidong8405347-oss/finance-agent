@@ -83,6 +83,11 @@ class DossierService:
             snapshot_id, created = self._metrics.save_snapshot(
                 snapshot_id=snapshot.context.snapshot_id, namespace=namespace, payload=payload
             )
+            if not created:
+                # 数据未变 → 复用已冻结快照（保留原 as_of/生成时刻，不在阅读中悄悄替换）
+                stored = self._metrics.get_snapshot(snapshot_id)
+                if stored is not None:
+                    return stored, False
             payload["context"]["snapshot_id"] = snapshot_id
             if created:
                 changed = _changed_modules(previous, payload)
@@ -129,13 +134,15 @@ class DossierService:
         kind, eid = entity["kind"], entity["id"]
         state = snap["modules"].get(module, {"status": "missing", "reasons": []})
         payload = self._build_module_payload(kind, eid, module, t, ns, snap, params or {})
-        # 数据漂移检测：重投影 hash 与冻结快照不一致 → 提示刷新（不静默替换）
+        # 数据漂移检测：同一上下文重投影（不落库），hash 不一致 = 有回填数据 → 提示刷新
+        # （只读请求不发布新快照；新快照由用户重新打开档案时创建）
         refresh = False
         try:
-            current, _ = self.open(
-                kind, eid, as_of=t, namespace=ns, mode=ctx["mode"], name=entity.get("name", "")
-            )
-            refresh = current["data_hash"] != snap.get("data_hash")
+            from .models import DossierContext
+
+            ctx_model = DossierContext.model_validate(snap["context"])
+            fresh = self._projector.project(kind, eid, ctx_model, name=entity.get("name", ""))
+            refresh = fresh.data_hash != snap.get("data_hash")
         except Exception:
             logger.warning("模块漂移检测失败（忽略）%s", snapshot_id, exc_info=True)
         out = ModulePayload(
@@ -540,7 +547,8 @@ def _changed_modules(base: dict | None, cur: dict) -> list[str]:
     out = []
     for m, s in cur.get("modules", {}).items():
         old = (base.get("modules") or {}).get(m, {})
-        if old.get("status") != s.get("status"):
+        # 状态变化或内容指纹变化（data_ref）都算变化——partial→partial 但数据更新也要提示
+        if old.get("status") != s.get("status") or old.get("data_ref") != s.get("data_ref"):
             out.append(m)
     return out
 

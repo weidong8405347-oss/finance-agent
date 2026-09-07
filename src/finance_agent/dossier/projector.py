@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -167,7 +169,7 @@ class DossierProjector:
         )
         snapshot.modules = self._build_modules(
             entity_kind, entity_id, facts, observations, claims, artifacts,
-            recipe, t, open_conflict_sems, ns,
+            recipe, t, open_conflict_sems, ns, mode=context.mode,
         )
         snapshot.research = self._build_research_coverage(plan, claims, artifacts, t, ns)
         snapshot.evidence_refs = sorted(
@@ -315,11 +317,13 @@ class DossierProjector:
         t: datetime,
         open_conflict_sems: set[str],
         namespace: str,
+        mode: str = "live",
     ) -> dict[str, ModuleState]:
         now = datetime.now(UTC)
         has_current_data = None
-        if t < now:
-            # 历史模式：判断「现在有数据但 as_of 不可知」→ unavailable_at_as_of
+        if mode == "historical":
+            # 仅历史模式：判断「现在有数据但 as_of 不可知」→ unavailable_at_as_of
+            # （live 模式的 as_of 就是服务端当前时刻，不存在此状态）
             with contextlib.suppress(Exception):
                 cur_facts = self._kb.view(entity_kind, entity_id, now, namespace=namespace)
                 cur_obs = self._metrics.observations_as_of(entity_kind, entity_id, now, namespace=namespace)
@@ -350,6 +354,17 @@ class DossierProjector:
                 [o.knowledge_time for o in obs] + [r.knowledge_time for r in legacy],
                 default=None,
             )
+            # 模块内容指纹（data_ref）：changed_modules 据此发现「状态未变但数据已变」
+            digest_src: dict[str, Any] = {
+                "obs": sorted(o.observation_id for o in obs),
+                "facts": sorted((r.fact_id, r.version) for r in legacy),
+                "claims": sorted(c["claim_id"] for c in mod_claims),
+            }
+            if mod == "research_sources":
+                digest_src["artifacts"] = sorted(a["artifact_id"] for a in artifacts)
+            data_ref = "md-" + hashlib.sha256(
+                json.dumps(digest_src, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:12]
             has_conflict = any(o.semantic_hash() in conflict_obs for o in obs) or any(
                 r.conflict_flag for r in legacy
             )
@@ -417,12 +432,13 @@ class DossierProjector:
             if status == "ready" and latest_kt and self._module_stale(mod, latest_kt, t, recipe):
                 status = "stale"
                 reasons.append("超过配方新鲜度目标（今天重抓旧数字不使其变新鲜）")
-            if status == "missing" and t < now and has_current_data:
+            if status == "missing" and mode == "historical" and has_current_data:
                 status = "unavailable_at_as_of"
                 reasons.append(f"as_of（{t.date().isoformat()}）时点该模块数据尚不可知；当前视图有数据")
             modules[mod] = ModuleState(
                 status=status, title=title, reasons=reasons,
                 last_knowledge_time=latest_kt,
+                data_ref=data_ref,
             )
         return modules
 
@@ -660,7 +676,7 @@ def series_set(
         out.append(MetricSeries(
             metric_key=key, label=labels.get(key, key), unit=first.unit,
             currency=first.currency, frequency=first.period.frequency,
-            points=points, status="ok",
+            points=points, status="ready",
         ))
     return MetricSeriesSet(series=out)
 
