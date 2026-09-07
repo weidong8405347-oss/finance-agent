@@ -5,6 +5,7 @@
 ## 文档
 
 - [DESIGN.md](DESIGN.md) — 总体设计文档（架构、四大 step、评估反穿越设计、UI、实施计划），**先读这份**
+- [docs/knowledge-dossier-research-redesign.md](docs/knowledge-dossier-research-redesign.md) — Knowledge 可视化股票档案与 Research 深度升级方案（待实施：页面、数据契约、问题驱动研究、迁移与验收）
 - [docs/best-practices-evaluation.md](docs/best-practices-evaluation.md) — 业界最佳实践调研（LLM 回测污染证据、PIT 数据实践、评估协议、记忆架构），DESIGN.md 第 4.3/6 章的依据
 - [docs/evaluation-design.md](docs/evaluation-design.md) — 评估体系对齐稿（过程评估/效果评估两部分隔离 + 插件化，含待确认决策点清单）
 - [docs/research-capability-upgrade.md](docs/research-capability-upgrade.md) — 调研能力提升设计（/industry 行业漏斗、维度并行 loop、三 flash 模型分级、四新数据源、stalled 升级阶梯）；P1/P2/P3 已落地
