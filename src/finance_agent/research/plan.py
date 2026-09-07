@@ -274,8 +274,10 @@ def build_plan(
 
     if mode == "targeted":
         target_text = focus or objective
+        # 确定性 id（实体+目标哈希）：同一目标重复建计划可幂等对照，脚本/测试可预测
+        digest = hashlib.sha256(f"{entity_id}:{target_text}".encode()).hexdigest()[:8]
         _add(ResearchQuestion(
-            question_id=f"targeted-{uuid.uuid4().hex[:6]}",
+            question_id=f"targeted-{digest}",
             text=target_text,
             why="用户指定的研究目标（targeted 模式）",
             priority="high",

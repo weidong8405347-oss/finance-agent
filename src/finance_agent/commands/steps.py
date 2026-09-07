@@ -194,10 +194,16 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         sugg = "；".join(diag.get("suggestions") or [])
         last = reports[-1]
         total_written = sum(len(r.facts_written) for r in reports)
+        # typed 产出同样是有效进展（§7.7）：观测/论断/问题推进过 → 不拦停管道，
+        # 否则「有价值分析但没写旧字段」会被误判为一无所获
+        total_typed = sum(
+            len(r.observations_written) + len(r.claims_written) + len(r.questions_advanced)
+            for r in reports
+        )
         # 粒度区分：整轮零产出（本轮研究一无所获）→ blocked 拦停管道，
         # 不再让后续 step 对空档案空烧 token；已有进展后的末轮停滞 = 自然收敛，
         # 研究产出有效，管道继续（摘要留痕停滞原因）。
-        if total_written == 0:
+        if total_written == 0 and total_typed == 0:
             summary = (
                 f"研究停滞（stalled）：{len(reports)} 轮后完整度 "
                 f"{last.completeness_before:.0%} → {last.completeness_after:.0%}，"
@@ -207,7 +213,8 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
             )
             return StepResult(status="blocked", summary=summary)
         summary = (
-            f"研究 {len(reports)} 轮（stalled，累计写入 {total_written} 字段后停滞）："
+            f"研究 {len(reports)} 轮（stalled，累计写入 {total_written} 字段"
+            f" + {total_typed} 项 typed 产出后停滞）："
             f"完整度 {last.completeness_before:.0%} → {last.completeness_after:.0%}"
             + (f"；残余缺口 {len(missing)} 字段；建议：{sugg}" if sugg else "")
         )
@@ -369,8 +376,16 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
         _publish_report(deps, ctx, report_title, summary, artifact, ["evidence-gap"])
         return StepResult(status="completed", summary=summary)
     if not view:
-        # 空档案 + 新链路：仍发布缺口说明，但产物 sufficiency=blocked（状态与内容质量分离）
-        return _synthesize_empty_v2(deps, ctx, report_title, now)
+        # 旧字段为空不等于无内容：typed 观测/论断也是研究产出（只有两者全空才走缺口说明）
+        has_typed = False
+        if deps.metrics is not None:
+            has_typed = bool(
+                deps.metrics.observations_as_of(ctx.entity_kind, ctx.ticker, now)
+                or deps.metrics.claims_as_of(ctx.entity_kind, ctx.ticker, now)
+            )
+        if not has_typed:
+            # 空档案 + 新链路：仍发布缺口说明，但产物 sufficiency=blocked（状态与内容质量分离）
+            return _synthesize_empty_v2(deps, ctx, report_title, now)
 
     def query_kb(_args: dict[str, Any]) -> dict[str, Any]:
         return {
