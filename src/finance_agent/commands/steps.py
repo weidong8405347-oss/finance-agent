@@ -584,7 +584,12 @@ def _synthesize_empty_v2(
                  "entity": f"{ctx.entity_kind}:{ctx.ticker}"},
     ))
     path = _write_text_artifact(deps, ctx, "report.md", artifact.markdown)
-    _publish_report(deps, ctx, report_title, summary, path, ["evidence-gap", "sufficiency: blocked"])
+    _publish_report(deps, ctx, report_title, summary, path,
+                    ["evidence-gap", "sufficiency: blocked"], extra={
+                        "research_artifact_id": artifact.artifact_id,
+                        "artifact_status": "draft",
+                        "artifact_sufficiency": "blocked",
+                    })
     return StepResult(status="completed", summary=summary)
 
 
@@ -692,7 +697,6 @@ def _finalize_artifact_v2(
     if gaps.conflicts:
         flags.append(f"conflict: {len(gaps.conflicts)} 项待裁决")
     flags.append(f"artifact: {artifact.status}/{artifact.sufficiency}")
-    _publish_report(deps, ctx, report_title, summary, path, flags)
 
     # 档案快照发布（dossier/published 事件由 service 落；失败不阻断报告发布，
     # 但必须可见：service 内部落 dossier/publish_failed + 日志）
@@ -705,6 +709,12 @@ def _finalize_artifact_v2(
             snapshot_id = snap["context"]["snapshot_id"]
         except Exception as e:
             logger.error("档案快照发布失败 %s:%s: %s", ctx.entity_kind, ctx.ticker, e, exc_info=True)
+    _publish_report(deps, ctx, report_title, summary, path, flags, extra={
+        "research_artifact_id": artifact.artifact_id,
+        "artifact_status": artifact.status,
+        "artifact_sufficiency": artifact.sufficiency,
+        "dossier_snapshot_id": snapshot_id,
+    })
     result_summary = (
         f"{summary}（产物 {artifact.status}/充分度 {artifact.sufficiency}"
         + (f"，快照 {snapshot_id}" if snapshot_id else "")
@@ -742,8 +752,10 @@ def _extract_summary(report_md: str) -> str:
 
 def _publish_report(
     deps: StepDeps, ctx: StepContext, title: str, summary: str, artifact: Path, flags: list[str],
-    *, kind: str = "research_report",
+    *, kind: str = "research_report", extra: dict[str, Any] | None = None,
 ) -> None:
+    """Sessions 报告卡事件。沿用 report/published，新链路增加 artifact/snapshot 引用
+    （§6.5：Sessions 卡片可深链到冻结研报与档案快照，显示真实产物状态）。"""
     deps.events.append(
         Event(
             run_id=ctx.session_run_id,
@@ -757,6 +769,8 @@ def _publish_report(
                 "artifact_ref": f"{ctx.child_run_id}/{artifact.name}",
                 "quality_flags": flags,
                 "command_id": ctx.command_id,
+                "entity": f"{ctx.entity_kind}:{ctx.ticker}",
+                **(extra or {}),
             },
         )
     )

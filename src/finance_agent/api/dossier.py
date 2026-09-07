@@ -58,6 +58,17 @@ class ExportRequest(BaseModel):
     saved_scenario_artifact_id: str | None = None
 
 
+class ScenarioSaveRequest(BaseModel):
+    """保存研究情景（§8.5）：滑动不写事实，只有显式保存才建立模型 artifact。"""
+
+    base_snapshot: str = Field(min_length=1)
+    model_version: str = "reverse_dcf@1"
+    assumption_hash: str = Field(min_length=1)  # 必须匹配已验证计算的 input_hash
+    validated_calculation_id: str = Field(min_length=1)
+    name: str = ""
+    idempotency_key: str | None = None
+
+
 def create_dossier_router(
     *,
     kb: BitemporalStore,
@@ -343,6 +354,105 @@ def create_dossier_router(
         payload["note"] = "预览计算：不写事实、不创建 DecisionCard（§8.4/§8.5）"
         return payload
 
+    # ---------------- 情景保存（模型 artifact；不创建事实或 DecisionCard，§8.4/§8.5） ----------------
+
+    _SCENARIO_IDEM: dict[str, dict[str, Any]] = {}
+
+    @router.post("/valuations/scenarios")
+    def save_scenario(req: ScenarioSaveRequest) -> dict[str, Any]:
+        if req.idempotency_key and req.idempotency_key in _SCENARIO_IDEM:
+            return _SCENARIO_IDEM[req.idempotency_key]
+        # 基线快照必须存在（情景绑定输入 snapshot）；DossierError → 404
+        dossier.get(req.base_snapshot)
+        calc = metrics.get_calculation(req.validated_calculation_id)
+        if calc is None:
+            raise HTTPException(status_code=404,
+                                detail=f"计算不存在: {req.validated_calculation_id}")
+        if calc.input_hash != req.assumption_hash:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "assumption_hash 与计算输入不匹配（假设已变，需重算后再保存）",
+                    "expected": calc.input_hash, "got": req.assumption_hash,
+                },
+            )
+        if calc.status != "ok":
+            raise HTTPException(status_code=422,
+                                detail=f"计算状态 {calc.status} 不可保存为情景（失败不产出貌似有效的结果）")
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from ..research.artifacts import (
+            AssumptionTableBlock,
+            HeadingBlock,
+            ParagraphBlock,
+            ReportDocument,
+            ResearchArtifact,
+        )
+
+        now = _dt.now(UTC)
+        name = req.name or f"情景 {calc.formula_id} {now.strftime('%m-%d %H:%M')}"
+        doc = ReportDocument(
+            title=name,
+            entity_kind=calc.entity_kind,  # type: ignore[arg-type]
+            entity_id=calc.entity_id,
+            blocks=[
+                HeadingBlock(level=1, text="研究假设情景（用户保存）"),
+                ParagraphBlock(text=(
+                    f"本情景是研究假设产物（model_estimate），不是披露事实或投资建议；"
+                    f"基线快照 {req.base_snapshot}，模型 {req.model_version}。"
+                )),
+                AssumptionTableBlock(
+                    title=f"{calc.formula_id}@v{calc.formula_version} 假设与结果",
+                    assumptions={**calc.payload.get("assumptions", {}),
+                                 "result": calc.result or "—",
+                                 "input_hash": calc.input_hash},
+                    calculation_ref=calc.calculation_id,
+                ),
+            ],
+            limitations=["情景不自动成为默认发布版；导出时显示生成日期与假设变化"],
+        ).with_id()
+        artifact = ResearchArtifact(
+            entity_kind=calc.entity_kind,  # type: ignore[arg-type]
+            entity_id=calc.entity_id,
+            title=name,
+            report_document=doc,
+            calculation_ids=[calc.calculation_id],
+            snapshot_refs=[req.base_snapshot],
+            status="validated",  # 引用完整性已验（计算存在且 hash 匹配）
+            sufficiency="partial",  # 情景不是完整研究
+            created_at=now,
+            evidence_cutoff=now,
+        ).with_id()
+        metrics.save_artifact(artifact_id=artifact.artifact_id, namespace=calc.namespace,
+                              payload=artifact.model_dump(mode="json"))
+        result = {
+            "artifact_id": artifact.artifact_id,
+            "name": name,
+            "base_snapshot": req.base_snapshot,
+            "calculation_id": calc.calculation_id,
+            "assumption_hash": req.assumption_hash,
+            "note": "已保存为模型 artifact；未创建事实或 DecisionCard（D1 边界）",
+        }
+        if req.idempotency_key:
+            _SCENARIO_IDEM[req.idempotency_key] = result
+        return result
+
+    @router.get("/valuations/scenarios/{artifact_id}")
+    def get_scenario(artifact_id: str) -> dict[str, Any]:
+        """恢复已保存情景：假设、计算与基线（检查当前上下文可见性）。"""
+        artifact = metrics.get_artifact(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail=f"情景不存在: {artifact_id}")
+        refs = artifact.get("snapshot_refs") or []
+        for sid in refs:
+            if metrics.get_snapshot(sid) is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"情景绑定的基线快照不可见: {sid}（命名空间/截止时间不匹配或已不可恢复）",
+                )
+        return artifact
+
     # ---------------- 冻结导出 ----------------
 
     @router.post("/dossiers/{snapshot_id}/exports")
@@ -351,6 +461,34 @@ def create_dossier_router(
             name, content = dossier.export(snapshot_id, req.format)
         except DossierError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
+        if req.saved_scenario_artifact_id:
+            # 导出用户情景：情景必须匹配基线，并注明与发布版差异（§10.1）
+            scen = metrics.get_artifact(req.saved_scenario_artifact_id)
+            if scen is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"情景不存在: {req.saved_scenario_artifact_id}")
+            if snapshot_id not in (scen.get("snapshot_refs") or []):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"情景绑定的基线不是 {snapshot_id}（不能把其他快照的情景附加到本导出）",
+                )
+            header = (
+                f"\n\n---\n## 附加用户情景（非发布版）\n"
+                f"- 情景: {scen.get('title')}（{req.saved_scenario_artifact_id}）\n"
+                f"- 生成日期: {scen.get('created_at')} · 基线: {snapshot_id}\n"
+                f"- 与发布版差异: 本情景是用户假设产物，不改变发布快照的任何结论\n"
+            )
+            if req.format == "json":
+                data = json.loads(content)
+                data["saved_scenario"] = {
+                    "artifact_id": req.saved_scenario_artifact_id,
+                    "title": scen.get("title"),
+                    "created_at": scen.get("created_at"),
+                    "note": "用户情景，非发布版",
+                }
+                content = json.dumps(data, ensure_ascii=False, indent=2)
+            else:
+                content += header
         job_id = f"job-{uuid.uuid4().hex[:10]}"
         base = exports_dir or Path("data/exports")
         job_dir = base / job_id

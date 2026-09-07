@@ -43,6 +43,12 @@ export interface ReportCard {
   reportKind?: string;   // "research_report" | "evaluation"
   stats?: Record<string, number>;
   verdict?: string;
+  // 档案升级（§12.1）：Sessions 报告卡深链到实体/冻结研报/快照，显示真实产物状态
+  researchArtifactId?: string;
+  artifactStatus?: string;      // draft | validated | superseded
+  artifactSufficiency?: string; // sufficient | partial | blocked
+  entity?: string;              // "stock:BE"
+  dossierSnapshotId?: string;
 }
 
 export interface ProfileCardData {
@@ -175,6 +181,11 @@ export function assemble(events: EventRow[]): ChatNode[] {
           reportKind: p.kind ? String(p.kind) : undefined,
           stats: (p.stats as Record<string, number>) ?? undefined,
           verdict: p.verdict ? String(p.verdict) : undefined,
+          researchArtifactId: p.research_artifact_id ? String(p.research_artifact_id) : undefined,
+          artifactStatus: p.artifact_status ? String(p.artifact_status) : undefined,
+          artifactSufficiency: p.artifact_sufficiency ? String(p.artifact_sufficiency) : undefined,
+          entity: p.entity ? String(p.entity) : undefined,
+          dossierSnapshotId: p.dossier_snapshot_id ? String(p.dossier_snapshot_id) : undefined,
         };
         const cmd = p.command_id ? commandById.get(String(p.command_id)) : undefined;
         if (cmd) cmd.reports.push(card);

@@ -1,512 +1,240 @@
-// Knowledge 页（R4）：全部档案列表（验收状态 + 质量分 + 完整度并排）+ 详情页
-// （结构化字段渲染 / 质量横幅 / thesis / as_of 时光机 / HTML 存档版本查看器）。
-//
-// 设计参照 open-design live-artifact：状态 pill（已验收/待验收/冲突）一屏可见，
-// 字段值结构化排版（list→表格、长文→段落）而非 JSON.stringify 一坨。
-import { Fragment, useEffect, useState } from "react";
-import {
-  api, ArchiveRow, CompareItem, EntityProfile, EntityRow, SeriesPoint,
-} from "../api";
-import { BarCompare, LineChart } from "../components/MiniChart";
+// Knowledge 首页（设计 §4.2）：研究档案列表——每行回答「这是哪家公司、最新研究
+// 发现什么、现在缺什么」，而不是只显示字段数。列表请求失败必须显示失败与重试，
+// 不能伪装成「暂无档案」。详情阅读进入 StockDossierPage（旧字段视图迁为其
+// 「数据与审计」区）。
 
-// 值 → 数值（图表用）：取首个数字片段（去逗号）；非数值字段返回 null
-function toNumber(v: unknown): number | null {
-  if (typeof v === "number") return v;
-  const m = String(v).replace(/,/g, "").match(/-?\d+(\.\d+)?/);
-  return m ? parseFloat(m[0]) : null;
-}
+import { useEffect, useMemo, useState } from "react";
+
+import { navigate } from "../app/route";
+import { dossierApi } from "../features/dossier/api";
+import { ModuleStateBadge } from "../features/dossier/components";
+import type { EntityRowV2 } from "../features/dossier/types";
+
+type KindFilter = "all" | "stock" | "industry";
+type IssueFilter = "all" | "conflict" | "stale" | "researched" | "draft";
 
 function fmtDate(iso: string | null): string {
   return iso ? iso.slice(0, 10) : "—";
 }
 
-// ---------- 验收状态 pill（与 HTML 存档 header 同一投影口径） ----------
-function QualityPill({ status, conflicts = 0 }: { status?: "verified" | "draft"; conflicts?: number }) {
+function VerdictPill({ verdict }: { verdict: string | null }) {
+  if (!verdict) return <span className="text-[11px] text-neutral-400">未评估</span>;
+  const meta = verdict === "sufficient"
+    ? { label: "充分", cls: "border-green-300 bg-green-50 text-green-700" }
+    : verdict === "blocked"
+      ? { label: "受阻", cls: "border-red-300 bg-red-50 text-red-700" }
+      : { label: "部分", cls: "border-amber-300 bg-amber-50 text-amber-700" };
   return (
-    <span className="inline-flex items-center gap-1">
-      {status === "verified" ? (
-        <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[11px] text-green-700">✓ 已验收</span>
-      ) : (
-        <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">◔ 待验收</span>
-      )}
-      {conflicts > 0 && (
-        <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-[11px] text-red-700">⚠ {conflicts} 冲突</span>
-      )}
-    </span>
+    <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${meta.cls}`}>{meta.label}</span>
   );
-}
-
-// 存量兼容：硬门禁上线前落库的 JSON 字符串值，渲染层解析回结构化（历史不改写，投影可美化）
-function parseLegacyJson(value: string): unknown | null {
-  const s = value.trim();
-  if (!s || (s[0] !== "{" && s[0] !== "[")) return null;
-  try {
-    const parsed = JSON.parse(s);
-    return parsed !== null && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-// ---------- 结构化字段值渲染（替代 JSON.stringify 一坨） ----------
-function FactValue({ value, compact = false }: { value: unknown; compact?: boolean }) {
-  if (value === null || value === undefined) return <span className="text-neutral-400">—</span>;
-  if (typeof value === "string") {
-    const legacy = parseLegacyJson(value);
-    if (legacy !== null) return <FactValue value={legacy} compact={compact} />;
-    const text = compact && value.length > 160 ? `${value.slice(0, 160)}…` : value;
-    return <span className="whitespace-pre-wrap break-words">{text}</span>;
-  }
-  if (typeof value === "boolean") {
-    return <span>{value ? "✓" : "—"}</span>;
-  }
-  if (typeof value === "number") {
-    return <span className="font-mono tabular-nums">{value.toLocaleString()}</span>;
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) return <span className="text-neutral-400">（空列表）</span>;
-    if (value.every((v) => v !== null && typeof v === "object" && !Array.isArray(v))) {
-      const dicts = value as Record<string, unknown>[];
-      const keys: string[] = [];
-      for (const item of dicts) {
-        for (const k of Object.keys(item)) {
-          if (k !== "evidence_ids" && !keys.includes(k)) keys.push(k);
-        }
-      }
-      return (
-        <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr>{keys.map((k) => (
-              <th key={k} className="border-b border-neutral-200 px-1.5 py-1 text-left text-[10px] font-semibold uppercase tracking-wide text-neutral-400">{k}</th>
-            ))}</tr>
-          </thead>
-          <tbody>
-            {(compact ? dicts.slice(0, 5) : dicts).map((item, i) => (
-              <tr key={i} className="border-b border-neutral-100">
-                {keys.map((k) => (
-                  <td key={k} className="max-w-56 px-1.5 py-1 align-top">
-                    <FactValue value={item[k]} compact />
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      );
-    }
-    return (
-      <ul className="list-disc space-y-0.5 pl-4">
-        {(compact ? value.slice(0, 6) : value).map((v, i) => (
-          <li key={i}><FactValue value={v} compact /></li>
-        ))}
-      </ul>
-    );
-  }
-  if (typeof value === "object") {
-    return (
-      <table className="w-full border-collapse text-xs">
-        <tbody>
-          {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
-            <tr key={k} className="border-b border-neutral-100">
-              <td className="w-32 px-1.5 py-1 align-top font-mono text-[11px] text-neutral-500">{k}</td>
-              <td className="px-1.5 py-1 align-top"><FactValue value={v} compact /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
-  }
-  return <span className="font-mono">{String(value)}</span>;
 }
 
 export default function KnowledgePage() {
-  const [entities, setEntities] = useState<EntityRow[]>([]);
-  const [selected, setSelected] = useState<EntityRow | null>(null);
-  const [detail, setDetail] = useState<EntityRow | null>(null);  // 非空 = 详情视图
-
-  useEffect(() => {
-    api.entities().then(setEntities).catch(() => setEntities([]));
-  }, []);
-
-  if (detail) {
-    return <EntityDetail kind={detail.kind} id={detail.id} onBack={() => setDetail(null)} />;
-  }
-
-  return (
-    <div>
-      <h2 className="mb-3 text-sm font-semibold text-neutral-500">全部档案</h2>
-      <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[11px] text-neutral-500">
-              <th className="px-3 py-2">实体</th><th className="px-3 py-2">类型</th>
-              <th className="px-3 py-2">验收</th><th className="px-3 py-2">质量分</th>
-              <th className="px-3 py-2">完整度</th><th className="px-3 py-2">字段数</th>
-              <th className="px-3 py-2">陈旧</th>
-              <th className="px-3 py-2">最近可知</th><th className="px-3 py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {entities.map((e) => (
-              <tr
-                key={`${e.kind}:${e.id}`}
-                onClick={() => setSelected(e)}
-                className={`cursor-pointer border-b border-neutral-100 ${
-                  selected?.id === e.id && selected?.kind === e.kind
-                    ? "bg-neutral-100" : "hover:bg-neutral-50"
-                }`}
-              >
-                <td className="px-3 py-2 font-mono text-xs font-semibold">{e.id}</td>
-                <td className="px-3 py-2 text-xs text-neutral-500">{e.kind}</td>
-                <td className="px-3 py-2" title={e.quality_issues?.join("\n") || "无待办问题"}>
-                  <QualityPill status={e.quality_status} conflicts={e.conflict_count} />
-                </td>
-                <td className="px-3 py-2">
-                  <span className="mr-1 inline-block h-1.5 w-16 overflow-hidden rounded bg-neutral-100 align-middle">
-                    <span
-                      className={`block h-full ${e.quality_status === "verified" ? "bg-green-600" : "bg-amber-500"}`}
-                      style={{ width: `${(e.quality_score ?? 0) * 100}%` }}
-                    />
-                  </span>
-                  <span className="text-xs">{((e.quality_score ?? 0) * 100).toFixed(0)}%</span>
-                </td>
-                <td className="px-3 py-2 text-xs text-neutral-500">{(e.completeness * 100).toFixed(0)}%</td>
-                <td className="px-3 py-2 font-mono text-xs">{e.field_count}</td>
-                <td className="px-3 py-2 text-xs">{e.stale_count > 0 ? `${e.stale_count} 项` : "—"}</td>
-                <td className="px-3 py-2 font-mono text-xs text-neutral-500">{fmtDate(e.last_knowledge_time)}</td>
-                <td className="px-3 py-2">
-                  <button
-                    onClick={(ev) => { ev.stopPropagation(); setDetail(e); }}
-                    className="rounded border border-neutral-200 px-2 py-0.5 text-xs hover:border-neutral-400"
-                  >
-                    查看详情 →
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {entities.length === 0 && (
-              <tr><td colSpan={9} className="px-3 py-8 text-center text-neutral-400">
-                暂无档案——在对话里说「研究一下 BE」或用 /research 开始
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {selected && <EntitySummary kind={selected.kind} id={selected.id} onDetail={() => setDetail(selected)} />}
-    </div>
-  );
-}
-
-// ---------- 摘要面板（列表选中联动） ----------
-function EntitySummary({ kind, id, onDetail }: { kind: string; id: string; onDetail: () => void }) {
-  const [profile, setProfile] = useState<EntityProfile | null>(null);
-  const [archives, setArchives] = useState<ArchiveRow[]>([]);
-
-  useEffect(() => {
-    setProfile(null);
-    api.entityProfile(kind, id).then(setProfile).catch(() => setProfile(null));
-    api.archives(kind, id).then(setArchives).catch(() => setArchives([]));
-  }, [kind, id]);
-
-  const facts = Object.entries(profile?.facts ?? {}).slice(0, 6);
-  const latest = archives[0];
-  return (
-    <div className="mt-4 grid grid-cols-2 gap-4">
-      <div className="rounded-lg border border-neutral-200 bg-white p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="font-mono text-sm font-semibold">{kind}:{id}</h3>
-          <div className="flex items-center gap-2">
-            <QualityPill status={profile?.quality?.status} conflicts={profile?.quality?.fields.filter((f) => f.status === "conflict").length ?? 0} />
-            <button onClick={onDetail} className="text-xs text-blue-700 hover:underline">查看详情 →</button>
-          </div>
-        </div>
-        {profile?.quality && profile.quality.issues.length > 0 && (
-          <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-            {profile.quality.issues.join("；")}
-          </div>
-        )}
-        {facts.map(([field, f]) => (
-          <div key={field} className="border-b border-dashed border-neutral-100 py-1.5 text-xs">
-            <div className="mb-0.5 flex items-center justify-between">
-              <span className="text-neutral-600">{field}</span>
-              <span className="font-mono text-[10px] text-neutral-400">
-                v{f.version}
-                {f.conflict && <span className="ml-1 text-amber-600">⚠</span>}
-                {f.issues && f.issues.length > 0 && (
-                  <span className="ml-1 text-amber-600" title={f.issues.join("\n")}>◔{f.issues.length}</span>
-                )}
-              </span>
-            </div>
-            <div
-              className="text-neutral-800"
-              title={f.evidence?.[0]
-                ? `${f.evidence[0].evidence_id} ·「${f.evidence[0].verbatim_quote}」· available ${f.evidence[0].available_at} · PIT-${f.evidence[0].pit_grade}`
-                : "无证据"}
-            >
-              <FactValue value={f.value} compact />
-            </div>
-          </div>
-        ))}
-        {facts.length === 0 && <div className="text-xs text-neutral-400">（无事实）</div>}
-      </div>
-      <div className="rounded-lg border border-neutral-200 bg-white p-4">
-        <h3 className="mb-2 text-sm font-semibold">HTML 存档（{archives.length} 个版本）</h3>
-        {archives.slice(0, 5).map((a) => (
-          <div key={a.name} className="flex justify-between py-1 font-mono text-xs">
-            <span>{a.name} {a.is_latest && <span className="text-green-700">· latest</span>}</span>
-            <span className="text-neutral-400">{fmtDate(a.mtime)}</span>
-          </div>
-        ))}
-        {/* 存档是 KB 投影：latest.html 缺失时服务端读路径会自动补渲染（R4 惰性物化） */}
-        <iframe
-          title="存档预览"
-          src={api.archiveUrl(kind, id, "latest.html")}
-          className="mt-2 h-64 w-full rounded-md border border-neutral-200"
-        />
-        {latest === undefined && archives.length === 0 && (
-          <div className="mt-1 text-[11px] text-neutral-400">首次打开时自动生成存档投影</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------- 图表区（详情页）：字段时序走势 + 跨实体对比 ----------
-function FactCharts({ kind, id, facts }: { kind: string; id: string; facts: string[] }) {
-  const numericFields = facts.filter((f) => /revenue|income|margin|growth|size|rate|backlog|capacity/i.test(f));
-  const [field, setField] = useState<string>("");
-  const [series, setSeries] = useState<SeriesPoint[]>([]);
-  const [peers, setPeers] = useState<CompareItem[]>([]);
-
-  useEffect(() => {
-    setField(numericFields[0] ?? "");
-  }, [id, facts.length]);
-
-  useEffect(() => {
-    if (!field) return;
-    api.series(kind, id, [field]).then((r) => setSeries(r.fields[field] ?? [])).catch(() => setSeries([]));
-    if (kind === "stock") {
-      api.compare(field).then((r) => setPeers(r.items)).catch(() => setPeers([]));
-    } else {
-      setPeers([]);
-    }
-  }, [kind, id, field]);
-
-  if (numericFields.length === 0) return null;
-
-  const linePoints = series
-    .map((p) => ({ x: (p.event_time ?? p.knowledge_time).slice(0, 10), y: toNumber(p.value) }))
-    .filter((p): p is { x: string; y: number } => p.y !== null);
-  const bars = peers
-    .map((p) => ({ label: p.id, value: toNumber(p.value) ?? 0, warn: p.conflict }))
-    .filter((b) => b.value !== 0);
-
-  return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h3 className="text-sm font-semibold">图表</h3>
-        <select value={field} onChange={(e) => setField(e.target.value)}
-          className="rounded border border-neutral-200 px-1.5 py-0.5 font-mono text-xs">
-          {numericFields.map((f) => <option key={f} value={f}>{f}</option>)}
-        </select>
-      </div>
-      <div className="mb-1 text-[10px] text-neutral-400">时序（按 event_time / 版本演进）</div>
-      <LineChart points={linePoints} />
-      {kind === "stock" && bars.length > 0 && (
-        <>
-          <div className="mb-1 mt-3 text-[10px] text-neutral-400">同字段跨标的对比（最新版本，琥珀色 = 有冲突）</div>
-          <BarCompare items={bars} />
-        </>
-      )}
-    </div>
-  );
-}
-
-// ---------- 冲突裁决面板（详情页）：以此版本为准 + 版本链展开 ----------
-function ConflictResolver({ kind, id, field, factId, onResolved }: {
-  kind: string; id: string; field: string; factId: string; onResolved: () => void;
-}) {
-  const [busy, setBusy] = useState<string | null>(null);  // 正在裁决的 fact_id
-  const [versions, setVersions] = useState<SeriesPoint[] | null>(null);
+  const [rows, setRows] = useState<EntityRowV2[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [issueFilter, setIssueFilter] = useState<IssueFilter>("all");
+  const [view, setView] = useState<"table" | "cards">("table");
 
-  const resolve = async (keepFactId: string) => {
-    setBusy(keepFactId);
-    setError(null);
-    try {
-      await api.resolveConflict(kind, id, field, keepFactId, "详情页人工裁决");
-      onResolved();  // 重载投影：冲突标记清除、裁决值落地
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(null);
-    }
-  };
-  const toggleVersions = () => {
-    if (versions) { setVersions(null); return; }
-    api.series(kind, id, [field])
-      .then((r) => setVersions(r.fields[field] ?? []))
-      .catch(() => setVersions([]));
-  };
-
-  return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] text-amber-700">同一事件时点出现不同值，需人工裁决</span>
-        <button disabled={busy !== null} onClick={() => resolve(factId)}
-          className="rounded border border-amber-300 bg-white px-2 py-0.5 text-[11px] text-amber-800 hover:bg-amber-100 disabled:opacity-40">
-          {busy === factId ? "裁决中…" : "以此版本为准"}
-        </button>
-        <button onClick={toggleVersions} className="text-[11px] text-neutral-500 hover:underline">
-          {versions ? "收起版本链" : "查看版本链"}
-        </button>
-      </div>
-      {error && <div className="text-[11px] text-red-600">裁决失败：{error}</div>}
-      {versions && (
-        <div className="space-y-1 rounded border border-neutral-200 bg-white p-2">
-          {versions.map((v) => (
-            <div key={v.fact_id} className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-              <span className="text-neutral-400">v{v.version}</span>
-              <span className="max-w-48 truncate" title={JSON.stringify(v.value)}>
-                {JSON.stringify(v.value)}
-              </span>
-              <span className="text-neutral-400">event {v.event_time?.slice(0, 10) ?? "—"}</span>
-              <span className="text-neutral-400">known {v.knowledge_time.slice(0, 10)}</span>
-              {v.conflict && <span className="text-amber-600">⚠竞争</span>}
-              <button disabled={busy !== null} onClick={() => resolve(v.fact_id)}
-                className="ml-auto rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] hover:border-amber-400 disabled:opacity-40">
-                {busy === v.fact_id ? "…" : "以此版本为准"}
-              </button>
-            </div>
-          ))}
-          {versions.length === 0 && <div className="text-[11px] text-neutral-400">（版本链为空）</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------- 详情页 ----------
-function EntityDetail({ kind, id, onBack }: { kind: string; id: string; onBack: () => void }) {
-  const [profile, setProfile] = useState<EntityProfile | null>(null);
-  const [archives, setArchives] = useState<ArchiveRow[]>([]);
-  const [asOf, setAsOf] = useState("");
-  const [archiveView, setArchiveView] = useState("latest.html");
-
-  const load = (as_of?: string) => {
-    api.entityProfile(kind, id, as_of || undefined).then(setProfile).catch(() => setProfile(null));
-  };
   useEffect(() => {
-    load();
-    api.archives(kind, id).then(setArchives).catch(() => setArchives([]));
-  }, [kind, id]);
+    let cancelled = false;
+    setError(null);
+    dossierApi.entities()
+      .then((r) => { if (!cancelled) setRows(r); })
+      .catch((e) => {
+        if (cancelled) return;
+        setRows(null);
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => { cancelled = true; };
+  }, [tick]);
 
-  const facts = Object.entries(profile?.facts ?? {});
-  const thesis = profile?.facts?.thesis;
-  const quality = profile?.quality;
-  const conflictCount = quality?.fields.filter((f) => f.status === "conflict").length ?? 0;
+  const filtered = useMemo(() => {
+    if (!rows) return [];
+    return rows.filter((r) => {
+      if (kindFilter !== "all" && r.kind !== kindFilter) return false;
+      if (issueFilter === "conflict" && r.conflict_count === 0) return false;
+      if (issueFilter === "stale" && r.stale_count === 0) return false;
+      if (issueFilter === "researched" && r.research_coverage.required === 0) return false;
+      if (issueFilter === "draft" && r.quality_status !== "draft") return false;
+      return true;
+    });
+  }, [rows, kindFilter, issueFilter]);
+
+  const openDossier = (r: EntityRowV2) =>
+    navigate({ page: "knowledge", kind: r.kind as "stock" | "industry", id: r.id, params: {} });
+
   return (
     <div>
-      <button onClick={onBack} className="mb-3 rounded border border-neutral-200 px-2.5 py-1 text-xs hover:bg-neutral-50">
-        ← 返回全部档案
-      </button>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h2 className="font-mono text-lg font-bold">{kind}:{id}</h2>
-        <QualityPill status={quality?.status} conflicts={conflictCount} />
-        {quality && (
-          <span className="text-xs text-neutral-500">质量分 {(quality.quality_score * 100).toFixed(0)}%</span>
-        )}
-        <span className="text-xs text-neutral-500">
-          as_of <input type="date" value={asOf} onChange={(e) => { setAsOf(e.target.value); load(e.target.value ? `${e.target.value}T23:59:59Z` : undefined); }}
-            className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs" /> 时光机
-        </span>
-        {profile && <span className="font-mono text-[11px] text-neutral-400">投影时刻 {profile.as_of.slice(0, 19)}Z</span>}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold text-neutral-500">研究档案</h2>
+        <div className="flex gap-1">
+          {([["all", "全部"], ["stock", "股票"], ["industry", "行业"]] as [KindFilter, string][]).map(([k, label]) => (
+            <button key={k} onClick={() => setKindFilter(k)}
+                    className={`rounded px-2 py-0.5 text-xs ${kindFilter === k ? "bg-neutral-900 text-white" : "border border-neutral-200 text-neutral-600"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <select value={issueFilter} onChange={(e) => setIssueFilter(e.target.value as IssueFilter)}
+                className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs text-neutral-600">
+          <option value="all">全部状态</option>
+          <option value="conflict">有冲突</option>
+          <option value="stale">待更新</option>
+          <option value="researched">已研究（有问题计划）</option>
+          <option value="draft">待验收</option>
+        </select>
+        <div className="ml-auto flex gap-1">
+          {(["table", "cards"] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)}
+                    className={`rounded px-2 py-0.5 text-xs ${view === v ? "bg-neutral-100 font-semibold text-neutral-800" : "text-neutral-400"}`}>
+              {v === "table" ? "紧凑表格" : "阅读列表"}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {quality && quality.issues.length > 0 && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          <span className="font-semibold">验收待办：</span>{quality.issues.join("；")}
+      {error && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <span className="font-semibold">档案列表读取失败：</span>{error}
+          <button onClick={() => setTick((t) => t + 1)}
+                  className="ml-3 rounded border border-red-300 bg-white px-2 py-0.5 hover:bg-red-100">
+            重试
+          </button>
+          <span className="ml-2 text-red-400">（不伪装成「暂无档案」）</span>
         </div>
       )}
 
-      <div className="grid grid-cols-2 items-start gap-4">
-        <div className="space-y-4">
-          {thesis && (
-            <div className="rounded-lg border border-neutral-200 bg-white p-4">
-              <h3 className="mb-1 text-sm font-semibold">投资论点（thesis v{thesis.version}）</h3>
-              <div className="text-sm leading-relaxed text-neutral-700">
-                <FactValue value={thesis.value} />
-              </div>
-            </div>
-          )}
-          <div className="rounded-lg border border-neutral-200 bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold">核心事实（hover 字段名看证据原文）</h3>
-            {facts.filter(([f]) => f !== "thesis").map(([field, f]) => (
-              <Fragment key={field}>
-                <div className="border-b border-neutral-100 py-2.5">
-                  <div className="mb-1 flex flex-wrap items-baseline gap-2">
-                    <span
-                      className="cursor-help border-b border-dotted border-neutral-400 font-mono text-xs font-semibold"
-                      title={f.evidence?.map((ev) =>
-                        `${ev.evidence_id} · ${ev.source_id}\n「${ev.verbatim_quote}」\navailable ${ev.available_at} · PIT-${ev.pit_grade}`
-                      ).join("\n\n") || "无证据"}
-                    >
-                      {field}
-                    </span>
-                    <span className="font-mono text-[10px] text-neutral-400">
-                      v{f.version} · event {f.event_time?.slice(0, 10) ?? "—"} · 可知 {f.knowledge_time.slice(0, 10)}
-                    </span>
-                    {f.conflict && <span className="text-[11px] text-amber-600">⚠冲突</span>}
-                    {f.issues?.map((issue) => (
-                      <span key={issue} className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{issue}</span>
-                    ))}
-                  </div>
-                  <div className="text-xs leading-relaxed text-neutral-800">
-                    <FactValue value={f.value} />
-                  </div>
-                  {f.conflict && (
-                    <div className="mt-2 rounded bg-amber-50/40 px-3 py-2">
-                      <ConflictResolver kind={kind} id={id} field={field} factId={f.fact_id}
-                        onResolved={() => load(asOf ? `${asOf}T23:59:59Z` : undefined)} />
-                    </div>
-                  )}
-                </div>
-              </Fragment>
-            ))}
-            {facts.filter(([f]) => f !== "thesis").length === 0 && (
-              <div className="py-4 text-center text-xs text-neutral-400">（无事实）</div>
-            )}
-          </div>
-        </div>
+      {!rows && !error && (
+        <div className="py-12 text-center text-sm text-neutral-400">档案库加载中…</div>
+      )}
 
-        <FactCharts kind={kind} id={id} facts={Object.keys(profile?.facts ?? {})} />
-        <div className="rounded-lg border border-neutral-200 bg-white p-4">
-          <h3 className="mb-2 text-sm font-semibold">HTML 存档</h3>
-          <div className="mb-2 flex flex-wrap gap-1">
-            <button onClick={() => setArchiveView("latest.html")}
-              className={`rounded border px-2 py-0.5 font-mono text-[11px] ${archiveView === "latest.html" ? "border-neutral-800 bg-neutral-900 text-white" : "border-neutral-200"}`}>
-              latest
-            </button>
-            {archives.map((a) => (
-              <button key={a.name} onClick={() => setArchiveView(a.name)}
-                className={`rounded border px-2 py-0.5 font-mono text-[11px] ${archiveView === a.name ? "border-neutral-800 bg-neutral-900 text-white" : "border-neutral-200"}`}>
-                {a.name.replace(".html", "")}
-              </button>
-            ))}
-          </div>
-          {/* latest.html 缺失时服务端读路径自动补渲染（R4 惰性物化），不会再 404 */}
-          <iframe
-            key={archiveView}
-            title="档案存档"
-            src={api.archiveUrl(kind, id, archiveView)}
-            className="h-[480px] w-full rounded-md border border-neutral-200"
-          />
-          <a href={api.archiveUrl(kind, id, archiveView)} target="_blank" rel="noreferrer"
-            className="mt-1 inline-block text-xs text-blue-700 hover:underline">
-            新页打开 ↗
-          </a>
+      {rows && rows.length === 0 && !error && (
+        <div className="rounded-lg border border-dashed border-neutral-300 py-12 text-center text-sm text-neutral-400">
+          暂无档案——在对话里说「研究一下 BE」或用 /research 开始
         </div>
-      </div>
+      )}
+
+      {filtered.length > 0 && view === "table" && (
+        <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[11px] text-neutral-500">
+                  <th className="px-3 py-2">公司/行业</th>
+                  <th className="px-3 py-2">研究摘要</th>
+                  <th className="px-3 py-2">研究覆盖</th>
+                  <th className="px-3 py-2">数据状态</th>
+                  <th className="px-3 py-2">字段完整度</th>
+                  <th className="px-3 py-2">最近可知</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r) => (
+                  <tr key={`${r.kind}:${r.id}`} onClick={() => openDossier(r)}
+                      className="cursor-pointer border-b border-neutral-100 hover:bg-neutral-50">
+                    <td className="px-3 py-2">
+                      <div className="font-mono text-xs font-semibold text-neutral-800">{r.id}</div>
+                      <div className="text-[10px] text-neutral-400">
+                        {r.kind === "stock" ? "股票" : "行业"}
+                        {r.recipe_id ? ` · ${r.recipe_id}` : ""}
+                      </div>
+                    </td>
+                    <td className="max-w-xs px-3 py-2">
+                      <div className="truncate text-xs text-neutral-700" title={r.latest_artifact_title ?? ""}>
+                        {r.latest_artifact_title ?? <span className="text-neutral-400">（尚无研究产物）</span>}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <VerdictPill verdict={r.research_coverage.verdict} />
+                        <span className="font-mono text-[10px] text-neutral-400">
+                          观测 {r.observation_count}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {r.research_coverage.required > 0
+                        ? `${r.research_coverage.answered}/${r.research_coverage.required}`
+                        : "—"}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        {r.conflict_count > 0 && (
+                          <button onClick={(e) => { e.stopPropagation(); setIssueFilter("conflict"); }}
+                                  className="rounded-full border border-red-300 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700"
+                                  title="点击过滤有冲突的档案">
+                            ⚠ {r.conflict_count} 冲突
+                          </button>
+                        )}
+                        {r.stale_count > 0 && (
+                          <button onClick={(e) => { e.stopPropagation(); setIssueFilter("stale"); }}
+                                  className="rounded-full border border-orange-300 bg-orange-50 px-1.5 py-0.5 text-[10px] text-orange-700">
+                            陈旧 {r.stale_count}
+                          </button>
+                        )}
+                        {r.quality_status === "verified" ? (
+                          <span className="rounded-full border border-green-300 bg-green-50 px-1.5 py-0.5 text-[10px] text-green-700">✓ 基础校验</span>
+                        ) : (
+                          <span className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
+                                title={r.quality_issues.join("\n")}>◔ 待验收</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="mr-1 inline-block h-1.5 w-14 overflow-hidden rounded bg-neutral-100 align-middle">
+                        <span className={`block h-full ${r.quality_status === "verified" ? "bg-green-600" : "bg-amber-500"}`}
+                              style={{ width: `${(r.completeness * 100).toFixed(0)}%` }} />
+                      </span>
+                      <span className="text-xs text-neutral-500">{(r.completeness * 100).toFixed(0)}%</span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs text-neutral-500">{fmtDate(r.last_knowledge_time)}</td>
+                    <td className="px-3 py-2">
+                      <button onClick={(e) => { e.stopPropagation(); openDossier(r); }}
+                              className="rounded border border-neutral-200 px-2 py-0.5 text-xs hover:border-neutral-400">
+                        阅读 →
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {filtered.length > 0 && view === "cards" && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {filtered.map((r) => (
+            <button key={`${r.kind}:${r.id}`} onClick={() => openDossier(r)}
+                    className="rounded-lg border border-neutral-200 bg-white p-4 text-left hover:border-neutral-400">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="font-mono text-sm font-bold text-neutral-900">{r.id}</span>
+                <span className="text-[10px] text-neutral-400">{r.kind === "stock" ? "股票" : "行业"}{r.recipe_id ? ` · ${r.recipe_id}` : ""}</span>
+                <span className="ml-auto"><VerdictPill verdict={r.research_coverage.verdict} /></span>
+              </div>
+              <div className="mb-2 line-clamp-2 text-xs text-neutral-600">
+                {r.latest_artifact_title ?? "尚无研究产物——发起研究后这里显示一句话结论"}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
+                <span>问题覆盖 {r.research_coverage.answered}/{r.research_coverage.required || "—"}</span>
+                <span>观测 {r.observation_count}</span>
+                {r.conflict_count > 0 && <span className="text-red-600">⚠ {r.conflict_count} 冲突</span>}
+                {r.stale_count > 0 && <span className="text-orange-600">陈旧 {r.stale_count}</span>}
+                <span className="ml-auto font-mono">{fmtDate(r.last_knowledge_time)}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {rows && filtered.length === 0 && rows.length > 0 && (
+        <div className="rounded-lg border border-dashed border-neutral-300 py-8 text-center text-xs text-neutral-400">
+          当前过滤条件下无档案
+          <button onClick={() => { setKindFilter("all"); setIssueFilter("all"); }}
+                  className="ml-2 text-blue-700 hover:underline">清除过滤</button>
+        </div>
+      )}
     </div>
   );
 }

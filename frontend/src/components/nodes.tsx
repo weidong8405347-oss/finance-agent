@@ -152,6 +152,24 @@ function ReportFoldCard({ card }: { card: import("../lib/assemble").ReportCard }
             {card.verdict === "clean" ? "干净（无穿越）" : "已污染"}
           </span>
         )}
+        {/* 真实产物状态（§4.6：运行完成 ≠ 可用研报；产物状态与充分度分轴展示） */}
+        {card.artifactStatus && (
+          <span className={`ml-2 rounded-full border px-1.5 py-0.5 text-[10px] ${
+            card.artifactStatus === "validated" ? "border-green-300 bg-green-50 text-green-700"
+            : "border-amber-300 bg-amber-50 text-amber-700"
+          }`}>
+            {card.artifactStatus === "validated" ? "通过基础校验" : card.artifactStatus}
+          </span>
+        )}
+        {card.artifactSufficiency && (
+          <span className={`ml-1 rounded-full border px-1.5 py-0.5 text-[10px] ${
+            card.artifactSufficiency === "sufficient" ? "border-green-300 text-green-700"
+            : card.artifactSufficiency === "blocked" ? "border-red-300 text-red-700"
+            : "border-amber-300 text-amber-700"
+          }`}>
+            充分度 {card.artifactSufficiency}
+          </span>
+        )}
         <span className="ml-2 flex gap-1">
           {card.flags.map((f) => (
             <span key={f} className="rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-mono text-[10px] text-amber-700">{f}</span>
@@ -159,6 +177,31 @@ function ReportFoldCard({ card }: { card: import("../lib/assemble").ReportCard }
         </span>
       </button>
       <div className="px-3 pb-2 text-xs text-neutral-600">{card.summary}</div>
+      {(card.researchArtifactId || card.entity) && (
+        <div className="flex flex-wrap gap-2 px-3 pb-2 text-[11px]">
+          {card.researchArtifactId && (
+            <button
+              onClick={() => { window.location.hash = `#/research/${encodeURIComponent(card.researchArtifactId!)}`; }}
+              className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-blue-700 hover:border-blue-400"
+            >
+              打开冻结研报 →
+            </button>
+          )}
+          {card.entity && card.entity.includes(":") && (
+            <button
+              onClick={() => {
+                const [kind, id] = card.entity!.split(":");
+                window.location.hash = `#/knowledge/${kind}/${encodeURIComponent(id)}${
+                  card.dossierSnapshotId ? `?snapshot=${encodeURIComponent(card.dossierSnapshotId)}` : ""
+                }`;
+              }}
+              className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-neutral-700 hover:border-neutral-400"
+            >
+              查看档案{card.dossierSnapshotId ? "（本轮快照）" : ""} →
+            </button>
+          )}
+        </div>
+      )}
       {isEval && card.stats && Object.keys(card.stats).length > 0 && (
         <div className="grid grid-cols-3 gap-2 px-3 pb-2">
           {Object.entries(card.stats).map(([k, v]) => (

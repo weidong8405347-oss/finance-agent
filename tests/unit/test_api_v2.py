@@ -303,6 +303,102 @@ class TestResearchRequestEndpoint:
         assert len(runs) == 1
 
 
+class TestScenarioEndpoints:
+    """情景保存（§8.5）：滑动不写事实；只有显式保存才建模型 artifact；
+    assumption_hash 不匹配 → 409（假设已变需重算）；失败计算不可保存。"""
+
+    def _preview(self, client, env):
+        return client.post("/api/v2/valuations/preview", json={
+            "entity_kind": "stock", "entity_id": "BE", "formula_id": "reverse_dcf",
+            "inputs": [{"kind": "observation", "label": "revenue_0", "ref_id": env["obs_id"]}],
+            "assumptions": {"wacc": "0.10", "terminal_g": "0.025", "tax_rate": "0.21",
+                            "years": "10", "target_ev": "4000000000", "ebit_margin": "0.05",
+                            "da_ratio": "0.02", "capex_ratio": "0.03", "nwc_ratio": "0.04"},
+        }).json()
+
+    def test_scenario_save_and_restore(self, tmp_path):
+        client, env = seeded_app(tmp_path)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        prev = self._preview(client, env)
+        assert prev["status"] == "ok"
+        r = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid,
+            "assumption_hash": prev["input_hash"],
+            "validated_calculation_id": prev["calculation_id"],
+            "name": "隐含增长情景",
+            "idempotency_key": "scen-1",
+        })
+        assert r.status_code == 200
+        out = r.json()
+        assert out["artifact_id"].startswith("artifact-")
+        assert "不创建事实" in out["note"] or "DecisionCard" in out["note"]
+        # 幂等：同 key 重复保存返回同一 artifact
+        r2 = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid, "assumption_hash": prev["input_hash"],
+            "validated_calculation_id": prev["calculation_id"], "idempotency_key": "scen-1",
+        })
+        assert r2.json()["artifact_id"] == out["artifact_id"]
+        # 恢复：假设/计算/基线可回读
+        got = client.get(f"/api/v2/valuations/scenarios/{out['artifact_id']}")
+        assert got.status_code == 200
+        assert got.json()["snapshot_refs"] == [sid]
+        # 保存情景不写事实（KB 无新增字段）
+        facts = env["kb"].view("stock", "BE", datetime.now(UTC))
+        assert "implied_growth" not in facts
+
+    def test_assumption_hash_mismatch_409(self, tmp_path):
+        client, env = seeded_app(tmp_path)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        prev = self._preview(client, env)
+        r = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid,
+            "assumption_hash": "ih-stale0000000000",  # 假设已变（或慢响应覆盖新值）
+            "validated_calculation_id": prev["calculation_id"],
+        })
+        assert r.status_code == 409
+        assert r.json()["detail"]["expected"] == prev["input_hash"]
+
+    def test_failed_calculation_cannot_be_saved(self, tmp_path):
+        client, env = seeded_app(tmp_path)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        bad = client.post("/api/v2/valuations/preview", json={
+            "entity_kind": "stock", "entity_id": "BE", "formula_id": "reverse_dcf",
+            "inputs": [{"kind": "assumption", "label": "revenue_0", "value": "1000"}],
+            "assumptions": {"wacc": "0.02", "terminal_g": "0.05", "tax_rate": "0.2",
+                            "years": "10", "target_ev": "3000", "ebit_margin": "0.1",
+                            "da_ratio": "0.02", "capex_ratio": "0.03", "nwc_ratio": "0.04"},
+        }).json()
+        assert bad["status"] == "failed"
+        r = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid, "assumption_hash": bad["input_hash"],
+            "validated_calculation_id": bad["calculation_id"],
+        })
+        assert r.status_code == 422
+
+    def test_export_with_scenario_requires_matching_baseline(self, tmp_path):
+        client, env = seeded_app(tmp_path)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        prev = self._preview(client, env)
+        scen = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid, "assumption_hash": prev["input_hash"],
+            "validated_calculation_id": prev["calculation_id"],
+        }).json()
+        # 匹配基线 → 导出附加情景说明（注明与发布版差异）
+        r = client.post(f"/api/v2/dossiers/{sid}/exports",
+                        json={"format": "markdown",
+                              "saved_scenario_artifact_id": scen["artifact_id"]})
+        assert r.status_code == 200
+        content = client.get(f"/api/v2/jobs/{r.json()['job_id']}/artifact").text
+        assert "附加用户情景（非发布版）" in content
+        # 历史快照导出默认不附加今天新生成的情景：基线不匹配 → 409
+        hist = client.get("/api/v2/knowledge/stock/BE/dossier",
+                          params={"as_of": "2024-01-01T00:00:00+00:00", "mode": "historical"}).json()
+        r2 = client.post(f"/api/v2/dossiers/{hist['context']['snapshot_id']}/exports",
+                         json={"format": "markdown",
+                               "saved_scenario_artifact_id": scen["artifact_id"]})
+        assert r2.status_code == 409
+
+
 class TestEntitiesEndpoint:
     def test_v2_entities_merge_research_state(self, tmp_path):
         client, env = seeded_app(tmp_path)

@@ -1,51 +1,73 @@
-import { useEffect, useState } from "react";
-import SessionsPage from "./pages/SessionsPage";
+// 应用外壳：hash 路由驱动（app/route.ts）——实体、章节、时间、快照、报告级深链
+// 可刷新恢复、前进后退；兼容旧 `#knowledge`/`#sessions` 入口与 "nav" 自定义事件。
+
+import { lazy, Suspense, useEffect, useState } from "react";
+
+import { currentRoute, navigate, subscribeRoute, type Route, type TopPage } from "./app/route";
 import KnowledgePage from "./pages/KnowledgePage";
+import SessionsPage from "./pages/SessionsPage";
+import CapabilitiesPage from "./pages/CapabilitiesPage";
 import DecisionsPage from "./pages/DecisionsPage";
 import EvaluationsPage from "./pages/EvaluationsPage";
-import CapabilitiesPage from "./pages/CapabilitiesPage";
 import ProvidersPage from "./pages/ProvidersPage";
-// ApprovalsBanner 已删：审批内联在对话流（approval/asked 事件 + SSE 驱动），无轮询
 
-type Page = "sessions" | "knowledge" | "decisions" | "evaluations" | "capabilities" | "providers";
+// 重页面懒加载（§13.3：首屏可读 <2s，图表不阻塞列表与对话）
+const StockDossierPage = lazy(() => import("./pages/StockDossierPage"));
+const ResearchReportPage = lazy(() => import("./pages/ResearchReportPage"));
+const ComparePage = lazy(() => import("./pages/ComparePage"));
 
-const NAV: { key: Page; label: string }[] = [
-  { key: "sessions", label: "对话" },
-  { key: "knowledge", label: "Knowledge" },
-  { key: "decisions", label: "Decisions" },
-  { key: "evaluations", label: "Evaluations" },
-  { key: "capabilities", label: "能力" },
-  { key: "providers", label: "模型" },
+const PageFallback = (
+  <div className="py-16 text-center text-sm text-neutral-400">页面加载中…</div>
+);
+
+const NAV: { key: string; label: string; route: Route }[] = [
+  { key: "sessions", label: "对话", route: { page: "sessions" } },
+  { key: "knowledge", label: "Knowledge", route: { page: "knowledge", params: {} } },
+  { key: "decisions", label: "Decisions", route: { page: "decisions" } },
+  { key: "evaluations", label: "Evaluations", route: { page: "evaluations" } },
+  { key: "capabilities", label: "能力", route: { page: "capabilities" } },
+  { key: "providers", label: "模型", route: { page: "providers" } },
 ];
 
+function activeNavKey(route: Route): string {
+  if (route.page === "knowledge" || route.page === "research" || route.page === "compare") {
+    return "knowledge";
+  }
+  if (route.page === "not_found") return "";
+  return route.page;
+}
+
 export default function App() {
-  // hash 深链：/#knowledge 直达页面，刷新/分享不丢上下文
-  const [page, setPageState] = useState<Page>(() => {
-    const h = window.location.hash.slice(1) as Page;
-    return NAV.some((n) => n.key === h) ? h : "sessions";
-  });
-  const setPage = (p: Page) => {
-    setPageState(p);
-    window.location.hash = p;
-  };
-  // ProfileCard 等组件经自定义事件请求跳页（对话流 → 档案钻取）
+  const [route, setRoute] = useState<Route>(() => currentRoute());
+
+  useEffect(() => subscribeRoute(setRoute), []);
+
+  // 旧组件（ProfileCard 等）经 "nav" 自定义事件请求跳页——映射到路由对象
   useEffect(() => {
-    const h = (e: Event) => setPage((e as CustomEvent).detail as Page);
+    const h = (e: Event) => {
+      const page = String((e as CustomEvent).detail ?? "sessions");
+      if (page === "knowledge") navigate({ page: "knowledge", params: {} });
+      else navigate({ page: page as TopPage });
+    };
     window.addEventListener("nav", h);
     return () => window.removeEventListener("nav", h);
   }, []);
+
+  const active = activeNavKey(route);
+  const isDossier = route.page === "knowledge" && route.kind && route.id;
+
   return (
     <div className="min-h-screen">
-      <header className="border-b border-neutral-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-2.5">
+      <header className="sticky top-0 z-30 border-b border-neutral-200 bg-white">
+        <div className="mx-auto flex max-w-[1560px] items-center gap-6 px-6 py-2.5">
           <span className="font-mono text-sm font-semibold tracking-tight">finance-agent</span>
           <nav className="flex gap-1">
             {NAV.map((n) => (
               <button
                 key={n.key}
-                onClick={() => setPage(n.key)}
+                onClick={() => navigate(n.route)}
                 className={`rounded px-3 py-1.5 text-sm ${
-                  page === n.key
+                  active === n.key
                     ? "bg-neutral-900 text-white"
                     : "text-neutral-600 hover:bg-neutral-100"
                 }`}
@@ -56,15 +78,43 @@ export default function App() {
           </nav>
         </div>
       </header>
-      {page === "sessions" ? (
+      {route.page === "sessions" ? (
         <SessionsPage />
+      ) : isDossier ? (
+        // 档案页自管宽度（正文列 720-840 / 桌面最大 1440-1560，§4.5 规则 7）
+        <main className="mx-auto max-w-[1560px] px-4 py-5 md:px-6">
+          <Suspense fallback={PageFallback}>
+            <StockDossierPage kind={route.kind!} id={route.id!} params={route.params} />
+          </Suspense>
+        </main>
+      ) : route.page === "research" ? (
+        <main className="mx-auto max-w-6xl px-4 py-6 md:px-6">
+          <Suspense fallback={PageFallback}>
+            <ResearchReportPage artifactId={route.artifactId} />
+          </Suspense>
+        </main>
       ) : (
-        <main className="mx-auto max-w-6xl px-6 py-6">
-          {page === "knowledge" && <KnowledgePage />}
-          {page === "decisions" && <DecisionsPage />}
-          {page === "evaluations" && <EvaluationsPage />}
-          {page === "capabilities" && <CapabilitiesPage />}
-          {page === "providers" && <ProvidersPage />}
+        <main className="mx-auto max-w-[1560px] px-4 py-6 md:px-6">
+          {route.page === "knowledge" && <KnowledgePage />}
+          {route.page === "compare" && (
+            <Suspense fallback={PageFallback}>
+              <ComparePage params={route.params} />
+            </Suspense>
+          )}
+          {route.page === "decisions" && <DecisionsPage />}
+          {route.page === "evaluations" && <EvaluationsPage />}
+          {route.page === "capabilities" && <CapabilitiesPage />}
+          {route.page === "providers" && <ProvidersPage />}
+          {route.page === "not_found" && (
+            <div className="mx-auto max-w-md rounded-lg border border-neutral-200 bg-white p-6 text-center">
+              <div className="mb-2 text-sm font-semibold text-neutral-700">未知路由</div>
+              <div className="mb-4 font-mono text-xs text-neutral-400">#{route.raw}</div>
+              <button onClick={() => navigate({ page: "sessions" })}
+                      className="rounded bg-neutral-900 px-3 py-1.5 text-xs text-white">
+                回到对话
+              </button>
+            </div>
+          )}
         </main>
       )}
     </div>
