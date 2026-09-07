@@ -1,0 +1,242 @@
+{
+  "schema_version": "1.0",
+  "entity": {
+    "kind": "industry",
+    "id": "ai-for-science",
+    "name": "ai-for-science"
+  },
+  "context": {
+    "mode": "live",
+    "namespace": "prod",
+    "as_of": "2026-09-07T16:25:00.221374Z",
+    "snapshot_id": "dossier-ai-for-science-d92af47ba24f",
+    "kb_snapshot_id": "sha256:a3adf0d3702b1d52f205252858deeeeea86fe79dd3a6aaea5d40d8bb7de9ac91",
+    "generated_at": "2026-09-07T16:25:00.225832Z",
+    "projector_version": "1",
+    "recipe_id": "industry",
+    "recipe_version": "1"
+  },
+  "recipe": {
+    "id": "industry",
+    "version": "1"
+  },
+  "summary": {
+    "thesis": null,
+    "thesis_refs": [],
+    "thesis_kind": "none",
+    "key_changes": [],
+    "drivers": [],
+    "counter_evidence": null,
+    "counter_refs": [],
+    "key_metrics": [
+      {
+        "metric_key": "market_size",
+        "label": "市场规模",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "growth_rate",
+        "label": "增速",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "capacity_supply",
+        "label": "供给/产能",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      }
+    ],
+    "updated_at": null
+  },
+  "modules": {
+    "investment_snapshot": {
+      "status": "missing",
+      "title": "研究结论",
+      "reasons": [
+        "无已验证 claim——先补研"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "business_engine": {
+      "status": "conflicted",
+      "title": "商业引擎",
+      "reasons": [
+        "仅旧字段文本（needs_normalization，不猜数绘图）",
+        "存在开放冲突（同语义键竞争值未裁决）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-1ee43f703eb8",
+      "last_knowledge_time": "2026-09-06T14:29:57.672447Z"
+    },
+    "revenue_segments": {
+      "status": "missing",
+      "title": "收入与分部",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "key_kpi": {
+      "status": "partial",
+      "title": "关键 KPI",
+      "reasons": [
+        "仅旧字段文本（needs_normalization，不猜数绘图）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-756aa1528ca8",
+      "last_knowledge_time": "2026-06-23T16:19:43Z"
+    },
+    "financial_quality": {
+      "status": "missing",
+      "title": "财务质量",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "expectations": {
+      "status": "missing",
+      "title": "预期差",
+      "reasons": [
+        "无指引/一致预期观测（数据能力缺口，不以空图宣称完成）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "valuation_lab": {
+      "status": "missing",
+      "title": "估值实验",
+      "reasons": [
+        "无估值输入（市场数据/财务观测）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "peers": {
+      "status": "partial",
+      "title": "同业与竞争",
+      "reasons": [
+        "仅旧字段文本（needs_normalization，不猜数绘图）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-6267ae00258d",
+      "last_knowledge_time": "2026-09-02T01:51:18.478225Z"
+    },
+    "catalysts_risks": {
+      "status": "partial",
+      "title": "催化与风险",
+      "reasons": [
+        "仅旧字段文本（needs_normalization，不猜数绘图）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-d78b99a95f57",
+      "last_knowledge_time": "2026-07-01T00:00:00Z"
+    },
+    "research_sources": {
+      "status": "missing",
+      "title": "研究与来源",
+      "reasons": [
+        "尚无冻结研究产物（旧档案内容在数据与审计区）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-03dac2c77e1c",
+      "last_knowledge_time": null
+    }
+  },
+  "research": {
+    "answered": 0,
+    "required": 0,
+    "verdict": null,
+    "artifact_refs": [],
+    "plan_id": null,
+    "assessment_id": null
+  },
+  "document_refs": [],
+  "evidence_refs": [
+    "ev-0a27bbb6442b",
+    "ev-175cde3c2f21",
+    "ev-1df3a21d4ae3",
+    "ev-330feaef5a57",
+    "ev-4b0399f58a61",
+    "ev-8f4ceabf5864",
+    "ev-8f4f037a72b9",
+    "ev-93517ae1cf25",
+    "ev-985fbd0f5e41",
+    "ev-9906c4d7165a",
+    "ev-99fdcf259132",
+    "ev-absci-ai",
+    "ev-b5cb54864f83",
+    "ev-biomap-ipo",
+    "ev-biomap-model",
+    "ev-c1fb18b895ad",
+    "ev-c34abb6f80f1",
+    "ev-chengdu-cadd",
+    "ev-dp-ai4s-leader",
+    "ev-dp-cround",
+    "ev-e811a6797a74",
+    "ev-f571a7c6d833",
+    "ev-f713a35823e8",
+    "ev-faa60f61e762",
+    "ev-fc7433ceb116",
+    "ev-fcd1c1e19211",
+    "ev-genb-ipo",
+    "ev-hongbo-cadd",
+    "ev-hygon-ai4s",
+    "ev-insilico-etnet",
+    "ev-insilico-ipo",
+    "ev-inspur-ai4s",
+    "ev-isomorphic-ai",
+    "ev-isomorphic-subsidiary",
+    "ev-metis-ai4s",
+    "ev-metis-ipo",
+    "ev-paratera-ai4s",
+    "ev-rlay-ai",
+    "ev-ruizhi-ai",
+    "ev-rxrx-ai",
+    "ev-sdgr-company",
+    "ev-shujugang-ai4s",
+    "ev-sugon-ai4s",
+    "ev-suocheng-ai4s",
+    "ev-xiechuang-ai4s",
+    "ev-xtalpi-ai4s",
+    "ev-xtalpi-profit",
+    "ev-yaoshi-poliso",
+    "ev-yaoshi-zoestar",
+    "ev-yingweike-ai4s",
+    "ev-zhite-ai4s",
+    "ev-zhizhen-ai4s"
+  ],
+  "decision_refs": [],
+  "limitations": [
+    "本档案是投影：结论的可信度以各模块状态与来源抽屉为准"
+  ],
+  "data_hash": "sha256:d92af47ba24fad9f1a1e7330980dad7d"
+}

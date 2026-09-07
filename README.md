@@ -5,7 +5,8 @@
 ## 文档
 
 - [DESIGN.md](DESIGN.md) — 总体设计文档（架构、四大 step、评估反穿越设计、UI、实施计划），**先读这份**
-- [docs/knowledge-dossier-research-redesign.md](docs/knowledge-dossier-research-redesign.md) — Knowledge 可视化股票档案与 Research 深度升级方案（待实施：页面、数据契约、问题驱动研究、迁移与验收）
+- [docs/knowledge-dossier-research-redesign.md](docs/knowledge-dossier-research-redesign.md) — Knowledge 可视化股票档案与 Research 深度升级方案（页面、数据契约、问题驱动研究、迁移与验收）
+- [docs/knowledge-dossier-implementation-status.md](docs/knowledge-dossier-implementation-status.md) — 上述方案的**实施状态对照**（设计章节 → 代码落点，已完成/部分/未做如实标注）
 - [docs/best-practices-evaluation.md](docs/best-practices-evaluation.md) — 业界最佳实践调研（LLM 回测污染证据、PIT 数据实践、评估协议、记忆架构），DESIGN.md 第 4.3/6 章的依据
 - [docs/evaluation-design.md](docs/evaluation-design.md) — 评估体系对齐稿（过程评估/效果评估两部分隔离 + 插件化，含待确认决策点清单）
 - [docs/research-capability-upgrade.md](docs/research-capability-upgrade.md) — 调研能力提升设计（/industry 行业漏斗、维度并行 loop、三 flash 模型分级、四新数据源、stalled 升级阶梯）；P1/P2/P3 已落地
@@ -68,6 +69,21 @@ uv run ruff check src tests
 测试分层：unit（组件契约）→ integration（P0 全链路/冷启动 E2E）→ L1 失败可见性 → L2 CLI 真实子进程。
 
 ### 当前进度
+
+**Knowledge 档案升级已落地（M0/M1/M2 + M3/M4 部分，分支 feat/knowledge-dossier-research-upgrade）**
+
+| 层 | 内容 |
+| --- | --- |
+| typed 数据契约 | `knowledge/metrics.py` 判别联合观测（reported/calculated/guidance/consensus/model_estimate 各自强制来源义务）+ `normalization.py` 「保留原文+显式转换」可重算血缘 + `metric_store.py` 语义键版本链/时态化裁决 |
+| 问题驱动研究 | `research/plan.py` 冻结 ResearchPlan（四模式预算，`/research BE --depth=deep --focus=…`）；终止由问题覆盖+字段覆盖+预算共同决定（满档案遇新问题仍研究）；`assessment.py` 硬门禁代码运行（引用可解析/数字可重算/覆盖达标才 sufficient） |
+| 受控计算 | `research/calculations.py` 公式注册表（input_refs 可重算、Decimal、N/M 语义、Reverse DCF FCFF 反向求解+敏感性）；旧 calc 工具保留 |
+| 报告产物 | `research/artifacts.py` ReportDocument 固定 block + `{{metric:id}}` 插值 + 验证后冻结；report.md/档案概览/Sessions 摘要同源渲染 |
+| Dossier 读模型 | `dossier/` 投影器/服务/导出：冻结快照（data_hash 幂等发布）、十模块状态机（7 态降级不伪装 ready）、as_of 历史一致（不借未来裁决/资料）、JSON+MD 冻结导出 |
+| `/api/v2` | entities/dossier/modules/evidence/series/compare/artifacts/changes/补研（幂等）/估值预览+情景保存/导出 jobs；越快照引用拒绝、上下文不匹配 409 |
+| 前端 | hash 路由深链（实体/章节/时间/快照/证据）；KnowledgePage 研究档案列表；StockDossierPage 三层阅读（章节侧栏/时光机/来源抽屉/ECharts 按需十进制安全绘图+数据表回退）；ResearchReportPage；ComparePage；估值假设实验面板（debounce+assumption_hash，预览不写事实） |
+| 迁移 | `scripts/migrate_dossier.py`：inventory dry-run / shadow 对账（27/27 生产实体）/ apply-typed 保守映射（确定不了单位期间就标 needs_normalization，不批量猜） |
+
+验收：后端 454 passed（含 157 个新用例，覆盖 §13.1 九个测试组）+ 前端 37 passed；E2E：`/research --depth=targeted` → 计划→typed 产出→评估→validated 产物→快照发布→前后 diff 全链路集成测试。状态对照与已知边界：[实施状态文档](docs/knowledge-dossier-implementation-status.md)。
 
 **加固与联调已完成（P4 之后）**
 

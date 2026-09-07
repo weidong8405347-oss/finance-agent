@@ -1,0 +1,239 @@
+{
+  "schema_version": "1.0",
+  "entity": {
+    "kind": "stock",
+    "id": "688507.SH",
+    "name": "688507.SH"
+  },
+  "context": {
+    "mode": "live",
+    "namespace": "prod",
+    "as_of": "2026-09-07T16:25:00.348097Z",
+    "snapshot_id": "dossier-688507.sh-eb116d00fcbb",
+    "kb_snapshot_id": "sha256:db204c9cabf6d6f2570f09677c35e2ead8eaf2f558f5d1a029f5a8fd067f7005",
+    "generated_at": "2026-09-07T16:25:00.351177Z",
+    "projector_version": "1",
+    "recipe_id": "general",
+    "recipe_version": "1"
+  },
+  "recipe": {
+    "id": "general",
+    "version": "1"
+  },
+  "summary": {
+    "thesis": null,
+    "thesis_refs": [],
+    "thesis_kind": "none",
+    "key_changes": [],
+    "drivers": [],
+    "counter_evidence": null,
+    "counter_refs": [],
+    "key_metrics": [
+      {
+        "metric_key": "revenue",
+        "label": "收入",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "gross_margin",
+        "label": "毛利率",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "cfo",
+        "label": "经营现金流",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "capex",
+        "label": "资本开支",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "net_debt",
+        "label": "净债务",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      },
+      {
+        "metric_key": "share_dilution",
+        "label": "股本稀释",
+        "value": null,
+        "unit": "",
+        "currency": null,
+        "period_label": "",
+        "nature": "",
+        "observation_id": null,
+        "status": "missing",
+        "as_of_note": "无 typed 观测（旧文本字段不进指标栏，不猜数）"
+      }
+    ],
+    "updated_at": null
+  },
+  "modules": {
+    "investment_snapshot": {
+      "status": "missing",
+      "title": "研究结论",
+      "reasons": [
+        "无已验证 claim——先补研"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "business_engine": {
+      "status": "missing",
+      "title": "商业引擎",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "revenue_segments": {
+      "status": "missing",
+      "title": "收入与分部",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "key_kpi": {
+      "status": "missing",
+      "title": "关键 KPI",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "financial_quality": {
+      "status": "missing",
+      "title": "财务质量",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "expectations": {
+      "status": "missing",
+      "title": "预期差",
+      "reasons": [
+        "无指引/一致预期观测（数据能力缺口，不以空图宣称完成）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "valuation_lab": {
+      "status": "partial",
+      "title": "估值实验",
+      "reasons": [
+        "仅有旧估值字段（legacy）；typed 估值计算待补研"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-3ac8204aec64",
+      "last_knowledge_time": "2026-04-27T10:54:52Z"
+    },
+    "peers": {
+      "status": "missing",
+      "title": "同业与竞争",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "catalysts_risks": {
+      "status": "missing",
+      "title": "催化与风险",
+      "reasons": [
+        "as_of 时点无该模块数据"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-de2ccd33760b",
+      "last_knowledge_time": null
+    },
+    "research_sources": {
+      "status": "missing",
+      "title": "研究与来源",
+      "reasons": [
+        "尚无冻结研究产物（旧档案内容在数据与审计区）"
+      ],
+      "gap_refs": [],
+      "data_ref": "md-03dac2c77e1c",
+      "last_knowledge_time": null
+    }
+  },
+  "research": {
+    "answered": 0,
+    "required": 0,
+    "verdict": null,
+    "artifact_refs": [],
+    "plan_id": null,
+    "assessment_id": null
+  },
+  "document_refs": [],
+  "evidence_refs": [
+    "ev-000f74f1f5b5",
+    "ev-04fb99bd38a9",
+    "ev-211e9d96d47c",
+    "ev-39f58bd49cea",
+    "ev-41afb4508d72",
+    "ev-61a9f09ba5ac",
+    "ev-7c53b2f31984",
+    "ev-873a4392f57b",
+    "ev-94f7723216f8",
+    "ev-9b7d542d4dde",
+    "ev-c5d43465a076",
+    "ev-cb4281b099c4",
+    "ev-cb5eff6b7ca3",
+    "ev-f970f41f8c6d"
+  ],
+  "decision_refs": [],
+  "limitations": [
+    "本档案是投影：结论的可信度以各模块状态与来源抽屉为准"
+  ],
+  "data_hash": "sha256:eb116d00fcbb5e2faf438222c94a4765"
+}
