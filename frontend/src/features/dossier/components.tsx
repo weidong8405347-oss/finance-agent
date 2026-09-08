@@ -46,47 +46,94 @@ export function ModuleReasons({ reasons }: { reasons: string[] }) {
 // ---------------- 结论面板（首屏 10 秒层，§3.1/§4.3） ----------------
 
 const THESIS_KIND_META = {
-  claim: { label: "已验证论断", cls: "bg-green-50 text-green-700 border-green-200" },
+  claim: { label: "引用通过基础校验的论断", cls: "bg-green-50 text-green-700 border-green-200" },
   draft: { label: "研究草稿（未验证）", cls: "bg-amber-50 text-amber-700 border-amber-200" },
   legacy_analysis: { label: "旧论点（legacy 分析，非披露事实）", cls: "bg-neutral-100 text-neutral-600 border-neutral-200" },
   none: { label: "无研究结论", cls: "bg-neutral-50 text-neutral-400 border-neutral-200" },
 } as const;
 
+// 候选分层标签（audit §3.8）
+const TIER_LABELS: Record<string, string> = {
+  included: "入选", watchlist: "观察", excluded: "淘汰", needs_review: "待核实",
+};
+
+// 可信度分层标签（audit §3.8）：引用可解析 ≠ 事实已核对 ≠ 分析已复核
+const CREDIBILITY_LABELS: Record<string, string> = {
+  refs_resolvable: "引用可解析",
+  facts_checked: "事实已核对",
+  analysis_reviewed: "分析已复核",
+  sufficiency: "研究充分度",
+};
+
 export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
   const s = snap.summary;
   const kindMeta = THESIS_KIND_META[s.thesis_kind] ?? THESIS_KIND_META.none;
+  const tiers = Object.entries(s.tiers ?? {});
+  const credibility = Object.entries(s.credibility ?? {});
+  const limitations = s.limitations ?? [];
+  const [showAll, setShowAll] = useState(false);
+  // 问题进展总是显示（audit §3.8）：verdict=null 时连 0/9 也不得隐藏
+  const progress = s.question_progress
+    || (snap.research.required
+      ? `关键问题 ${snap.research.answered}/${snap.research.required} 已回答`
+      : "");
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-4">
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <span className="text-xs font-semibold text-neutral-500">研究结论</span>
         <span className={`rounded-full border px-2 py-0.5 text-[10px] ${kindMeta.cls}`}>{kindMeta.label}</span>
+        {progress && (
+          <span className="rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600">
+            {progress}
+          </span>
+        )}
         {snap.research.verdict && (
           <span className="rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-500">
-            研究充分度 {snap.research.verdict}（{snap.research.answered}/{snap.research.required} 问题）
+            研究充分度 {snap.research.verdict}
           </span>
         )}
       </div>
+      {s.objective && (
+        <div className="mb-1.5 text-[11px] text-neutral-500">
+          <span className="font-semibold">研究目标：</span>{s.objective}
+        </div>
+      )}
       <p className="text-[15px] leading-relaxed text-neutral-800">
         {s.thesis ?? "尚无研究结论——点击右上「补研」发起问题驱动研究。"}
       </p>
+      {tiers.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {tiers.map(([tier, names]) => (
+            <div key={tier} className="rounded border border-neutral-200 bg-neutral-50/60 px-2 py-1">
+              <span className="mr-1 text-[10px] font-semibold text-neutral-500">{TIER_LABELS[tier] ?? tier}</span>
+              <span className="text-xs text-neutral-700">{names.join("、")}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {s.biggest_disagreement && (
+        <div className="mt-2 rounded border border-amber-200 bg-amber-50/60 p-2 text-xs text-amber-900">
+          <span className="mr-1 font-semibold">最大分歧：</span>{s.biggest_disagreement}
+        </div>
+      )}
       <div className="mt-3 grid gap-3 md:grid-cols-3">
         <div>
-          <div className="mb-1 text-[11px] font-semibold text-neutral-500">最近变化</div>
+          <div className="mb-1 text-[11px] font-semibold text-neutral-500">本轮进展</div>
           {s.key_changes.length ? (
             <ol className="space-y-1 text-xs text-neutral-700">
               {s.key_changes.map((c, i) => (
-                <li key={i}><span className="mr-1 text-neutral-400">{["①", "②", "③", "④"][i] ?? `${i + 1}.`}</span>{c}</li>
+                <li key={i}><span className="mr-1 text-neutral-400">{["①", "②", "③", "④", "⑤"][i] ?? `${i + 1}.`}</span>{c}</li>
               ))}
             </ol>
-          ) : <div className="text-xs text-neutral-400">（本轮无记录变化）</div>}
+          ) : <div className="text-xs text-neutral-400">（本轮无可分辨进展）</div>}
         </div>
         <div>
-          <div className="mb-1 text-[11px] font-semibold text-neutral-500">关键驱动</div>
+          <div className="mb-1 text-[11px] font-semibold text-neutral-500">关键依据</div>
           {s.drivers.length ? (
             <ul className="space-y-1 text-xs text-neutral-700">
               {s.drivers.map((d, i) => <li key={i}>→ {d}</li>)}
             </ul>
-          ) : <div className="text-xs text-neutral-400">（待研究建立驱动链）</div>}
+          ) : <div className="text-xs text-neutral-400">（待研究建立依据链）</div>}
         </div>
         <div>
           <div className="mb-1 text-[11px] font-semibold text-neutral-500">最大反证</div>
@@ -95,6 +142,31 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
             : <div className="text-xs text-neutral-400">（反证义务：研究中必须主动寻找）</div>}
         </div>
       </div>
+      {credibility.length > 0 && (
+        <div className="mt-3 border-t border-neutral-100 pt-2">
+          <div className="mb-1 text-[11px] font-semibold text-neutral-500">可信度（分层，不笼统称「已验证」）</div>
+          <ul className="grid gap-1 text-[11px] text-neutral-600 md:grid-cols-2">
+            {credibility.map(([k, v]) => (
+              <li key={k}><span className="mr-1 text-neutral-400">{CREDIBILITY_LABELS[k] ?? k}：</span>{v}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {limitations.length > 0 && (
+        <div className="mt-2 border-t border-neutral-100 pt-2">
+          <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold text-neutral-500">
+            限制与未核验部分
+            {limitations.length > 3 && (
+              <button onClick={() => setShowAll((v) => !v)} className="font-normal text-blue-700 hover:underline">
+                {showAll ? "收起" : `展开全部 ${limitations.length} 条`}
+              </button>
+            )}
+          </div>
+          <ul className="space-y-0.5 text-[11px] text-neutral-600">
+            {(showAll ? limitations : limitations.slice(0, 3)).map((l, i) => <li key={i}>· {l}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

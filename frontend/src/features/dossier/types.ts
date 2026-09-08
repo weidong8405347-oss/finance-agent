@@ -59,6 +59,13 @@ export interface DossierSummary {
   counter_refs: string[];
   key_metrics: KeyMetric[];
   updated_at: string | null;
+  // audit §3.8：首屏必须回答目标，并诚实表达可信度与限制
+  objective?: string;
+  tiers?: Record<string, string[]>;
+  biggest_disagreement?: string;
+  limitations?: string[];
+  question_progress?: string;
+  credibility?: Record<string, string>;
 }
 
 export interface ResearchCoverage {
@@ -83,6 +90,10 @@ export interface DossierSnapshot {
   decision_refs: string[];
   limitations: string[];
   data_hash: string;
+  /** 结构化产物（audit §3.7）：来自冻结产物，不在请求时临时生成 */
+  structures?: Record<string, any>;
+  /** 模块注册表（audit §3.6）：导航顺序与 renderer 由此决定，前端不硬编码 */
+  module_registry?: ModuleRegistry;
 }
 
 // ---------------- 模块 payload ----------------
@@ -127,13 +138,101 @@ export interface BusinessGraphNode {
   label: string;
   kind: string;
   note: string;
+  layer?: string;
+  company_refs?: string[];
+  bottleneck?: boolean;
+  evidence_refs?: string[];
+}
+
+export interface BusinessGraphEdge {
+  source: string;
+  target: string;
+  label: string;
+  value_ref: string | null;
+  relation?: string;
+  flow_known?: boolean;
+  evidence_refs?: string[];
 }
 
 export interface BusinessGraph {
   nodes: BusinessGraphNode[];
-  edges: { source: string; target: string; label: string; value_ref: string | null }[];
+  edges: BusinessGraphEdge[];
   narrative: string;
   narrative_refs: string[];
+  layers?: string[];
+  routes?: Record<string, string>[];
+  bottlenecks?: string[];
+}
+
+// ---------------- 结构化产物（audit §3.7） ----------------
+
+export interface IndustryMapNode {
+  node_id: string;
+  label: string;
+  layer: string;
+  company_refs: string[];
+  bottleneck: boolean;
+  note: string;
+  evidence_refs: string[];
+}
+
+export interface IndustryMapEdge {
+  source: string;
+  target: string;
+  relation: string;
+  flow_known: boolean;
+  flow_value: string | null;
+  note: string;
+  evidence_refs: string[];
+}
+
+export interface CandidateItem {
+  entity_id: string;
+  name: string;
+  listing_status: "listed" | "private" | "subsidiary" | "unknown" | string;
+  market: string;
+  security_relation: string;
+  tier: "included" | "watchlist" | "excluded" | "needs_review" | string;
+  technology_stage: string;
+  commercial_stage: string;
+  moat_evidence: string[];
+  commercial_evidence: string[];
+  sustainability_evidence: string[];
+  counter_evidence: string[];
+  reason: string;
+  next_validation: string;
+  evidence_refs: string[];
+  investable: boolean | null;
+}
+
+export interface ValidationItem {
+  event: string;
+  window_start: string;
+  window_end: string;
+  status: "occurred" | "expected" | "unknown" | string;
+  trigger_condition: string;
+  affected_judgment: string;
+  company_refs: string[];
+  evidence_refs: string[];
+}
+
+export interface ModuleRegistryEntry {
+  module_id: string;
+  title: string;
+  renderer: string;
+  applicability: "always" | "stock_only" | "industry_only" | "data_dependent" | string;
+  default_nav: boolean;
+  metric_keys: string[];
+  legacy_fields: string[];
+  structures: string[];
+  payload_keys: string[];
+  notes: string;
+}
+
+export interface ModuleRegistry {
+  registry_version: string;
+  entity_kind: string;
+  modules: ModuleRegistryEntry[];
 }
 
 export interface ClaimItem {

@@ -10,8 +10,9 @@ import { MetricChart, NATURE_STYLE, SeriesTable, formatMetricValue } from "./cha
 import { ClaimCard } from "./components";
 import { ConflictResolver, FactValue } from "./legacy";
 import type {
-  BusinessGraph, ClaimItem, DossierSnapshot, EvidenceItem, LegacyFactItem,
-  MetricSeries, MetricSeriesSet, ModulePayload,
+  BusinessGraph, CandidateItem, ClaimItem, DossierSnapshot, EvidenceItem,
+  IndustryMapEdge, IndustryMapNode, LegacyFactItem, MetricSeries, MetricSeriesSet,
+  ModulePayload, ValidationItem,
 } from "./types";
 
 export interface ModuleProps {
@@ -638,16 +639,422 @@ function PeersModule({ snap, payload, onResolved }: ModuleProps) {
   );
 }
 
+// ---------------- 行业模块（audit §3.6/§3.7） ----------------
+
+const LAYER_LABELS: Record<string, string> = {
+  upstream: "上游", midstream: "中游", downstream: "下游",
+  platform: "平台", application: "应用", infrastructure: "基础设施",
+};
+
+const RELATION_LABELS: Record<string, string> = {
+  supplies: "供给", competes: "竞争", substitutes: "替代",
+  depends_on: "依赖", enables: "支撑",
+};
+
+function EvidenceChips({ refs, onEvidenceClick }: {
+  refs?: string[]; onEvidenceClick: (id: string) => void;
+}) {
+  const list = (refs ?? []).filter(Boolean);
+  if (!list.length) return null;
+  return (
+    <span className="flex flex-wrap gap-1 font-mono text-[10px]">
+      {list.map((r) => (
+        r.startsWith("ev-")
+          ? <button key={r} onClick={() => onEvidenceClick(r)}
+                    className="rounded border border-neutral-200 px-1 py-0.5 text-neutral-600 hover:border-neutral-400">{r}</button>
+          : <span key={r} className="rounded border border-neutral-100 px-1 py-0.5 text-neutral-400">{r}</span>
+      ))}
+    </span>
+  );
+}
+
+function IndustryChainModule({ payload, onEvidenceClick }: ModuleProps) {
+  const graph = (payload.payload.graph ?? EMPTY_GRAPH) as BusinessGraph;
+  const nodes = (payload.payload.nodes ?? graph.nodes ?? []) as IndustryMapNode[];
+  const edges = (payload.payload.edges ?? graph.edges ?? []) as IndustryMapEdge[];
+  const layers = (payload.payload.layers ?? graph.layers ?? []) as string[];
+  const routes = (payload.payload.routes ?? graph.routes ?? []) as Record<string, string>[];
+  const bottlenecks = (payload.payload.bottlenecks ?? graph.bottlenecks ?? []) as string[];
+  const notes = (payload.payload.notes ?? []) as string[];
+  const limitations = (payload.payload.limitations ?? []) as string[];
+  // 分层渲染：有 layers 按其顺序，否则按节点出现顺序（不猜层级）
+  const ordered = layers.length
+    ? layers
+    : Array.from(new Set(nodes.map((n) => n.layer).filter(Boolean)));
+  const byLayer = new Map<string, IndustryMapNode[]>();
+  for (const n of nodes) {
+    const key = n.layer || "other";
+    byLayer.set(key, [...(byLayer.get(key) ?? []), n]);
+  }
+  const label = (id: string) => nodes.find((n) => n.node_id === id)?.label ?? id;
+  return (
+    <div className="space-y-3">
+      {nodes.length > 0 ? (
+        <div className="rounded-lg border border-neutral-200 bg-white p-3">
+          <div className="mb-2 text-xs font-semibold text-neutral-500">
+            产业链分层图（节点带证据；无流量数据时边等宽，不编造 Sankey 宽度）
+          </div>
+          <div className="flex flex-col gap-2 md:flex-row md:items-stretch md:gap-3">
+            {(ordered.length ? ordered : Array.from(byLayer.keys())).map((layer) => (
+              <div key={layer} className="min-w-0 flex-1 rounded border border-neutral-100 bg-neutral-50/60 p-2">
+                <div className="mb-1.5 text-[11px] font-semibold text-neutral-500">
+                  {LAYER_LABELS[layer] ?? layer}
+                </div>
+                <div className="space-y-1.5">
+                  {(byLayer.get(layer) ?? []).map((n) => (
+                    <div key={n.node_id}
+                         className={`rounded border px-2 py-1.5 text-xs ${
+                           n.bottleneck ? "border-red-200 bg-red-50/60" : "border-neutral-200 bg-white"
+                         }`}>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium text-neutral-800">{n.label}</span>
+                        {n.bottleneck && (
+                          <span className="rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-700">瓶颈</span>
+                        )}
+                      </div>
+                      {n.note && <div className="mt-0.5 text-[11px] text-neutral-500">{n.note}</div>}
+                      {(n.company_refs ?? []).length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {n.company_refs.map((c) => (
+                            <span key={c} className="rounded border border-neutral-200 px-1 py-0.5 font-mono text-[10px] text-neutral-600">{c}</span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mt-1"><EvidenceChips refs={n.evidence_refs} onEvidenceClick={onEvidenceClick} /></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {edges.length > 0 && (
+            <ul className="mt-3 space-y-1 border-t border-neutral-100 pt-2 text-[11px] text-neutral-600">
+              {edges.map((e, i) => (
+                <li key={i} className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono">{label(e.source)} → {label(e.target)}</span>
+                  <span className="rounded bg-neutral-100 px-1 py-0.5 text-[10px] text-neutral-600">
+                    {RELATION_LABELS[e.relation] ?? e.relation}
+                  </span>
+                  {!e.flow_known && (
+                    <span className="text-[10px] text-neutral-400" title="流量/份额未知：等宽边，不估算">
+                      流量未知
+                    </span>
+                  )}
+                  {e.note && <span className="text-neutral-500">{e.note}</span>}
+                  <EvidenceChips refs={e.evidence_refs} onEvidenceClick={onEvidenceClick} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {bottlenecks.length > 0 && (
+            <div className="mt-2 text-[11px] text-red-700">瓶颈环节：{bottlenecks.map(label).join("、")}</div>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-neutral-300 bg-white p-4 text-xs text-neutral-500">
+          尚无结构化产业链图（nodes/edges）——不拿旧字段文本冒充关系图。
+        </div>
+      )}
+      {routes.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white p-3">
+          <div className="mb-1.5 text-xs font-semibold text-neutral-500">技术路线对比</div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-neutral-200 text-left text-[11px] text-neutral-500">
+                {Object.keys(routes[0]).map((k) => <th key={k} className="py-1 pr-3 font-medium">{k}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {routes.map((r, i) => (
+                <tr key={i} className="border-b border-neutral-100 last:border-0">
+                  {Object.keys(routes[0]).map((k) => (
+                    <td key={k} className="py-1.5 pr-3 align-top text-neutral-700">{r[k]}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {graph.narrative && (
+        <details className="rounded-lg border border-neutral-200 bg-neutral-50/50 p-3">
+          <summary className="cursor-pointer text-xs font-semibold text-neutral-500">
+            旧字段叙述（兼容区，不是关系图）
+          </summary>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-neutral-700">{graph.narrative}</p>
+          <div className="mt-2"><EvidenceChips refs={graph.narrative_refs} onEvidenceClick={onEvidenceClick} /></div>
+        </details>
+      )}
+      {limitations.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-amber-700">
+          {limitations.map((l, i) => <li key={i}>· {l}</li>)}
+        </ul>
+      )}
+      <Notes notes={notes} />
+    </div>
+  );
+}
+
+const TIER_LABELS: Record<string, string> = {
+  included: "入选", watchlist: "观察", excluded: "淘汰", needs_review: "待核实",
+};
+const TIER_CLS: Record<string, string> = {
+  included: "bg-green-50 text-green-700 border-green-200",
+  watchlist: "bg-blue-50 text-blue-700 border-blue-200",
+  excluded: "bg-neutral-100 text-neutral-500 border-neutral-200",
+  needs_review: "bg-amber-50 text-amber-700 border-amber-200",
+};
+
+function CandidatePoolModule({ payload, onEvidenceClick }: ModuleProps) {
+  const candidates = (payload.payload.candidates ?? []) as CandidateItem[];
+  const criteria = (payload.payload.criteria ?? []) as string[];
+  const objective = (payload.payload.objective ?? "") as string;
+  const stageDefs = (payload.payload.stage_definitions ?? {}) as Record<string, string>;
+  const comparison = (payload.payload.comparison ?? {}) as Record<string, any>;
+  const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
+  const limitations = (payload.payload.limitations ?? []) as string[];
+  const notes = (payload.payload.notes ?? []) as string[];
+  const [tier, setTier] = useState<string>("all");
+  const tiers = Array.from(new Set(candidates.map((c) => c.tier)));
+  const shown = tier === "all" ? candidates : candidates.filter((c) => c.tier === tier);
+  const rows = (comparison.rows ?? []) as Record<string, any>[];
+  const cols = (comparison.columns ?? []) as Record<string, string>[];
+  return (
+    <div className="space-y-3">
+      {(objective || criteria.length > 0) && (
+        <div className="rounded-lg border border-neutral-200 bg-white p-3 text-xs text-neutral-600">
+          {objective && <div className="mb-1"><span className="font-semibold text-neutral-500">目标：</span>{objective}</div>}
+          {criteria.length > 0 && (
+            <div><span className="font-semibold text-neutral-500">筛选标准：</span>{criteria.join("；")}</div>
+          )}
+        </div>
+      )}
+      {candidates.length > 0 ? (
+        <div className="rounded-lg border border-neutral-200 bg-white">
+          {tiers.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 border-b border-neutral-100 p-2">
+              {["all", ...tiers].map((t) => (
+                <button key={t} onClick={() => setTier(t)}
+                        className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                          tier === t ? "border-neutral-800 bg-neutral-900 text-white" : "border-neutral-200 text-neutral-600 hover:border-neutral-400"
+                        }`}>
+                  {t === "all" ? `全部 ${candidates.length}` : `${TIER_LABELS[t] ?? t} ${candidates.filter((c) => c.tier === t).length}`}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[880px] text-xs">
+              <thead>
+                <tr className="border-b border-neutral-200 text-left text-[11px] text-neutral-500">
+                  <th className="px-3 py-2 font-medium">公司</th>
+                  <th className="px-3 py-2 font-medium">可投资范围</th>
+                  <th className="px-3 py-2 font-medium">技术验证阶段</th>
+                  <th className="px-3 py-2 font-medium">商业兜现阶段</th>
+                  <th className="px-3 py-2 font-medium">护城河证据</th>
+                  <th className="px-3 py-2 font-medium">反证</th>
+                  <th className="px-3 py-2 font-medium">结论与下一次验证</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((c) => (
+                  <tr key={c.entity_id} className="border-b border-neutral-100 align-top last:border-0">
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium text-neutral-800">{c.name || c.entity_id}</span>
+                        <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${TIER_CLS[c.tier] ?? TIER_CLS.needs_review}`}>
+                          {TIER_LABELS[c.tier] ?? c.tier}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 font-mono text-[10px] text-neutral-400">{c.entity_id}</div>
+                      <div className="mt-1"><EvidenceChips refs={c.evidence_refs} onEvidenceClick={onEvidenceClick} /></div>
+                    </td>
+                    <td className="px-3 py-2 text-neutral-600">
+                      {c.listing_status === "listed"
+                        ? <>已上市·{c.market || "市场未注明"}</>
+                        : c.listing_status === "private" ? "未上市（技术参照）"
+                        : c.listing_status === "subsidiary" ? "子公司/关联主体"
+                        : "上市状态待核实"}
+                      {c.security_relation && <div className="mt-0.5 text-[10px] text-neutral-400">{c.security_relation}</div>}
+                      {c.investable === false && <div className="mt-0.5 text-[10px] text-amber-700">不混入可交易候选</div>}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-700">
+                      {c.technology_stage || <span className="text-neutral-400">未判定</span>}
+                      {stageDefs[c.technology_stage] && (
+                        <div className="mt-0.5 text-[10px] text-neutral-400" title={stageDefs[c.technology_stage]}>
+                          {stageDefs[c.technology_stage]}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-700">
+                      {c.commercial_stage || <span className="text-neutral-400">未判定</span>}
+                      {(c.commercial_evidence ?? []).length > 0 && (
+                        <ul className="mt-1 space-y-0.5 text-[11px] text-neutral-500">
+                          {c.commercial_evidence.map((x, i) => <li key={i}>· {x}</li>)}
+                        </ul>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      {(c.moat_evidence ?? []).length
+                        ? <ul className="space-y-0.5 text-[11px] text-neutral-600">
+                            {c.moat_evidence.map((x, i) => <li key={i}>· {x}</li>)}
+                          </ul>
+                        : <span className="text-[11px] text-neutral-400">无一手证据</span>}
+                    </td>
+                    <td className="px-3 py-2">
+                      {(c.counter_evidence ?? []).length
+                        ? <ul className="space-y-0.5 text-[11px] text-red-800">
+                            {c.counter_evidence.map((x, i) => <li key={i}>· {x}</li>)}
+                          </ul>
+                        : <span className="text-[11px] text-neutral-400">未检索到反证</span>}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-700">
+                      <div className="text-[11px]">{c.reason || "（未给原因）"}</div>
+                      {c.next_validation && (
+                        <div className="mt-1 text-[11px] text-blue-800">下次验证：{c.next_validation}</div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-neutral-300 bg-white p-4 text-xs text-neutral-500">
+          尚无结构化候选评估（CandidateAssessment）——下方旧字段不能当作筛选结果（入选/淘汰/待核实原因缺失）。
+        </div>
+      )}
+      {rows.length > 0 && cols.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white p-3">
+          <div className="mb-1.5 text-xs font-semibold text-neutral-500">
+            {comparison.title || "同口径对照"}
+            {comparison.chartable === false && (
+              <span className="ml-2 font-normal text-neutral-400">（存在不可比行：只给表，不绘图）</span>
+            )}
+          </div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-neutral-200 text-left text-[11px] text-neutral-500">
+                <th className="py-1 pr-3 font-medium">项目</th>
+                {cols.map((c) => (
+                  <th key={c.id} className="py-1 pr-3 font-medium">
+                    {c.label}{c.period ? <span className="ml-1 text-neutral-400">{c.period}</span> : null}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i} className="border-b border-neutral-100 last:border-0">
+                  <td className="py-1.5 pr-3 text-neutral-700">
+                    {r.label}
+                    {r.comparable === false && (
+                      <span className="ml-1 text-[10px] text-amber-700" title={r.incomparable_reason}>不可比</span>
+                    )}
+                  </td>
+                  {cols.map((c) => (
+                    <td key={c.id} className="py-1.5 pr-3 font-mono text-neutral-700">
+                      {(r.cells ?? {})[c.id] ?? <span className="text-neutral-300">—</span>}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(comparison.incomparable_reasons ?? []).length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-[11px] text-amber-700">
+              {(comparison.incomparable_reasons as string[]).map((x, i) => <li key={i}>· {x}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+      {Object.keys(stageDefs).length > 0 && (
+        <details className="rounded border border-neutral-200 bg-neutral-50/50 p-2">
+          <summary className="cursor-pointer text-[11px] font-semibold text-neutral-500">阶段定义（不是评分）</summary>
+          <ul className="mt-1.5 space-y-0.5 text-[11px] text-neutral-600">
+            {Object.entries(stageDefs).map(([k, v]) => <li key={k}>· <b>{k}</b>：{v}</li>)}
+          </ul>
+        </details>
+      )}
+      {limitations.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-amber-700">
+          {limitations.map((l, i) => <li key={i}>· {l}</li>)}
+        </ul>
+      )}
+      <LegacyFacts items={legacy} kind="industry" id={String(payload.snapshot_id ?? "")} readOnly />
+      <Notes notes={notes} />
+    </div>
+  );
+}
+
+function ValidationTimeline({ items, onEvidenceClick }: {
+  items: ValidationItem[]; onEvidenceClick: (id: string) => void;
+}) {
+  if (!items.length) return null;
+  const badge = (status: string) =>
+    status === "occurred" ? "bg-green-50 text-green-700 border-green-200"
+    : status === "expected" ? "bg-blue-50 text-blue-700 border-blue-200"
+    : "bg-neutral-100 text-neutral-500 border-neutral-200";
+  const label = (status: string) =>
+    status === "occurred" ? "已发生" : status === "expected" ? "预计" : "时间未知";
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3">
+      <div className="mb-2 text-xs font-semibold text-neutral-500">
+        验证时间线（展示条件，不给无依据的概率）
+      </div>
+      <ol className="space-y-2 border-l border-neutral-200 pl-3">
+        {items.map((it, i) => (
+          <li key={i} className="relative">
+            <span className="absolute -left-[17px] top-1.5 h-2 w-2 rounded-full bg-neutral-300" />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-medium text-neutral-800">{it.event}</span>
+              <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${badge(it.status)}`}>{label(it.status)}</span>
+              {(it.window_start || it.window_end) && (
+                <span className="font-mono text-[10px] text-neutral-500">
+                  {it.window_start}{it.window_end ? ` → ${it.window_end}` : ""}
+                </span>
+              )}
+            </div>
+            {it.trigger_condition && (
+              <div className="mt-0.5 text-[11px] text-neutral-600">触发条件：{it.trigger_condition}</div>
+            )}
+            {it.affected_judgment && (
+              <div className="mt-0.5 text-[11px] text-neutral-500">影响判断：{it.affected_judgment}</div>
+            )}
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {(it.company_refs ?? []).map((c) => (
+                <span key={c} className="rounded border border-neutral-200 px-1 py-0.5 font-mono text-[10px] text-neutral-600">{c}</span>
+              ))}
+              <EvidenceChips refs={it.evidence_refs} onEvidenceClick={onEvidenceClick} />
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function CatalystsRisksModule({ snap, payload, onEvidenceClick, onResolved }: ModuleProps) {
   const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const claims = (payload.payload.claims ?? []) as ClaimItem[];
+  const items = (payload.payload.items ?? []) as ValidationItem[];
+  const notes = (payload.payload.notes ?? []) as string[];
+  const limitations = (payload.payload.limitations ?? []) as string[];
   return (
     <div className="space-y-3">
       <div className="text-xs text-neutral-500">何时验证？什么情况下失效？</div>
+      <ValidationTimeline items={items} onEvidenceClick={onEvidenceClick} />
       <ClaimsList claims={claims} onEvidenceClick={onEvidenceClick} />
+      {limitations.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-amber-700">
+          {limitations.map((l, i) => <li key={i}>· {l}</li>)}
+        </ul>
+      )}
       <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
                    onResolved={onResolved} readOnly={auditReadOnly} />
+      <Notes notes={notes} />
     </div>
   );
 }
@@ -840,6 +1247,8 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
 export const MODULE_COMPONENTS: Record<string, (props: ModuleProps) => JSX.Element> = {
   investment_snapshot: InvestmentSnapshotModule,
   business_engine: BusinessEngineModule,
+  industry_chain: IndustryChainModule,
+  candidate_pool: CandidatePoolModule,
   revenue_segments: RevenueSegmentsModule,
   key_kpi: KeyKpiModule,
   financial_quality: FinancialQualityModule,

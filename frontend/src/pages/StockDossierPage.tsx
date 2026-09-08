@@ -19,6 +19,18 @@ const SECTION_ORDER = [
   "catalysts_risks", "research_sources",
 ] as const;
 
+/** 导航模块（audit §3.6）：注册表优先（行业/股票各自的信息架构），
+ *  旧快照无注册表时回退固定十模块；not_applicable 不占默认导航。 */
+function navSections(snap: DossierSnapshot | null): string[] {
+  const reg = snap?.module_registry;
+  if (reg?.modules?.length) {
+    return reg.modules
+      .filter((m) => m.default_nav && snap?.modules[m.module_id]?.status !== "not_applicable")
+      .map((m) => m.module_id);
+  }
+  return [...SECTION_ORDER];
+}
+
 interface Props {
   kind: "stock" | "industry";
   id: string;
@@ -35,13 +47,16 @@ export default function StockDossierPage({ kind, id, params }: Props) {
   const [moduleBusy, setModuleBusy] = useState<string | null>(null);
   const [evidenceId, setEvidenceId] = useState<string | null>(params.evidence ?? null);
   const [reloadTick, setReloadTick] = useState(0);
+  // 新版本快照提醒（audit §3.9）：只提示，用户确认后才整体切换
+  const [newer, setNewer] = useState<{ id: string; modules: string[] } | null>(null);
   // 快照与模块请求分开计数（review #19）：模块加载不得取消快照请求，反之亦然
   const snapSeq = useRef(0);
   const modSeq = useRef(0);
 
-  const section = params.section && (SECTION_ORDER as readonly string[]).includes(params.section)
+  const sections = useMemo(() => navSections(snap), [snap]);
+  const section = params.section && sections.includes(params.section)
     ? params.section
-    : "investment_snapshot";
+    : sections[0] ?? "investment_snapshot";
 
   const routeOf = useCallback((): Route => ({ page: "knowledge", kind, id, params }), [kind, id, params]);
 
@@ -112,6 +127,37 @@ export default function StockDossierPage({ kind, id, params }: Props) {
   const onOpenArtifact = useCallback((artifactId: string) => {
     navigate({ page: "research", artifactId, params: {} });
   }, []);
+
+  // ---- 新版本快照提醒（audit §3.9）：钉住旧快照时只提示，不混换 ----
+  // 历史一致性设计不变（URL 钉住快照）；补研发新快照后，页面提示 changed_modules，
+  // 由用户整体切换（绝不把新旧快照的模块混在一页）。
+  useEffect(() => {
+    if (!params.snapshot) return;
+    let cancelled = false;
+    const check = () => {
+      dossierApi.openDossier(kind, id, { namespace: params.namespace || undefined })
+        .then((live) => {
+          if (cancelled) return;
+          const liveId = live.context.snapshot_id;
+          if (!liveId || liveId === params.snapshot) {
+            setNewer(null);
+            return;
+          }
+          dossierApi.changes(liveId, params.snapshot)
+            .then((diff) => {
+              if (!cancelled) setNewer({ id: liveId, modules: diff.changed_modules ?? [] });
+            })
+            .catch(() => {
+              if (!cancelled) setNewer({ id: liveId, modules: [] });
+            });
+        })
+        .catch(() => { /* 提醒失败不影响阅读（旧快照仍可用） */ });
+    };
+    check();
+    const timer = window.setInterval(check, 20000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, id, params.snapshot, params.namespace, reloadTick]);
 
   const ModuleComp = MODULE_COMPONENTS[section];
   const moduleState = snap?.modules[section];
@@ -205,6 +251,25 @@ export default function StockDossierPage({ kind, id, params }: Props) {
             旧 HTML 存档 ↗
           </a>
         </div>
+        {newer && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+            <span>
+              本实体已有新版本快照 <span className="font-mono">{newer.id}</span>
+              {newer.modules.length > 0 && <>（变化模块：{newer.modules.join("、")}）</>}
+              ——当前页仍为钉住的旧快照，不会自动混换。
+            </span>
+            <button
+              onClick={() => {
+                navigate(withParams(routeOf(), { snapshot: null }));
+                setNewer(null);
+                setReloadTick((t) => t + 1);
+              }}
+              className="rounded border border-emerald-300 bg-white px-2 py-0.5 text-emerald-800 hover:border-emerald-500"
+            >
+              整体切换到新版本
+            </button>
+          </div>
+        )}
         {isHistorical && (
           <div className="mb-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
             历史视图：正文、图表、来源与质量全部截至 {snap.context.as_of.slice(0, 10)}——
@@ -227,7 +292,7 @@ export default function StockDossierPage({ kind, id, params }: Props) {
       <div className="flex flex-col gap-4 lg:flex-row">
         <nav className="shrink-0 lg:w-48" aria-label="章节导航">
           <div className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
-            {SECTION_ORDER.map((m) => {
+            {sections.map((m) => {
               const st = snap.modules[m];
               if (!st) return null;
               return (
