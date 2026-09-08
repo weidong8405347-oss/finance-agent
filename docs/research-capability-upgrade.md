@@ -166,7 +166,7 @@ ChunkStore 证据校验、评估模式双重过滤纪律不动。
 
 | 新源 | 覆盖 | PIT 目标级 | 成本 | 备注 |
 | --- | --- | --- | --- | --- |
-| **Exa** web 搜索 | 定性维度（护城河/CEO/人才/份额/TAM） | B（逐条带 publishedDate；无日期条目诚实降级无 PIT） | 免费额起步，按量 ~$5/千次 | ✅ 2026-09-01 已配 key 并实测：中文查询返回新浪/医药魔方等有效中文源 |
+| **Exa** web 搜索 | 定性维度（护城河/CEO/人才/份额/TAM） | B（逐条带 publishedDate；无日期条目诚实降级无 PIT） | 免费额起步，按量 ~$5/千次 | ✅ 2026-09-01 已配 key 并实测：中文查询返回新浪/医药魔方等有效中文源。2026-09-08 起默认走 **Novita 网关**（`POST https://api.novita.ai/v3/exa/search` + `Authorization: Bearer $NOVITA_API_KEY`）——官方明示为 Exa Search API 的 passthrough，同 query 实测与直连 `api.exa.ai` 结果/字段一致（`results[].publishedDate` 同样约半数缺失 → 逐条降级不变）；仅有 `EXA_API_KEY` 时回退直连 |
 | **Tavily** web 搜索 | 同上，Exa 的备份/并集源 | C（无逐条发布时间保证） | 1000 credits/月免费 | ✅ 同日接入并实测通过；双源并集提召回 |
 | **yfinance + akshare** | 市值/股本/报表粗数据；akshare 补港股 | C（快照，生产可用、评估禁用） | 免费 | F2 数据通道 + F3a 粗调研够用 |
 | **GDELT** | 全球新闻含中文媒体 | B（发布时间戳） | 免费 | catalysts/risks 维度 |

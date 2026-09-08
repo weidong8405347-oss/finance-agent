@@ -122,17 +122,23 @@ def test_fundamentals_real_snapshot():
 
 
 def test_exa_real_search_if_key():
-    """Exa 真实冒烟：配置 EXA_API_KEY（环境变量或 .env）时运行，否则跳过。"""
+    """Exa 真实冒烟（默认 Novita 网关 passthrough）：配置 NOVITA_API_KEY
+    （或旧的 EXA_API_KEY 回退通道）时运行，否则跳过。"""
     import os
 
     from finance_agent.llm.router import _read_dotenv
 
-    key = os.environ.get("EXA_API_KEY") or _read_dotenv().get("EXA_API_KEY")
-    if not key:
-        pytest.skip("未配置 EXA_API_KEY")
+    dotenv = _read_dotenv()
+
+    def _key(name: str) -> str | None:
+        return os.environ.get(name) or dotenv.get(name)
+
+    novita = _key("NOVITA_API_KEY")
+    if not (novita or _key("EXA_API_KEY")):
+        pytest.skip("未配置 NOVITA_API_KEY / EXA_API_KEY")
     from finance_agent.gateway.adapters.exa_search import ExaSearchAdapter
 
-    adapter = ExaSearchAdapter(api_key=key)
+    adapter = ExaSearchAdapter(novita_api_key=novita, api_key=_key("EXA_API_KEY"))
     assert adapter.healthcheck()["ok"], adapter.healthcheck()["detail"]
     recs = adapter.query({"query": "Recursion Pharmaceuticals AI drug discovery",
                           "num_results": 3})

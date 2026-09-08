@@ -79,22 +79,72 @@ class TestGdelt:
         assert GdeltNewsAdapter().capability().pit_grade is PitGrade.B
 
 
-# ---------------- Exa ----------------
+# ---------------- Exa（Novita 网关 passthrough 为默认通道） ----------------
 
 
 class TestExa:
-    def _adapter(self, monkeypatch, results):
+    def _adapter(self, monkeypatch, results, **kw):
         import httpx
 
         captured = {}
 
         def fake_post(url, headers=None, json=None, timeout=None):
+            captured["url"] = url
             captured["body"] = json
             captured["headers"] = headers
             return _FakeResp({"results": results})
 
         monkeypatch.setattr(httpx, "post", fake_post)
-        return ExaSearchAdapter(api_key="sk-test"), captured
+        return ExaSearchAdapter(novita_api_key="sk-novita-test", **kw), captured
+
+    def test_default_channel_is_novita_gateway_with_bearer(self, monkeypatch):
+        """默认通道：Novita 的 Exa passthrough 端点 + `Authorization: Bearer`。"""
+        adapter, captured = self._adapter(monkeypatch, [])
+        assert adapter.channel == "novita"
+        adapter.query({"query": "x"})
+        assert captured["url"] == "https://api.novita.ai/v3/exa/search"
+        assert captured["headers"]["Authorization"] == "Bearer sk-novita-test"
+        assert "x-api-key" not in captured["headers"]
+        assert captured["headers"]["Content-Type"] == "application/json"
+
+    def test_exa_key_falls_back_to_direct_endpoint(self, monkeypatch):
+        """仅有 EXA_API_KEY（旧配置）：回退直连 api.exa.ai + x-api-key，PIT 语义不变。"""
+        import httpx
+
+        captured = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            return _FakeResp({"results": [
+                {"title": "t", "url": "https://x.com/a", "publishedDate": "2024-02-01T10:00:00Z"},
+            ]})
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        adapter = ExaSearchAdapter(api_key="sk-exa-direct", env={})
+        assert adapter.channel == "exa"
+        recs = adapter.query({"query": "x"})
+        assert captured["url"] == "https://api.exa.ai/search"
+        assert captured["headers"]["x-api-key"] == "sk-exa-direct"
+        assert recs[0].available_at == datetime(2024, 2, 1, 10, 0, tzinfo=UTC)
+
+    def test_novita_key_wins_over_exa_key(self, monkeypatch):
+        """两 key 并存时 Novita 优先（通道唯一、可预测，不会双发请求）。"""
+        adapter, captured = self._adapter(monkeypatch, [], api_key="sk-exa-direct")
+        assert adapter.channel == "novita"
+        adapter.query({"query": "x"})
+        assert captured["url"] == "https://api.novita.ai/v3/exa/search"
+
+    def test_env_key_resolution_prefers_novita(self):
+        assert ExaSearchAdapter(env={"NOVITA_API_KEY": "sk-n"}).channel == "novita"
+        assert ExaSearchAdapter(env={"EXA_API_KEY": "sk-e"}).channel == "exa"
+        assert ExaSearchAdapter(env={"NOVITA_API_KEY": "sk-n", "EXA_API_KEY": "sk-e"}).channel == "novita"
+        assert ExaSearchAdapter(env={}).channel is None
+
+    def test_capability_declares_active_channel(self):
+        cap = ExaSearchAdapter(novita_api_key="sk-n").capability()
+        assert cap.source_id == "web_search" and cap.pit_grade is PitGrade.B
+        assert cap.server_side_asof is True and "novita" in cap.description
 
     def test_published_date_becomes_available_at(self, monkeypatch):
         adapter, _ = self._adapter(monkeypatch, [
@@ -118,9 +168,12 @@ class TestExa:
         assert captured["body"]["endPublishedDate"] == as_of.isoformat()
 
     def test_missing_key_fail_closed(self):
+        """两个 key 都没配 → 未 configured（装配层不注册）；硬调 query 则 fail-loud。"""
         adapter = ExaSearchAdapter(env={})
         assert adapter.configured is False
-        with pytest.raises(RuntimeError, match="EXA_API_KEY"):
+        assert adapter.healthcheck() == {
+            "ok": False, "detail": "未配置 NOVITA_API_KEY / EXA_API_KEY"}
+        with pytest.raises(RuntimeError, match="NOVITA_API_KEY / EXA_API_KEY"):
             adapter.query({"query": "x"})
 
 

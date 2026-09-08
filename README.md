@@ -44,6 +44,8 @@ uv run python -m finance_agent serve   # 一条命令：自动构建前端（首
 
 **代理固化**：本机网络受限时，在 `.env` 写 `HTTPS_PROXY=http://127.0.0.1:7897`（可加 `HTTP_PROXY`）即可——`serve` 启动时自动注入进程环境；显式设置的环境变量优先，不会被 .env 覆盖。代码不探测系统代理（环境显式原则）。
 
+**数据源 key**（`.env` 或环境变量；缺 key 的源 fail-closed 不注册，启动时打印提示）：web 语义搜索 `query_web_search` 默认走 **Novita 网关的 Exa passthrough**（`NOVITA_API_KEY`，Bearer 认证）；只配了 `EXA_API_KEY` 则回退直连 `api.exa.ai`（`x-api-key`）——两通道请求/响应同构，PIT 语义（`publishedDate` → `available_at`，无日期条目降级）完全一致。备份源 `TAVILY_API_KEY`（C 级，评估模式禁用）。
+
 前端开发热更新模式才需要第二个进程：`cd frontend && npm run dev`（:5173，代理 /api 到 :8000）。
 
 ## 参考项目

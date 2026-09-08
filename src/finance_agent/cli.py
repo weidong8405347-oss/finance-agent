@@ -189,11 +189,15 @@ def build_orchestrator(data_dir: Path):
     def _key(name: str) -> str | None:
         return os.environ.get(name) or _dotenv.get(name)
 
-    exa = ExaSearchAdapter(api_key=_key("EXA_API_KEY"))
+    # Exa 通道：NOVITA_API_KEY（网关 passthrough，优先）> EXA_API_KEY（直连回退）
+    exa = ExaSearchAdapter(novita_api_key=_key("NOVITA_API_KEY"), api_key=_key("EXA_API_KEY"))
     if exa.configured:
         gateway.register(exa)  # B 级：web 语义搜索（定性维度命脉）
     else:
-        print("[finance-agent] EXA_API_KEY 未配置：web 搜索源未注册（定性维度研究能力受限）")
+        print(
+            "[finance-agent] NOVITA_API_KEY / EXA_API_KEY 均未配置："
+            "web 搜索源未注册（定性维度研究能力受限）"
+        )
     from .gateway.adapters.tavily import TavilySearchAdapter
 
     tavily = TavilySearchAdapter(api_key=_key("TAVILY_API_KEY"))

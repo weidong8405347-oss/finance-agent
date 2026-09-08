@@ -104,7 +104,8 @@ GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
     "query_web_search": {
         "name": "query_web_search",
         "description": (
-            "web 语义搜索（Exa，B 级：publishedDate 为可知时刻，无日期的条目无 PIT 保证）。"
+            "web 语义搜索（Exa，默认经 Novita 网关；B 级：publishedDate 为可知时刻，"
+            "无日期的条目无 PIT 保证）。"
             "护城河/管理层/市场份额/行业空间等定性维度的主要证据源"
         ),
         "parameters": {
