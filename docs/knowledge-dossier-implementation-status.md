@@ -43,6 +43,44 @@
 | §13.1 正确性测试 | 数值语义/财务期间/来源/历史与评估/模型/研究/发布恢复/前端/兼容迁移 9 组 | 已落地（135 个新用例；浏览器 E2E 与截图验收未做，见下） |
 | §13.2 对照样本评估 | 冻结样本 3 个已备（附录 A.1） | 部分（新旧管线盲评对照需真实研究运行，属实施后评估任务） |
 
+## Code review 修复记录（2026-09-08，31 条意见全部处置）
+
+针对外部 review 的 9 条 P1 + 22 条 P2，逐条修复并补回归测试（`tests/unit/test_review_fixes.py` 等 35+ 用例）：
+
+| # | 问题 | 修复 |
+| --- | --- | --- |
+| P1-1 | 数值量级未绑定证据（million 写成 billion 能过） | `normalization.assert_magnitude_bound`：数字+规模词必须在摘录中逐字可定位（等价类 bn≡billion；表头模式共现）；接入 TypedMetricWriter 硬门禁 |
+| P1-2 | 模块请求重查当前库，补录历史观测改变冻结快照 | `SnapshotInputs` 冻结输入版本集（fact/observation/claim/artifact/计算/计划 id）；模块/序列/导出按 id 读冻结版本；漂移只提示刷新 |
+| P1-3 | 冲突集合/版本链未按 as_of 过滤，历史页泄露未来竞争值 | `conflicted_semantic_hashes(as_of, exclude_resolved)` + `observation_history(as_of)`；投影/模块全部改用 |
+| P1-4 | 计算引用不验命名空间/实体/可知时间 | `get_ref_meta` 上下文门禁（同 ns+同实体+as_of 前可知）；preview 支持 base_snapshot 绑定冻结输入 |
+| P1-5 | 论断只验支持引用存在性 | support+counter 全部带上下文验证；ArtifactValidator 重查 claim 两侧引用（unresolved_claim_ref 硬失败） |
+| P1-6 | metric_table 裸值/comparison 无验证分支 | 表内无 observation_id 的非豁免数值 = unsourced_metric_cell 硬失败；comparison 同规则 |
+| P1-7 | 计划问题未分配给并行维度组 | `_QUESTION_MODULE_TO_GROUP` 映射（financial_quality→financial 等）；targeted/无模块问题全组可见；answered 不下发 |
+| P1-8 | answer_question 读改写竞态丢更新 | `MetricStore.update_plan_question` 锁内原子合并；并发双线程回归测试 |
+| P1-9 | 历史/eval 视图可调生产裁决入口 | LegacyFacts 传 readOnly（mode≠live 或 ns≠prod）；版本链标注「未按历史 as_of 过滤」 |
+| P2-10 | 历史快照用最新计划 | `plans_for(as_of)`；计划在 as_of 后被更新 → 问题状态置 historical_unknown（不冒充当时进展） |
+| P2-11 | 评估查询无命名空间/时间过滤（LIMIT 1 后才过滤） | SQL 内 namespace+created_at≤T 过滤；assessment 事件带 namespace |
+| P2-12 | 快照哈希缺计划/计算依赖 | data_hash 纳入 plan 问题状态指纹 + calculation ids |
+| P2-13 | 计算幂等键缺实体/引用身份 | input_hash 纳入 namespace:entity + 完整 InputRef（kind/ref_id/value） |
+| P2-14 | 通用计算入口无口径校验 | 跨币种输入拒绝（需显式 fx 链）；ttm_sum 通用入口强制四季度观测引用+连续性/同口径/不同版本 |
+| P2-15 | 序列仅按 metric_key 分组混口径 | series_set 按完整语义键（频率/维度/basis/币种/nature）拆分；KPI/财务主图只消费合并披露/计算值 |
+| P2-16 | 比较接口 FY 对 Q4 返回 comparable | 共同 period_end+frequency+basis+币种全一致才 comparable；新增 frequency/period_end 限定参数 |
+| P2-17 | 图表时间轴逐序列扩展导致错位 | 先固定完整时间轴（按 period_end 排序）再排列各序列；前端对齐回归测试 |
+| P2-18 | useMemo 依赖不含值 | 指纹序列化完整 points 值/nature/conflict |
+| P2-19 | 快照与模块请求共用取消序号 | snapSeq/modSeq 分离；新快照到达作废在飞模块响应 |
+| P2-20 | 刷新按钮只重拉钉住的旧快照 | 刷新 = 去掉 snapshot 参数重新打开（重新投影，数据有变则切新快照） |
+| P2-21 | 指标点击用全局首条证据背书 | KeyMetric 携带自己的 evidence_refs，点击直达对应摘录 |
+| P2-22 | 快照来源目录漏 claim 证据 | evidence_refs 纳入 claim support/counter 的 ev-* 引用 |
+| P2-23 | 补研丢 entity_kind（行业变股票） | industry 实体构造 `industry:<slug>` 标的；非法 kind 422 |
+| P2-24 | 行业配方模块无内容 | business_graph 读 value_chain/competition/sub_sectors；行业模块标题覆写（产业链与瓶颈/候选池与竞争） |
+| P2-25 | 情景保存不验实体/ns/模型版本/输入归属 | 四重校验（计算实体=快照实体、同 ns、model_version=公式@版本、输入引用⊆基线冻结集） |
+| P2-26 | 用户情景污染默认结论投影 | ResearchArtifact.purpose=scenario；首屏结论/覆盖/模块状态全部排除；来源模块分区展示 |
+| P2-27 | 情景保存无 markdown 正文 | 保存前 render_markdown（产物页可读） |
+| P2-28 | 假设变化后旧结果仍可保存 | invalidate()：任何输入变化立即作废结果+在飞请求；必填清空同步清除 |
+| P2-29 | 模块加载失败包成空 payload 致页面崩溃 | 独立错误态+重试；组件防御性默认值 |
+| P2-30 | 会计括号负数记成正数 | parse_raw_number 保留 (1,234) 符号（含括号包规模词） |
+| P2-31 | HK$ 被当成 USD | 币种提示顺序：HK$→US$→裸$→中文币种词 |
+
 ## 已知边界与后续（如实清单）
 
 1. **数据源未扩展**：guidance/consensus/电话会/A 股结构化披露依赖 §9.1 的 adapter 验证任务；相关模块当前按契约降级（missing + 原因），这是设计要求的行为，不是缺陷掩盖。
@@ -55,7 +93,7 @@
 ## 验证入口
 
 ```bash
-uv run pytest tests                        # 454 passed, 9 skipped（含 135 个新用例）
+uv run pytest tests                        # 489 passed, 9 skipped（含 135 个新用例 + 35 个 review 回归用例）
 cd frontend && npm test && npm run build   # 37 passed；主包 206KB + echarts 懒加载 chunk
 uv run python scripts/migrate_dossier.py --data-dir data inventory   # 迁移盘点（只读）
 uv run python -m finance_agent serve       # → #/knowledge 列表 → 实体档案 → 来源抽屉 → 补研

@@ -95,6 +95,7 @@ class KeyMetric(BaseModel):
     period_label: str = ""
     nature: str = ""  # reported/calculated/guidance/consensus/model_estimate
     observation_id: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)  # 点击指标直达自己的来源（review #21）
     status: Literal["ok", "missing", "stale", "conflicted", "not_meaningful"] = "missing"
     as_of_note: str = ""
 
@@ -111,6 +112,25 @@ class DossierSummary(BaseModel):
     counter_refs: list[str] = Field(default_factory=list)
     key_metrics: list[KeyMetric] = Field(default_factory=list)
     updated_at: datetime | None = None
+
+
+class SnapshotInputs(BaseModel):
+    """快照冻结的输入版本集（review #2）：模块/来源/序列请求按这些 id 读取，
+    不再重查当前库——补录历史观测不会改变已冻结快照的任何模块内容。
+
+    旧快照（无 inputs）回退 as_of 查询（契约升级前的兼容路径，投影层标注）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fact_ids: dict[str, str] = Field(default_factory=dict)  # field → fact_id（选中版本）
+    observation_ids: list[str] = Field(default_factory=list)
+    claims: list[dict[str, Any]] = Field(default_factory=list)  # 冻结 payload（状态不漂移）
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)  # 冻结摘要（id/status/…）
+    resolution_ids: list[str] = Field(default_factory=list)
+    calculation_ids: list[str] = Field(default_factory=list)
+    conflicted_semantic_hashes: list[str] = Field(default_factory=list)  # as_of 时点未裁决
+    plan: dict[str, Any] | None = None  # 冻结计划 payload（问题状态以发布时刻为准）
+    plan_status_reliable: bool = True  # 历史投影下计划后续被更新过 → False
 
 
 class ResearchCoverage(BaseModel):
@@ -141,6 +161,7 @@ class DossierSnapshot(BaseModel):
     decision_refs: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     data_hash: str = ""
+    inputs: SnapshotInputs = Field(default_factory=SnapshotInputs)
 
     def data_hash_of(self) -> str:
         """内容寻址：投影输入的版本集（fact/observation/claim/artifact/resolution id+版本）。"""
@@ -199,6 +220,11 @@ class MetricSeries(BaseModel):
     unit: str = ""
     currency: str | None = None
     frequency: str = "FY"
+    #: 完整语义键拆分（review #15）：分部/口径/币种/性质不同的观测各自成序列，
+    #: 不混合投影（分部收入/指引不得被画成公司实际收入）
+    dimensions: dict[str, str] = Field(default_factory=dict)
+    basis: str = "GAAP"
+    nature: str = "reported"
     points: list[MetricPoint] = Field(default_factory=list)
     status: ModuleStatus = "missing"
     issues: list[str] = Field(default_factory=list)

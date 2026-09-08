@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { dossierApi } from "./api";
 import type {
-  ClaimItem, DossierSnapshot, EvidenceDetail, ModuleStatus,
+  ClaimItem, DossierSnapshot, EvidenceDetail, KeyMetric, ModuleStatus,
 } from "./types";
 
 // ---------------- 模块状态徽标（§4.6：运行/模块/产物三轴分离） ----------------
@@ -103,7 +103,7 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
 
 export function KeyMetricBar({ snap, onMetricClick }: {
   snap: DossierSnapshot;
-  onMetricClick?: (observationId: string) => void;
+  onMetricClick?: (metric: KeyMetric) => void;  // review #21：回传指标对象，由页面用它自己的证据开抽屉
 }) {
   const metrics = snap.summary.key_metrics.filter((m) => m.status !== "missing").slice(0, 6);
   const missing = snap.summary.key_metrics.filter((m) => m.status === "missing");
@@ -112,8 +112,8 @@ export function KeyMetricBar({ snap, onMetricClick }: {
       {metrics.map((m) => (
         <button
           key={m.metric_key}
-          onClick={() => m.observation_id && onMetricClick?.(m.observation_id)}
-          disabled={!m.observation_id}
+          onClick={() => onMetricClick?.(m)}
+          disabled={!(m.evidence_refs ?? []).length}
           className={`rounded-lg border bg-white px-3 py-2 text-left ${
             m.status === "conflicted" ? "border-red-200" : m.status === "stale" ? "border-orange-200" : "border-neutral-200"
           } ${m.observation_id ? "hover:border-neutral-400" : ""}`}

@@ -42,14 +42,17 @@ function LegacyNeedsNormBadge() {
   );
 }
 
-function LegacyFacts({ items, kind, id, onResolved }: {
+function LegacyFacts({ items, kind, id, onResolved, readOnly = false }: {
   items: LegacyFactItem[]; kind: string; id: string; onResolved?: () => void;
+  /** 历史/eval 视图只读（review #9）：不得从这里调用生产 v1 裁决入口 */
+  readOnly?: boolean;
 }) {
   if (!items.length) return null;
   return (
     <div className="mt-3 rounded border border-neutral-200 bg-neutral-50/50 p-3">
       <div className="mb-1.5 text-[11px] font-semibold text-neutral-500">
         旧字段（数据与审计）
+        {readOnly && <span className="ml-2 font-normal text-indigo-600">历史/隔离视图只读</span>}
       </div>
       {items.map((f) => (
         <div key={f.field} className="border-b border-neutral-100 py-2 last:border-0">
@@ -70,7 +73,7 @@ function LegacyFacts({ items, kind, id, onResolved }: {
           {f.conflict && (
             <div className="mt-1.5">
               <ConflictResolver kind={kind} id={id} field={f.field} factId={f.fact_id}
-                                onResolved={onResolved ?? (() => {})} />
+                                onResolved={onResolved ?? (() => {})} readOnly={readOnly} />
             </div>
           )}
         </div>
@@ -201,8 +204,11 @@ function InvestmentSnapshotModule({ payload, onEvidenceClick }: ModuleProps) {
   );
 }
 
+const EMPTY_GRAPH: BusinessGraph = { nodes: [], edges: [], narrative: "", narrative_refs: [] };
+
 function BusinessEngineModule({ payload, onEvidenceClick }: ModuleProps) {
-  const graph = payload.payload.graph as BusinessGraph;
+  // 防御性默认值（review #29）：加载异常/旧快照缺字段不致页面崩溃
+  const graph = (payload.payload.graph ?? EMPTY_GRAPH) as BusinessGraph;
   return (
     <div className="space-y-3">
       {graph.narrative ? (
@@ -302,6 +308,7 @@ function KeyKpiModule({ payload }: ModuleProps) {
 
 function FinancialQualityModule({ snap, payload, onResolved }: ModuleProps) {
   const [freq, setFreq] = useState<"fy" | "quarterly">("fy");
+  const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const set = (freq === "fy" ? payload.payload.fy : payload.payload.quarterly) as MetricSeriesSet | undefined;
   const calcs = (payload.payload.calculations ?? []) as Record<string, any>[];
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
@@ -329,7 +336,8 @@ function FinancialQualityModule({ snap, payload, onResolved }: ModuleProps) {
           {calcs.slice(0, 8).map((c) => <CalculationCard key={c.calculation_id} calc={c} />)}
         </div>
       )}
-      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id} onResolved={onResolved} />
+      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
+                   onResolved={onResolved} readOnly={auditReadOnly} />
     </div>
   );
 }
@@ -381,9 +389,26 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
 
   const inputsReady = (revenue0.trim() !== "" || revenueRef.trim() !== "") && targetEv.trim() !== "";
 
+  /** 任何输入/假设变化 → 立即作废旧结果与在飞请求（review #28）：
+   *  等待/计算期间不得拿旧结果去保存（旧 assumption_hash 与当前表单已不一致）。 */
+  const invalidate = () => {
+    reqSeq.current += 1;          // 在飞响应全部过期
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setResult(null);
+    setError(null);
+    setSaved(null);
+    setBusy(false);
+  };
+
   // 200ms debounce → 后端确定性计算；请求序号取消过期响应（慢响应不覆盖新值，§8.5）
   useEffect(() => {
-    if (!inputsReady) return;
+    if (!inputsReady) {
+      // 清空必填输入 → 结果一并清除，不得残留可保存的旧值（review #28）
+      reqSeq.current += 1;
+      setResult(null);
+      setBusy(false);
+      return;
+    }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       const seq = ++reqSeq.current;
@@ -450,24 +475,25 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
           <label className="block">
             <span className="mb-0.5 block text-neutral-500">基期收入 revenue_0（十进制字符串，或填观测 ref）</span>
             <div className="flex gap-1.5">
-              <input value={revenue0} onChange={(e) => { setRevenue0(e.target.value); setRevenueRef(""); }}
+              <input value={revenue0} onChange={(e) => { invalidate(); setRevenue0(e.target.value); setRevenueRef(""); }}
                      placeholder="如 1500000000" className="w-1/2 rounded border border-neutral-200 px-2 py-1 font-mono" />
-              <input value={revenueRef} onChange={(e) => { setRevenueRef(e.target.value); setRevenue0(""); }}
+              <input value={revenueRef} onChange={(e) => { invalidate(); setRevenueRef(e.target.value); setRevenue0(""); }}
                      placeholder="obs-…（引用观测，服务端解析）" className="w-1/2 rounded border border-neutral-200 px-2 py-1 font-mono" />
             </div>
           </label>
           <label className="block">
             <span className="mb-0.5 block text-neutral-500">目标 EV（经调整的市场企业价值）</span>
-            <input value={targetEv} onChange={(e) => setTargetEv(e.target.value)}
+            <input value={targetEv} onChange={(e) => { invalidate(); setTargetEv(e.target.value); }}
                    placeholder="如 4000000000" className="w-full rounded border border-neutral-200 px-2 py-1 font-mono" />
           </label>
           <label className="block">
             <span className="mb-0.5 block text-neutral-500">预测年数</span>
-            <input value={years} onChange={(e) => setYears(e.target.value)}
+            <input value={years} onChange={(e) => { invalidate(); setYears(e.target.value); }}
                    className="w-24 rounded border border-neutral-200 px-2 py-1 font-mono" />
           </label>
           <button
             onClick={() => {
+              invalidate();
               setAssumptions(Object.fromEntries(DCF_ASSUMPTION_SPEC.map((a) => [a.key, a.def])));
               setYears("10");
             }}
@@ -484,10 +510,10 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
             <label key={a.key} className="flex items-center gap-2">
               <span className="w-24 shrink-0 text-[11px] text-neutral-600">{a.label}</span>
               <input type="range" min={a.min} max={a.max} step={a.step} value={num(assumptions[a.key])}
-                     onChange={(e) => setAssumptions((s) => ({ ...s, [a.key]: e.target.value }))}
+                     onChange={(e) => { invalidate(); setAssumptions((s) => ({ ...s, [a.key]: e.target.value })); }}
                      className="flex-1 accent-neutral-800" aria-label={a.label} />
               <input value={assumptions[a.key]}
-                     onChange={(e) => setAssumptions((s) => ({ ...s, [a.key]: e.target.value }))}
+                     onChange={(e) => { invalidate(); setAssumptions((s) => ({ ...s, [a.key]: e.target.value })); }}
                      className="w-16 rounded border border-neutral-200 px-1 py-0.5 text-right font-mono text-[11px]" />
             </label>
           ))}
@@ -536,6 +562,7 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
 }
 
 function ValuationLabModule({ snap, payload, onResolved }: ModuleProps) {
+  const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const calcs = (payload.payload.calculations ?? []) as Record<string, any>[];
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const notes = (payload.payload.notes ?? []) as string[];
@@ -569,12 +596,14 @@ function ValuationLabModule({ snap, payload, onResolved }: ModuleProps) {
           </div>
         )}
       <Notes notes={notes} />
-      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id} onResolved={onResolved} />
+      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
+                   onResolved={onResolved} readOnly={auditReadOnly} />
     </div>
   );
 }
 
 function PeersModule({ snap, payload, onResolved }: ModuleProps) {
+  const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const peerSeries = (payload.payload.peer_series ?? []) as Record<string, any>[];
   const notes = (payload.payload.notes ?? []) as string[];
@@ -603,32 +632,39 @@ function PeersModule({ snap, payload, onResolved }: ModuleProps) {
         </div>
       ) : null}
       <Notes notes={notes} />
-      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id} onResolved={onResolved} />
+      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
+                   onResolved={onResolved} readOnly={auditReadOnly} />
     </div>
   );
 }
 
 function CatalystsRisksModule({ snap, payload, onEvidenceClick, onResolved }: ModuleProps) {
+  const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const claims = (payload.payload.claims ?? []) as ClaimItem[];
   return (
     <div className="space-y-3">
       <div className="text-xs text-neutral-500">何时验证？什么情况下失效？</div>
       <ClaimsList claims={claims} onEvidenceClick={onEvidenceClick} />
-      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id} onResolved={onResolved} />
+      <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
+                   onResolved={onResolved} readOnly={auditReadOnly} />
     </div>
   );
 }
 
 function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact, onResolved }: ModuleProps) {
   const artifacts = (payload.payload.artifacts ?? []) as Record<string, any>[];
+  const scenarios = (payload.payload.scenarios ?? []) as Record<string, any>[];
   const plans = (payload.payload.plans ?? []) as Record<string, any>[];
+  const planNotes = (payload.payload.plan_notes ?? []) as string[];
   const claims = (payload.payload.claims ?? []) as ClaimItem[];
   const evidence = (payload.payload.evidence ?? []) as EvidenceItem[];
   const legacy = (payload.payload.legacy_facts ?? []) as LegacyFactItem[];
   const obsConflicts = (payload.payload.observation_conflicts ?? []) as Record<string, any>[];
   const assessment = payload.payload.assessment as Record<string, any> | null;
   const latestPlan = plans[0];
+  // 历史/隔离视图：旧字段裁决入口只读（review #9）
+  const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   return (
     <div className="space-y-4">
       {artifacts.length > 0 && (
@@ -652,6 +688,23 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
           </div>
         </section>
       )}
+      {scenarios.length > 0 && (
+        <section>
+          <h4 className="mb-1.5 text-xs font-semibold text-neutral-500">
+            用户情景（非发布版，不参与默认结论）
+          </h4>
+          <div className="space-y-1">
+            {scenarios.map((s) => (
+              <div key={s.artifact_id} className="flex items-center gap-2 rounded border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs">
+                <button onClick={() => onOpenArtifact(s.artifact_id)} className="text-blue-700 hover:underline">
+                  {s.title || s.artifact_id}
+                </button>
+                <span className="font-mono text-[10px] text-neutral-400">{String(s.created_at ?? "").slice(0, 10)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       {latestPlan && (
         <section>
           <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">
@@ -660,6 +713,11 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
               {latestPlan.mode} · {latestPlan.recipe_id}@{latestPlan.recipe_version} · {latestPlan.plan_id}
             </span>
           </h4>
+          {planNotes.map((n, i) => (
+            <div key={i} className="mb-1 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] text-indigo-700">
+              {n}
+            </div>
+          ))}
           <div className="overflow-x-auto rounded border border-neutral-200 bg-white">
             <table className="w-full border-collapse text-xs">
               <thead>
@@ -681,8 +739,11 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
                         q.status === "answered" ? "border-green-300 text-green-700"
                         : q.status === "disputed" ? "border-red-300 text-red-700"
                         : q.status === "unavailable" ? "border-neutral-300 text-neutral-500"
+                        : q.status === "historical_unknown" ? "border-indigo-300 text-indigo-600"
                         : "border-amber-300 text-amber-700"
-                      }`}>{q.status}</span>
+                      }`} title={q.status === "historical_unknown" ? "历史投影不可分辨当时进展（不借用今日状态）" : undefined}>
+                        {q.status === "historical_unknown" ? "历史不可分辨" : q.status}
+                      </span>
                     </td>
                     <td className="max-w-sm px-2 py-1.5 text-neutral-600">
                       {q.conclusion ?? ""}
@@ -768,7 +829,8 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
       </section>
       <section>
         <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">数据与审计（旧字段全量）</h4>
-        <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id} onResolved={onResolved} />
+        <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
+                     onResolved={onResolved} readOnly={auditReadOnly} />
       </section>
     </div>
   );

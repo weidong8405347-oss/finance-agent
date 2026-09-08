@@ -414,3 +414,133 @@ class TestEntitiesEndpoint:
         client.get("/api/v2/knowledge/stock/BE/dossier")
         rows2 = {e["id"]: e for e in client.get("/api/v2/knowledge/entities").json()}
         assert rows2["BE"]["snapshot_id"]
+
+
+class TestReviewFixesApi:
+    """review #16/#23/#25/#26/#27 的 API 层回归。"""
+
+    def _seed_quarter_obs(self, env, entity_id="BE"):
+        """给 BE 补一条 2024Q4 单季观测（与 FY2024 并存，制造期间错位场景）。"""
+        from finance_agent.harness.manifest import RunManifest, RunMode
+        from finance_agent.knowledge.metric_writer import TypedMetricWriter
+        from finance_agent.knowledge.metrics import MetricPeriod as MP
+        from finance_agent.knowledge.metrics import RawValue as RV
+        from finance_agent.knowledge.metrics import ReportedObservation as RO
+        from finance_agent.knowledge.models import Evidence
+        from finance_agent.knowledge.normalization import normalize_raw
+
+        kb, metrics = env["kb"], env["metrics"]
+        w = TypedMetricWriter(store=metrics, kb=kb)
+        kb.add_evidence(Evidence(
+            evidence_id="ev-q4", source_id="edgar", verbatim_quote="Q4 revenue 400 million",
+            retrieved_at=NOW, available_at=OLD, pit_grade=PitGrade.A,
+        ))
+        value, steps = normalize_raw("400 million", "USD")
+        obs = RO(
+            entity_kind="stock", entity_id=entity_id, metric_key="revenue",
+            period=MP(start=date(2024, 10, 1), end=date(2024, 12, 31),
+                      frequency="Q", fiscal_label="2024Q4"),
+            value=value, unit="USD", currency="USD",
+            raw=RV(value_text="400 million", unit_text="USD"),
+            normalization=[s.model_dump(mode="json") for s in steps],
+            evidence_refs=["ev-q4"], knowledge_time=OLD, source_available_at=OLD,
+            retrieved_at=NOW, created_at=NOW, pit_grade=PitGrade.A,
+        )
+        return w.write_observation(obs, run=RunManifest(run_id="seed2", mode=RunMode.LIVE))[0]
+
+    def test_compare_fy_vs_quarter_not_comparable(self, tmp_path):
+        """#16 复现路径：FY2024 全年 vs 2024Q4 单季不得 comparable=true。"""
+        client, env = seeded_app(tmp_path)
+        self._seed_quarter_obs(env, "PLUG")  # PLUG 只有 Q4 单季
+        r = client.get("/api/v2/knowledge/compare",
+                       params={"entities": "stock:BE,stock:PLUG", "metric": "revenue"})
+        body = r.json()
+        assert body["comparable"] is False
+        # FY2024 与 2024Q4 的 period_end 相同但频率不同 → 频率/期间口径 note 必须出现
+        assert any(("频率不一致" in n) or ("期间不一致" in n) for n in body["notes"])
+        # 限定共同期间后可比性恢复判断（PLUG 无 FY 观测 → exclusion 而非硬比）
+        r2 = client.get("/api/v2/knowledge/compare",
+                        params={"entities": "stock:BE,stock:PLUG", "metric": "revenue",
+                                "frequency": "FY"})
+        body2 = r2.json()
+        assert any(e["entity"] == "stock:PLUG" for e in body2["exclusions"])
+        assert body2["comparable"] is False
+
+    def test_research_request_preserves_industry_kind(self, tmp_path):
+        """#23：行业档案发起的补研必须仍研究行业实体。"""
+        client, env = seeded_app(tmp_path)
+        r = client.post("/api/v2/research/requests", json={
+            "entity_kind": "industry", "entity_id": "ai-for-science",
+            "objective": "瓶颈环节更新", "depth": "refresh",
+        })
+        assert r.status_code == 200
+        session = r.json()["session_run_id"]
+        run_ev = wait_for(env["events"], session, lambda e: e.type == "command/run")[0]
+        assert run_ev.payload["args"]["ticker"] == "industry:ai-for-science"
+        # 非法 entity_kind 拒绝
+        bad = client.post("/api/v2/research/requests", json={
+            "entity_kind": "crypto", "entity_id": "BTC"})
+        assert bad.status_code == 422
+
+    def test_scenario_entity_and_version_binding(self, tmp_path):
+        """#25：计算实体/命名空间/模型版本必须与基线快照一致。"""
+        client, env = seeded_app(tmp_path)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        # OTHER 实体的计算（同数值）不得绑定 BE 快照
+        prev_other = client.post("/api/v2/valuations/preview", json={
+            "entity_kind": "stock", "entity_id": "OTHER", "formula_id": "yoy_growth",
+            "inputs": [{"kind": "assumption", "label": "current", "value": "150"},
+                       {"kind": "assumption", "label": "prior", "value": "100"}],
+        }).json()
+        r = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid,
+            "model_version": "yoy_growth@v1",
+            "assumption_hash": prev_other["input_hash"],
+            "validated_calculation_id": prev_other["calculation_id"],
+        })
+        assert r.status_code == 409 and "实体" in str(r.json()["detail"])
+        # 任意模型版本声明 → 422
+        prev = client.post("/api/v2/valuations/preview", json={
+            "entity_kind": "stock", "entity_id": "BE", "formula_id": "yoy_growth",
+            "inputs": [{"kind": "observation", "label": "current", "ref_id": env["obs_id"]},
+                       {"kind": "assumption", "label": "prior", "value": "1000000000"}],
+        }).json()
+        r2 = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid, "model_version": "magic_model@v9",
+            "assumption_hash": prev["input_hash"],
+            "validated_calculation_id": prev["calculation_id"],
+        })
+        assert r2.status_code == 422 and "model_version" in str(r2.json()["detail"])
+
+    def test_scenario_not_default_publish_and_has_markdown(self, tmp_path):
+        """#26/#27：情景不进默认结论投影；保存前渲染可读正文。"""
+        client, env = seeded_app(tmp_path)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        before = client.get(f"/api/v2/dossiers/{sid}").json()["summary"]["thesis_kind"]
+        prev = client.post("/api/v2/valuations/preview", json={
+            "entity_kind": "stock", "entity_id": "BE", "formula_id": "reverse_dcf",
+            "inputs": [{"kind": "observation", "label": "revenue_0", "ref_id": env["obs_id"]}],
+            "assumptions": {"wacc": "0.10", "terminal_g": "0.025", "tax_rate": "0.21",
+                            "years": "10", "target_ev": "4000000000", "ebit_margin": "0.05",
+                            "da_ratio": "0.02", "capex_ratio": "0.03", "nwc_ratio": "0.04"},
+        }).json()
+        scen = client.post("/api/v2/valuations/scenarios", json={
+            "base_snapshot": sid, "model_version": "reverse_dcf@v1",
+            "assumption_hash": prev["input_hash"],
+            "validated_calculation_id": prev["calculation_id"],
+            "name": "隐含增长情景",
+        }).json()
+        # #27：markdown 已渲染（产物页不再是空壳）
+        art = client.get(f"/api/v2/research/artifacts/{scen['artifact_id']}").json()
+        assert art["markdown"] and "隐含增长情景" in art["markdown"]
+        assert art["purpose"] == "scenario"
+        assert "reverse_dcf" in art["markdown"]  # 假设与结果可读
+        # #26：重新打开档案，默认研究结论不被情景替换
+        snap2 = client.get("/api/v2/knowledge/stock/BE/dossier").json()
+        assert snap2["summary"]["thesis_kind"] == before
+        assert scen["artifact_id"] not in snap2["research"]["artifact_refs"]
+        # research_sources 分区展示用户情景
+        mod = client.get(
+            f"/api/v2/dossiers/{snap2['context']['snapshot_id']}/modules/research_sources"
+        ).json()
+        assert any(s["artifact_id"] == scen["artifact_id"] for s in mod["payload"]["scenarios"])

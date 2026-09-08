@@ -96,6 +96,8 @@ class ResearchPlan(BaseModel):
     scope: dict[str, Any] = Field(default_factory=dict)  # focus/modules/periods 限定
     base_snapshot_id: str | None = None  # targeted/refresh 的对照基线
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    #: 问题状态最后一次更新时刻（存储层维护）：历史投影据此判断状态是否可分辨（review #10）
+    updated_at: datetime | None = None
     status: Literal["active", "completed", "abandoned"] = "active"
     run_id: str | None = None
     frozen: bool = True

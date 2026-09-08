@@ -51,6 +51,8 @@ class ValuationPreviewRequest(BaseModel):
     formula_id: str = Field(min_length=1)
     inputs: list[dict[str, Any]] = Field(default_factory=list)
     assumptions: dict[str, str] = Field(default_factory=dict)
+    #: 绑定基线快照（§10.1）：给出时引用必须属于该快照的冻结输入且 as_of 前可知
+    base_snapshot: str | None = None
 
 
 class ExportRequest(BaseModel):
@@ -203,30 +205,14 @@ def create_dossier_router(
         metric: str = "",
         frequency: str = "",
     ) -> dict[str, Any]:
-        """规范化序列（同一快照上下文）：缺期、重述与冲突显式返回，不猜数。"""
+        """规范化序列（同一冻结快照，review #2）：按快照输入版本集读取，
+        缺期、重述与冲突显式返回，不猜数。"""
+        if frequency and frequency not in ("FY", "Q", "H1", "TTM", "instant"):
+            raise HTTPException(status_code=422, detail=f"未知 frequency {frequency!r}")
         try:
-            snap = dossier.get(snapshot_id)
+            return dossier.frozen_series(snapshot_id, metric=metric, frequency=frequency)
         except DossierError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
-        from ..dossier.projector import series_set
-
-        ctx = snap["context"]
-        t = datetime.fromisoformat(ctx["as_of"])
-        entity = snap["entity"]
-        observations = metrics.observations_as_of(
-            entity["kind"], entity["id"], t, namespace=ctx["namespace"],
-            metric_key=metric or None, frequency=frequency or None,
-        )
-        conflicted = set(metrics.conflicted_semantic_hashes(
-            entity["kind"], entity["id"], namespace=ctx["namespace"]
-        ))
-        resolutions = {
-            r.semantic_hash
-            for r in metrics.resolutions_as_of(entity["kind"], entity["id"], t, namespace=ctx["namespace"])
-        }
-        s = series_set(observations, sorted({o.metric_key for o in observations}),
-                       conflicted_sems=(conflicted - resolutions))
-        return {"snapshot_id": snapshot_id, "as_of": ctx["as_of"], **s.model_dump(mode="json")}
 
     @router.get("/knowledge/compare")
     def compare(
@@ -234,9 +220,14 @@ def create_dossier_router(
         metric: str,
         as_of: Annotated[datetime | None, Query()] = None,
         namespace: str = "prod",
+        frequency: str = "",
+        period_end: str = "",
     ) -> dict[str, Any]:
-        """同一截止时点的跨实体比较（不满足口径则给 exclusions，不硬比）。"""
+        """同一截止时点的跨实体比较（review #16）：共同期间才算可比——
+        FY2024 全年与 2024Q4 单季不得返回 comparable；口径/币种不一致同样降级。"""
         t = as_of or datetime.now(UTC)
+        if frequency and frequency not in ("FY", "Q", "H1", "TTM", "instant"):
+            raise HTTPException(status_code=422, detail=f"未知 frequency {frequency!r}")
         items: list[dict[str, Any]] = []
         exclusions: list[dict[str, str]] = []
         for part in [p for p in entities.split(",") if p]:
@@ -247,9 +238,20 @@ def create_dossier_router(
             obs = metrics.observations_as_of(
                 kind, eid, t, namespace=namespace, metric_key=metric
             )
-            usable = [o for o in obs if o.status == "ok" and o.value is not None]
+            usable = [
+                o for o in obs
+                if o.status == "ok" and o.value is not None and not o.dimensions
+                and o.nature in ("reported", "calculated")
+            ]
+            if frequency:
+                usable = [o for o in usable if o.period.frequency == frequency]
+            if period_end:
+                usable = [o for o in usable if o.period.end.isoformat() == period_end]
             if not usable:
-                exclusions.append({"entity": part, "reason": f"as_of 无 {metric} 的 typed 观测"})
+                reason = f"as_of 无 {metric} 的 typed 观测"
+                if frequency or period_end:
+                    reason += f"（限定 {frequency or '任意频率'}/{period_end or '任意期间'}）"
+                exclusions.append({"entity": part, "reason": reason})
                 continue
             best = max(usable, key=lambda o: (o.period.end, o.knowledge_time))
             items.append({
@@ -259,18 +261,29 @@ def create_dossier_router(
                 "unit": best.unit,
                 "currency": best.currency,
                 "period_label": best.period.fiscal_label or best.period.end.isoformat(),
+                "period_end": best.period.end.isoformat(),
+                "frequency": best.period.frequency,
                 "basis": best.basis,
                 "nature": best.nature,
                 "observation_id": best.observation_id,
             })
-        # 口径一致性检查：币种/basis 不一致 → 标不可比原因（§4.4 模块 8）
+        # 口径一致性：共同期间/频率/币种/basis 全部一致才 comparable（§4.4 模块 8）
+        notes = []
         currencies = {i["currency"] for i in items if i["currency"]}
         bases = {i["basis"] for i in items}
-        notes = []
+        period_ends = {i["period_end"] for i in items}
+        frequencies = {i["frequency"] for i in items}
         if len(currencies) > 1:
             notes.append(f"币种不一致（{sorted(currencies)}）——需显式 FX 换算后才可比")
         if len(bases) > 1:
             notes.append(f"会计口径不一致（{sorted(bases)}）")
+        if len(period_ends) > 1:
+            notes.append(
+                f"期间不一致（{sorted(period_ends)}）——全年与单季/不同截止日不可直接比较；"
+                "可用 frequency/period_end 参数限定共同期间"
+            )
+        if len(frequencies) > 1:
+            notes.append(f"频率不一致（{sorted(frequencies)}）")
         return {"metric": metric, "as_of": t.isoformat(), "items": items,
                 "exclusions": exclusions, "notes": notes,
                 "comparable": not notes and len(items) >= 2}
@@ -308,14 +321,22 @@ def create_dossier_router(
             raise HTTPException(status_code=422, detail=f"未知 depth {req.depth!r}")
         if req.idempotency_key and req.idempotency_key in _IDEMPOTENCY:
             return _IDEMPOTENCY[req.idempotency_key]
+        if req.entity_kind not in ("stock", "industry"):
+            raise HTTPException(status_code=422, detail=f"未知 entity_kind {req.entity_kind!r}")
         session = req.session_run_id or f"live-{uuid.uuid4().hex[:8]}"
         args = [f"--depth={req.depth}"]
         if req.focus:
             args.append(f"--focus={req.focus}")
         objective = req.objective or f"深度研究 {req.entity_id}"
-        raw = f"/research {req.entity_id} {' '.join(args)} {objective}".strip()
+        # 实体类型保留（review #23）：行业档案发起的补研必须仍研究行业实体，
+        # 不得退化成同名股票（industry:<slug> 形态由 parse_target 识别）
+        ticker = (
+            f"industry:{req.entity_id.lower()}" if req.entity_kind == "industry"
+            else req.entity_id.upper()
+        )
+        raw = f"/research {ticker} {' '.join(args)} {objective}".strip()
         parsed = ParsedCommand(
-            name="research", raw_input=raw, ticker=req.entity_id.upper(),
+            name="research", raw_input=raw, ticker=ticker,
             objective=objective,
             extra={"depth": req.depth, "focus": req.focus,
                    "base_snapshot": req.base_snapshot or ""},
@@ -342,11 +363,37 @@ def create_dossier_router(
             inputs = [InputRef.model_validate(i) for i in req.inputs]
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"inputs 非法: {e}") from e
+        as_of = None
+        namespace = "prod"
+        if req.base_snapshot:
+            # 绑定基线快照（review #4）：引用必须属于快照冻结输入且 as_of 前可知
+            try:
+                snap = dossier.get(req.base_snapshot)
+            except DossierError as e:
+                raise HTTPException(status_code=e.status, detail=str(e)) from e
+            if (snap["entity"]["kind"], snap["entity"]["id"]) != (req.entity_kind, req.entity_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"基线快照属于 {snap['entity']['kind']}:{snap['entity']['id']}，"
+                           f"与请求实体 {req.entity_kind}:{req.entity_id} 不符",
+                )
+            namespace = snap["context"]["namespace"]
+            as_of = datetime.fromisoformat(snap["context"]["as_of"])
+            frozen_obs = set((snap.get("inputs") or {}).get("observation_ids") or [])
+            for ref in inputs:
+                if ref.kind == "observation" and ref.ref_id and frozen_obs \
+                        and ref.ref_id not in frozen_obs:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"引用 {ref.ref_id} 不属于基线快照的冻结输入"
+                               "（计算必须基于同一可见世界）",
+                    )
         try:
             result = calculations.calculate(
                 entity_kind=req.entity_kind, entity_id=req.entity_id,
                 formula_id=req.formula_id, inputs=inputs,
                 assumptions=req.assumptions, run_id="valuation-preview",
+                namespace=namespace, as_of=as_of,
             )
         except CalculationError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
@@ -362,12 +409,36 @@ def create_dossier_router(
     def save_scenario(req: ScenarioSaveRequest) -> dict[str, Any]:
         if req.idempotency_key and req.idempotency_key in _SCENARIO_IDEM:
             return _SCENARIO_IDEM[req.idempotency_key]
-        # 基线快照必须存在（情景绑定输入 snapshot）；DossierError → 404
-        dossier.get(req.base_snapshot)
+        # 基线快照必须存在且与计算同实体同命名空间（review #25）
+        try:
+            snap = dossier.get(req.base_snapshot)
+        except DossierError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
         calc = metrics.get_calculation(req.validated_calculation_id)
         if calc is None:
             raise HTTPException(status_code=404,
                                 detail=f"计算不存在: {req.validated_calculation_id}")
+        if (calc.entity_kind, calc.entity_id) != (snap["entity"]["kind"], snap["entity"]["id"]):
+            raise HTTPException(
+                status_code=409,
+                detail=f"计算属于 {calc.entity_kind}:{calc.entity_id}，"
+                       f"与基线快照实体 {snap['entity']['kind']}:{snap['entity']['id']} 不符",
+            )
+        if calc.namespace != snap["context"]["namespace"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"计算命名空间 {calc.namespace!r} 与基线快照 "
+                       f"{snap['context']['namespace']!r} 不符（跨命名空间保存拒绝）",
+            )
+        # 模型版本必须与计算一致（容忍 @1 / @v1 两种写法，不容忍任意版本）
+        expected_version = f"{calc.formula_id}@v{calc.formula_version}"
+        norm = lambda s: s.replace("@v", "@")  # noqa: E731
+        if norm(req.model_version) != norm(expected_version):
+            raise HTTPException(
+                status_code=422,
+                detail=f"model_version 必须与计算一致：期望 {expected_version}，"
+                       f"收到 {req.model_version!r}（不得声明任意模型版本）",
+            )
         if calc.input_hash != req.assumption_hash:
             raise HTTPException(
                 status_code=409,
@@ -379,6 +450,16 @@ def create_dossier_router(
         if calc.status != "ok":
             raise HTTPException(status_code=422,
                                 detail=f"计算状态 {calc.status} 不可保存为情景（失败不产出貌似有效的结果）")
+        # 计算输入必须属于基线快照的冻结世界（review #25：不得用快照外观测支撑情景）
+        frozen_obs = set((snap.get("inputs") or {}).get("observation_ids") or [])
+        if frozen_obs:
+            for ref in calc.payload.get("input_refs", []):
+                if ref.get("kind") == "observation" and ref.get("ref_id") \
+                        and ref["ref_id"] not in frozen_obs:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"计算输入 {ref['ref_id']} 不属于基线快照的冻结输入",
+                    )
         from datetime import UTC
         from datetime import datetime as _dt
 
@@ -419,11 +500,16 @@ def create_dossier_router(
             report_document=doc,
             calculation_ids=[calc.calculation_id],
             snapshot_refs=[req.base_snapshot],
-            status="validated",  # 引用完整性已验（计算存在且 hash 匹配）
+            status="validated",  # 引用完整性已验（计算存在、hash 匹配、同实体同命名空间）
             sufficiency="partial",  # 情景不是完整研究
+            purpose="scenario",  # review #26：不进默认发布投影/首屏结论
             created_at=now,
             evidence_cutoff=now,
         ).with_id()
+        # 保存前渲染可读正文（review #27：产物页只渲染 markdown，不得存空壳）
+        from ..research.artifacts import render_markdown
+
+        artifact.markdown = render_markdown(artifact, store=metrics, kb=kb)
         metrics.save_artifact(artifact_id=artifact.artifact_id, namespace=calc.namespace,
                               payload=artifact.model_dump(mode="json"))
         result = {

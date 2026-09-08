@@ -22,7 +22,12 @@ from ..harness.manifest import RunManifest, RunMode
 from .errors import KnowledgeInvariantError, KnowledgeLeakError, MissingEvidenceError
 from .metric_store import MetricStore
 from .metrics import MetricObservation
-from .normalization import NormalizationError, assert_typed_leaves, recompute_lineage
+from .normalization import (
+    NormalizationError,
+    assert_magnitude_bound,
+    assert_typed_leaves,
+    recompute_lineage,
+)
 from .store import BitemporalStore
 
 logger = logging.getLogger("finance_agent.knowledge.metrics")
@@ -83,9 +88,16 @@ class TypedMetricWriter:
             evidences.append(self._kb.get_evidence(eid))  # raises MissingEvidenceError
 
         # 2) 换算血缘可重算（有 raw 的观测必须逐步一致；无 raw 只校验 Decimal 合法性——
-        #    模型层已保证）
+        #    模型层已保证）+ 量级绑定（review #1：数字+规模词必须在摘录中逐字可定位，
+        #    堵「证据 million 提交 billion」与「丢规模词缩小 1000 倍」两类量级事故）
         if obs.raw is not None:
             recompute_lineage(obs)
+            if evidences:
+                assert_magnitude_bound(
+                    obs.raw.value_text,
+                    obs.raw.unit_text,
+                    [e.verbatim_quote for e in evidences],
+                )
 
         # 3) 引用完整性：calculated → CalculationRun 已登记；model_estimate → artifact 已冻结
         if (

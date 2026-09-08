@@ -15,7 +15,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -315,6 +315,38 @@ class MetricStore:
         ).fetchone()
         return observation_from_dict(json.loads(row[0])) if row else None
 
+    def get_ref_meta(self, ref_id: str) -> dict[str, Any] | None:
+        """引用上下文元数据（review #4/#5）：namespace/实体/可知时刻——
+        计算与论断的引用必须同命名空间同实体才可信。"""
+        specs = (
+            ("obs-", "metric_observations", "observation_id", "metric_key"),
+            ("calc-", "calculation_runs", "calculation_id", "formula_id"),
+            ("claim-", "research_claims", "claim_id", None),
+            ("artifact-", "research_artifacts", "artifact_id", None),
+            ("plan-", "research_plans", "plan_id", None),
+        )
+        for prefix, table, id_col, extra_col in specs:
+            if not ref_id.startswith(prefix):
+                continue
+            cols = "namespace, entity_kind, entity_id, created_at" if table != "metric_observations" \
+                else "namespace, entity_kind, entity_id, knowledge_time"
+            if extra_col:
+                cols += f", {extra_col}"
+            row = self._conn.execute(
+                f"SELECT {cols} FROM {table} WHERE {id_col} = ?",  # noqa: S608 - 表名来自白名单
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            meta = {
+                "kind": prefix.rstrip("-"), "namespace": row[0], "entity_kind": row[1],
+                "entity_id": row[2], "knowledge_time": row[3],
+            }
+            if extra_col:
+                meta["label"] = row[4]
+            return meta
+        return None
+
     def observations_as_of(
         self,
         entity_kind: str,
@@ -369,24 +401,50 @@ class MetricStore:
         return out
 
     def observation_history(
-        self, semantic_hash: str, *, namespace: str = "prod"
+        self, semantic_hash: str, *, namespace: str = "prod", as_of: datetime | None = None,
     ) -> list[MetricObservation]:
-        rows = self._conn.execute(
-            "SELECT payload_json FROM metric_observations WHERE namespace = ?"
-            " AND semantic_hash = ? ORDER BY version",
-            (namespace, semantic_hash),
-        ).fetchall()
+        """版本链；as_of 限定时只返回当时可知的版本（历史页面不泄露未来重述）。"""
+        sql = "SELECT payload_json FROM metric_observations WHERE namespace = ? AND semantic_hash = ?"
+        args: list[Any] = [namespace, semantic_hash]
+        if as_of is not None:
+            sql += " AND knowledge_time <= ?"
+            args.append(as_of.isoformat())
+        rows = self._conn.execute(sql + " ORDER BY version", args).fetchall()
         return [observation_from_dict(json.loads(r[0])) for r in rows]
 
     def conflicted_semantic_hashes(
-        self, entity_kind: str, entity_id: str, *, namespace: str = "prod"
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod",
+        as_of: datetime | None = None,
+        exclude_resolved: bool = False,
     ) -> list[str]:
-        rows = self._conn.execute(
+        """竞争语义键。as_of 限定：只有 knowledge_time ≤ T 的竞争版本才算「当时可见冲突」
+        （review #3：历史页面不得提前泄露未来才可知的竞争值）。"""
+        sql = (
             "SELECT DISTINCT semantic_hash FROM metric_observations"
-            " WHERE namespace = ? AND entity_kind = ? AND entity_id = ? AND conflict_flag = 1",
-            (namespace, entity_kind, entity_id),
-        ).fetchall()
-        return [r[0] for r in rows]
+            " WHERE namespace = ? AND entity_kind = ? AND entity_id = ? AND conflict_flag = 1"
+        )
+        args: list[Any] = [namespace, entity_kind, entity_id]
+        if as_of is not None:
+            sql += " AND knowledge_time <= ?"
+            args.append(as_of.isoformat())
+            # 同一语义键在 T 前只有一个版本时，竞争标记来自未来版本 → 不算当时冲突
+            sql += (
+                " AND (SELECT COUNT(*) FROM metric_observations m2"
+                " WHERE m2.namespace = metric_observations.namespace"
+                " AND m2.semantic_hash = metric_observations.semantic_hash"
+                " AND m2.knowledge_time <= ?) > 1"
+            )
+            args.append(as_of.isoformat())
+        rows = self._conn.execute(sql, args).fetchall()
+        sems = {r[0] for r in rows}
+        if exclude_resolved:
+            t = as_of or datetime.now()
+            resolved = {
+                r.semantic_hash
+                for r in self.resolutions_as_of(entity_kind, entity_id, t, namespace=namespace)
+            }
+            sems -= resolved
+        return sorted(sems)
 
     # ---------------- 裁决（时态化） ----------------
 
@@ -474,8 +532,75 @@ class MetricStore:
 
     # ---------------- 研究计划 ----------------
 
+    def update_plan_question(
+        self, plan_id: str, question_id: str, patch: dict[str, Any], *, namespace: str = "prod",
+    ) -> dict[str, Any] | None:
+        """原子更新单个问题（review #8）：读-改-写全程持锁，并行 worker
+        各自回答不同问题不互相覆盖。patch 语义：status/conclusion 覆盖，
+        support_refs/counter_refs/unresolved/attempts 合并去重。返回更新后的问题。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM research_plans WHERE plan_id = ? AND namespace = ?",
+                (plan_id, namespace),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = json.loads(row[0])
+            question = next(
+                (q for q in payload.get("questions", []) if q.get("question_id") == question_id),
+                None,
+            )
+            if question is None:
+                return None
+            for key in ("status", "conclusion"):
+                if patch.get(key):
+                    question[key] = patch[key]
+            for key in ("support_refs", "counter_refs", "unresolved", "attempts"):
+                incoming = [str(x) for x in patch.get(key) or []]
+                if incoming:
+                    question[key] = sorted({*question.get(key, []), *incoming})
+            # updated_at：历史投影据此判断问题状态是否在 as_of 后被改过（review #10）
+            payload["updated_at"] = datetime.now(UTC).isoformat()
+            self._conn.execute(
+                "UPDATE research_plans SET payload_json = ? WHERE plan_id = ? AND namespace = ?",
+                (json.dumps(payload, ensure_ascii=False), plan_id, namespace),
+            )
+            self._conn.commit()
+            return dict(question)
+
+    def set_plan_status(self, plan_id: str, status: str, *, namespace: str = "prod") -> None:
+        """计划收尾状态（同样锁内读改写，不与问题更新互踩）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM research_plans WHERE plan_id = ? AND namespace = ?",
+                (plan_id, namespace),
+            ).fetchone()
+            if row is None:
+                return
+            payload = json.loads(row[0])
+            payload["status"] = status
+            self._conn.execute(
+                "UPDATE research_plans SET status = ?, payload_json = ?"
+                " WHERE plan_id = ? AND namespace = ?",
+                (status, json.dumps(payload, ensure_ascii=False), plan_id, namespace),
+            )
+            self._conn.commit()
+
+    def list_calculation_ids(
+        self, entity_kind: str, entity_id: str, t: datetime, *, namespace: str = "prod",
+        limit: int = 200,
+    ) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT calculation_id FROM calculation_runs WHERE namespace = ? AND entity_kind = ?"
+            " AND entity_id = ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+            (namespace, entity_kind, entity_id, t.isoformat(), limit),
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def save_plan(self, *, plan_id: str, namespace: str, payload: dict[str, Any]) -> str:
         p = payload
+        p.setdefault("created_at", datetime.now(UTC).isoformat())
+        p["updated_at"] = p.get("updated_at") or p["created_at"]
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO research_plans (plan_id, namespace, entity_kind,"
@@ -498,13 +623,23 @@ class MetricStore:
         return json.loads(row[0]) if row else None
 
     def plans_for(
-        self, entity_kind: str, entity_id: str, *, namespace: str = "prod", limit: int = 20
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod", limit: int = 20,
+        as_of: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT payload_json FROM research_plans WHERE namespace = ? AND entity_kind = ?"
-            " AND entity_id = ? ORDER BY created_at DESC LIMIT ?",
-            (namespace, entity_kind, entity_id, limit),
-        ).fetchall()
+        """计划列表；as_of 限定时只返回当时已创建的计划（review #10）。
+
+        历史投影的问题状态说明：本库不存事件，无法回放 T 时点的逐问题状态；
+        投影层（projector）因此对历史快照只展示计划范围，问题状态标为
+        「历史投影不可分辨」，不直接复用今日状态冒充当时进展。"""
+        sql = (
+            "SELECT payload_json FROM research_plans WHERE namespace = ?"
+            " AND entity_kind = ? AND entity_id = ?"
+        )
+        args: list[Any] = [namespace, entity_kind, entity_id]
+        if as_of is not None:
+            sql += " AND created_at <= ?"
+            args.append(as_of.isoformat())
+        rows = self._conn.execute(sql + " ORDER BY created_at DESC LIMIT ?", (*args, limit)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     # ---------------- 研究论断 ----------------

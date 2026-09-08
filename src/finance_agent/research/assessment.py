@@ -54,6 +54,7 @@ class ResearchAssessment(BaseModel):
     assessment_id: str = Field(default_factory=lambda: f"assess-{uuid.uuid4().hex[:10]}")
     plan_id: str
     entity: str
+    namespace: str = "prod"  # 评估查询的上下文过滤键（review #11：eval 评估不得泄漏进生产档案）
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     integrity_checks: list[IntegrityCheck] = Field(default_factory=list)
     question_coverage: CoverageStats = Field(default_factory=CoverageStats)
@@ -106,6 +107,7 @@ def assess(
     open_conflicts: int = 0,
     stale_fields: list[str] | None = None,
     stop_reason: str = "",
+    namespace: str = "prod",
     now: datetime | None = None,
 ) -> ResearchAssessment:
     """确定性评估（硬门禁由代码运行）。LLM rubric 结果不进本函数的门禁判断。"""
@@ -251,6 +253,7 @@ def assess(
     return ResearchAssessment(
         plan_id=plan.plan_id,
         entity=f"{plan.entity_kind}:{plan.entity_id}",
+        namespace=namespace,
         created_at=now or datetime.now(UTC),
         integrity_checks=checks,
         question_coverage=cov,

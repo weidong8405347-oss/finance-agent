@@ -71,6 +71,15 @@ class TestClassify:
         c = classify_fact("market_cap_2026-07-03", "5299")  # 无币种提示
         assert c["confidence"] == "review" and "不猜货币" in c["reason"]
 
+    def test_hk_dollar_not_misread_as_usd(self):
+        """review #31：HK$ 必须先于裸 $ 匹配，不得标成 USD 进入自动迁移。"""
+        c = classify_fact("market_cap_2026-07-03", "HK$5,299")
+        assert c["confidence"] == "high" and c["currency"] == "HKD"
+        c2 = classify_fact("market_cap_2026-07-03", "$5,299")
+        assert c2["currency"] == "USD"  # 裸 $ 默认美元（已排除 HK$/US$ 先行）
+        c3 = classify_fact("市值（2026-07-03）", "US$5,299")
+        assert c3["currency"] == "USD"
+
     def test_prose_stays_legacy(self):
         c = classify_fact("business_model", "sells fuel cells")
         assert c["confidence"] == "text"

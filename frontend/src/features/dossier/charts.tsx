@@ -74,10 +74,15 @@ export function MetricChart({ series, height = 260, onPointClick, title }: Chart
   const [showTable, setShowTable] = useState(false);
   const [unplottable, setUnplottable] = useState<string[]>([]);
 
+  // 依赖完整序列化（review #18）：值变化（点数不变）/切换历史快照都必须重建配置
+  const seriesFingerprint = JSON.stringify(
+    series.map((s) => [s.metric_key, s.unit, s.frequency,
+      s.points.map((p) => [p.period_label, p.value, p.nature, p.conflict])]),
+  );
   const { option, plottable, dropped, clickHandler } = useMemo(
     () => buildOption(series, onPointClick),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(series.map((s) => [s.metric_key, s.points.length, s.unit])), onPointClick],
+    [seriesFingerprint, onPointClick],
   );
 
   useEffect(() => {
@@ -137,7 +142,7 @@ export function MetricChart({ series, height = 260, onPointClick, title }: Chart
   );
 }
 
-function buildOption(
+export function buildOption(
   series: MetricSeries[],
   onPointClick?: (info: PointClickInfo) => void,
 ): {
@@ -150,14 +155,23 @@ function buildOption(
   const plottable: MetricSeries[] = [];
   const legends: string[] = [];
   const echartsSeries: any[] = [];
-  const categories: string[] = [];
+
+  // 先固定完整时间轴再排列各序列（review #17）：否则各序列按当时已知的
+  // 类别子集对齐，后加入的期间会使先构建的序列错位
+  const labelEnd = new Map<string, string>();
+  for (const s of series) {
+    for (const p of s.points) {
+      const prev = labelEnd.get(p.period_label);
+      if (!prev || p.period_end > prev) labelEnd.set(p.period_label, p.period_end);
+    }
+  }
+  const categories = [...labelEnd.keys()].sort(
+    (a, b) => (labelEnd.get(a)! === labelEnd.get(b)! ? a.localeCompare(b) : labelEnd.get(a)! < labelEnd.get(b)! ? -1 : 1),
+  );
 
   for (const s of series) {
     const points: (number | null)[] = [];
     let any = false;
-    for (const p of s.points) {
-      if (!categories.includes(p.period_label)) categories.push(p.period_label);
-    }
     for (const label of categories) {
       const p = s.points.find((x) => x.period_label === label);
       if (!p) { points.push(null); continue; }
@@ -188,7 +202,6 @@ function buildOption(
       itemStyle: { color: style.color },
     });
   }
-  categories.sort();
 
   const option: echarts.EChartsCoreOption = {
     animation: false, // 默认不自动播放动画（§4.5：尊重 prefers-reduced-motion 的保守默认）

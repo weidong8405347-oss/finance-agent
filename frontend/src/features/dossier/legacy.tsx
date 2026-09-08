@@ -131,6 +131,11 @@ export function ConflictResolver({ kind, id, field, factId, onResolved, readOnly
         <button onClick={toggleVersions} className="text-[11px] text-neutral-500 hover:underline">
           {versions ? "收起版本链" : "查看版本链"}
         </button>
+        {readOnly && versions && (
+          <span className="text-[10px] text-indigo-600">
+            注意：版本链来自 v1 当前库，未按历史 as_of 过滤（仅供审计参考）
+          </span>
+        )}
       </div>
       {error && <div className="text-[11px] text-red-600">裁决失败：{error}</div>}
       {versions && (

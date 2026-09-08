@@ -157,6 +157,54 @@ class DossierService:
             out.reasons = [*out.reasons, "底层数据已有更新（刷新可切到新快照）"]
         return out
 
+    def _frozen_view(self, snap: dict[str, Any]) -> dict[str, Any]:
+        """按快照冻结的输入版本集读数据（review #2）：模块/来源/序列请求不再
+        重查当前库——补录历史观测不会改变已冻结快照的任何模块内容。
+
+        旧快照（契约升级前，无 inputs）回退 as_of 查询并标注 frozen=False。"""
+        inputs = snap.get("inputs") or {}
+        ctx = snap["context"]
+        t = datetime.fromisoformat(ctx["as_of"])
+        ns = ctx["namespace"]
+        kind, eid = snap["entity"]["kind"], snap["entity"]["id"]
+        frozen = "observation_ids" in inputs or "fact_ids" in inputs
+        if not frozen:
+            return {
+                "frozen": False,
+                "facts": self._kb.view(kind, eid, t, namespace=ns),
+                "observations": self._metrics.observations_as_of(kind, eid, t, namespace=ns),
+                "claims": self._metrics.claims_as_of(kind, eid, t, namespace=ns),
+                "artifacts": self._metrics.artifacts_as_of(kind, eid, t, namespace=ns),
+                "conflicted": set(self._metrics.conflicted_semantic_hashes(
+                    kind, eid, namespace=ns, as_of=t, exclude_resolved=True)),
+                "calculation_ids": self._metrics.list_calculation_ids(kind, eid, t, namespace=ns),
+                "plans": self._metrics.plans_for(kind, eid, namespace=ns, limit=5, as_of=t),
+                "plan_status_reliable": True,
+            }
+        facts: dict[str, Any] = {}
+        for field, fact_id in (inputs.get("fact_ids") or {}).items():
+            rec = self._kb.get_fact(fact_id)
+            if rec is not None:
+                facts[field] = rec
+        observations = []
+        for oid in inputs.get("observation_ids") or []:
+            obs = self._metrics.get_observation(oid)
+            if obs is not None:
+                observations.append(obs)
+        observations.sort(key=lambda o: (o.metric_key, o.period.end, o.period.frequency))
+        plan = inputs.get("plan")
+        return {
+            "frozen": True,
+            "facts": facts,
+            "observations": observations,
+            "claims": list(inputs.get("claims") or []),
+            "artifacts": list(inputs.get("artifacts") or []),
+            "conflicted": set(inputs.get("conflicted_semantic_hashes") or []),
+            "calculation_ids": list(inputs.get("calculation_ids") or []),
+            "plans": [plan] if plan else [],
+            "plan_status_reliable": bool(inputs.get("plan_status_reliable", True)),
+        }
+
     def _build_module_payload(
         self,
         entity_kind: str,
@@ -167,49 +215,47 @@ class DossierService:
         snap: dict[str, Any],
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        facts = self._kb.view(entity_kind, entity_id, t, namespace=ns)
-        observations = self._metrics.observations_as_of(entity_kind, entity_id, t, namespace=ns)
-        claims = self._metrics.claims_as_of(entity_kind, entity_id, t, namespace=ns)
-        conflicted = set(self._metrics.conflicted_semantic_hashes(entity_kind, entity_id, namespace=ns))
-        resolutions = {
-            r.semantic_hash
-            for r in self._metrics.resolutions_as_of(entity_kind, entity_id, t, namespace=ns)
-        }
-        conflicted -= resolutions
+        view = self._frozen_view(snap)
+        facts = view["facts"]
+        observations = view["observations"]
+        claims = view["claims"]
+        conflicted = view["conflicted"]
         frequency = params.get("frequency")  # 白名单视图参数：metric/frequency
+        frozen_note = [] if view["frozen"] else [
+            "旧快照（无冻结输入清单）：按 as_of 重查，回填数据可能影响一致性"
+        ]
 
         if module == "investment_snapshot":
             return {
                 "summary": snap.get("summary", {}),
                 "claims": [_claim_item(c) for c in claims[:20]],
                 "assessment": self._latest_assessment(entity_kind, entity_id, ns, t),
+                "notes": frozen_note,
             }
         if module == "business_engine":
-            graph = business_graph(facts, claims)
-            return {"graph": graph.model_dump(mode="json")}
+            graph = business_graph(facts, claims, entity_kind=entity_kind)
+            return {"graph": graph.model_dump(mode="json"), "notes": frozen_note}
         if module == "revenue_segments":
             seg_obs = [o for o in observations if o.dimensions.get("segment")]
             segments = sorted({o.dimensions["segment"] for o in seg_obs})
-            series = []
-            for seg in segments:
-                subset = [o for o in seg_obs if o.dimensions.get("segment") == seg]
-                keys = sorted({o.metric_key for o in subset})
-                s = series_set(subset, keys, frequency=frequency, conflicted_sems=conflicted)
-                for ms in s.series:
-                    ms.label = f"{seg} · {ms.metric_key}"
-                series.extend(s.series)
+            # series_set 按完整语义键拆分（含 dimensions），分部不会混进合并序列
+            seg_series = series_set(
+                seg_obs, sorted({o.metric_key for o in seg_obs}),
+                frequency=frequency, conflicted_sems=conflicted,
+            )
             total = series_set(
                 [o for o in observations if o.metric_key == "revenue" and not o.dimensions],
                 ["revenue"], {"revenue": "总收入"}, frequency=frequency, conflicted_sems=conflicted,
+                natures=("reported", "calculated"),
             )
-            notes = []
+            notes = list(frozen_note)
             if segments and total.series:
                 notes.append("分部合计与总收入不一致时以未分配/抵销项解释（§6.4.10）")
             if not segments:
                 notes.append("无分部观测——仅展示总收入（缺分部不编造拆分）")
             return {
                 "total": total.model_dump(mode="json"),
-                "segments": [s.model_dump(mode="json") for s in series],
+                "segments": [s.model_dump(mode="json") for s in seg_series.series],
                 "notes": notes,
             }
         if module == "key_kpi":
@@ -222,10 +268,14 @@ class DossierService:
                 recipe = load_recipe("general")
             keys = [k.key for k in recipe.kpis]
             labels = {k.key: k.label for k in recipe.kpis}
-            s = series_set(observations, keys, labels, frequency=frequency, conflicted_sems=conflicted)
+            # 主图只画合并口径的披露/计算值；指引/预期/分部各自归对应模块（review #15）
+            consolidated = [o for o in observations if not o.dimensions]
+            s = series_set(consolidated, keys, labels, frequency=frequency,
+                           conflicted_sems=conflicted, natures=("reported", "calculated"))
             missing = [k for k in keys if k not in {x.metric_key for x in s.series}]
             for m in missing:
                 s.notes.append(f"KPI 缺口: {labels.get(m, m)}（未披露项保留缺口，不猜数）")
+            s.notes.extend(frozen_note)
             return {"series_set": s.model_dump(mode="json"),
                     "kpi_definitions": [k.model_dump() for k in recipe.kpis]}
         if module == "financial_quality":
@@ -235,17 +285,22 @@ class DossierService:
                       "net_income": "净利润", "cfo": "经营现金流", "capex": "资本开支",
                       "fcf": "自由现金流(CFO−Capex)", "net_debt": "净债务", "cash": "现金",
                       "total_debt": "有息负债", "ebitda": "EBITDA"}
+            consolidated = [
+                o for o in observations
+                if not o.dimensions and o.nature in ("reported", "calculated")
+            ]
             fy = series_set(
-                observations, keys, labels, frequency=frequency or "FY", conflicted_sems=conflicted
+                consolidated, keys, labels, frequency=frequency or "FY", conflicted_sems=conflicted
             )
-            q = series_set(observations, keys, labels, frequency="Q", conflicted_sems=conflicted)
-            calcs = self._calculations(entity_kind, entity_id, ns, t)
+            q = series_set(consolidated, keys, labels, frequency="Q", conflicted_sems=conflicted)
+            calcs = self._calculations_by_ids(view["calculation_ids"], t)
             legacy = [
                 f.model_dump(mode="json")
                 for f in legacy_fact_items(self._kb, facts)
                 if f.field in ("revenue_fy", "net_income_fy", "cash_flow")
             ]
-            notes = ["毛利→营业利润→FCF 不是恒等链：桥接项（税/非现金/营运资本/Capex）见计算引用"]
+            notes = ["毛利→营业利润→FCF 不是恒等链：桥接项（税/非现金/营运资本/Capex）见计算引用",
+                     *frozen_note]
             return {
                 "fy": fy.model_dump(mode="json"),
                 "quarterly": q.model_dump(mode="json"),
@@ -256,14 +311,15 @@ class DossierService:
         if module == "expectations":
             g = [o for o in observations if o.nature in ("guidance", "consensus")]
             actuals = [o for o in observations if o.nature == "reported"]
-            calcs = [c for c in self._calculations(entity_kind, entity_id, ns, t)
+            calcs = [c for c in self._calculations_by_ids(view["calculation_ids"], t)
                      if c.get("formula_id") == "guidance_delta"]
-            notes = []
+            notes = list(frozen_note)
             if not any(o.nature == "consensus" for o in g):
                 notes.append("无 consensus 快照——只比较公司指引（缺快照不可回填）")
             if not g:
                 notes.append("本模块数据能力缺口：无指引/一致预期观测")
             return {
+                # guidance/consensus 各自成序列（nature 进语义键，review #15）
                 "guidance_consensus": series_set(g, sorted({o.metric_key for o in g}),
                                                  conflicted_sems=conflicted).model_dump(mode="json"),
                 "actuals": series_set(actuals, sorted({o.metric_key for o in actuals})[:6],
@@ -272,7 +328,7 @@ class DossierService:
                 "notes": notes,
             }
         if module == "valuation_lab":
-            calcs = self._calculations(entity_kind, entity_id, ns, t)
+            calcs = self._calculations_by_ids(view["calculation_ids"], t)
             model_calcs = [c for c in calcs if c.get("formula_id") in
                            ("reverse_dcf", "sensitivity_grid", "enterprise_value", "margin")]
             legacy = [
@@ -282,6 +338,7 @@ class DossierService:
             notes = [
                 "反向求解显示「在这些假设下价格隐含的增长率」，不是唯一反推（§8.3）",
                 "买卖评级/目标价区间归 /decide——本页只呈现研究假设与已披露倍数（D1 边界）",
+                *frozen_note,
             ]
             return {"calculations": model_calcs, "legacy": legacy, "notes": notes}
         if module == "peers":
@@ -290,8 +347,9 @@ class DossierService:
                 for f in legacy_fact_items(self._kb, facts)
                 if f.field in ("peers", "moat", "market_share", "competition", "player_landscape")
             ]
+            # 同业观测是跨实体视图（各自独立快照语义）：按同一 as_of 查询，不属于本快照冻结集
             peer_obs = self._peer_observations(entity_kind, entity_id, facts, t, ns)
-            notes = []
+            notes = list(frozen_note)
             if not peer_obs:
                 notes.append("无可比口径的同业 typed 观测——比较表降级（不满足同截止时点/期间口径不硬比）")
             return {"legacy": legacy, "peer_series": peer_obs, "notes": notes}
@@ -306,33 +364,50 @@ class DossierService:
                 if c.get("question_id") in ("catalysts-risks", "counter-evidence",
                                             "customer-concentration", "regulatory-path", "policy")
             ]
-            return {"legacy": legacy, "claims": risk_claims}
+            return {"legacy": legacy, "claims": risk_claims, "notes": frozen_note}
+        # 注：entity_kind/entity_id 仅供回退路径与 peers 跨实体查询使用；
+        # 其余模块一律消费冻结视图（review #2）
         if module == "research_sources":
-            artifacts = self._metrics.artifacts_as_of(entity_kind, entity_id, t, namespace=ns)
-            plans = self._metrics.plans_for(entity_kind, entity_id, namespace=ns, limit=5)
+            artifacts = view["artifacts"]
+            # 用户情景不是默认发布产物（review #26）：与研究报告分区展示
+            report_arts = [a for a in artifacts if a.get("purpose", "report") == "report"]
+            scenario_arts = [a for a in artifacts if a.get("purpose") == "scenario"]
+            plans = view["plans"]
             evidences = evidence_items(self._kb, facts, observations, claims)
             legacy = legacy_fact_items(self._kb, facts)
+            # 冲突历史按截止时点过滤（review #3）：历史页面不泄露未来重述版本
             conflicts = [
                 {"semantic_hash": h, "history": [
                     o.model_dump(mode="json")
-                    for o in self._metrics.observation_history(h, namespace=ns)
+                    for o in self._metrics.observation_history(h, namespace=ns, as_of=t)
                 ]}
                 for h in sorted(conflicted)
             ]
             fact_conflicts = [
                 f.model_dump(mode="json") for f in legacy if f.conflict
             ]
+            plan_notes = list(frozen_note)
+            if not view["plan_status_reliable"]:
+                plan_notes.append(
+                    "计划问题状态在 as_of 后被更新过：历史投影不可分辨当时进展，"
+                    "状态显示为 historical_unknown（不借用今日状态）"
+                )
             return {
                 "artifacts": [
                     {k: a.get(k) for k in ("artifact_id", "title", "status", "sufficiency",
-                                           "created_at", "plan_id", "run_id")}
-                    for a in artifacts
+                                           "created_at", "plan_id", "run_id", "purpose")}
+                    for a in report_arts
+                ],
+                "scenarios": [
+                    {k: a.get(k) for k in ("artifact_id", "title", "status", "created_at")}
+                    for a in scenario_arts
                 ],
                 "plans": [
                     {k: p.get(k) for k in ("plan_id", "mode", "objective", "recipe_id",
                                            "status", "created_at", "questions")}
                     for p in plans
                 ],
+                "plan_notes": plan_notes,
                 "claims": [_claim_item(c) for c in claims],
                 "evidence": [e.model_dump(mode="json") for e in evidences],
                 "legacy_facts": [f.model_dump(mode="json") for f in legacy],
@@ -341,6 +416,32 @@ class DossierService:
                 "assessment": self._latest_assessment(entity_kind, entity_id, ns, t),
             }
         raise DossierError(f"未知模块 {module!r}", status=422)
+
+    def frozen_series(
+        self, snapshot_id: str, *, metric: str = "", frequency: str = ""
+    ) -> dict[str, Any]:
+        """规范化序列（同一冻结快照，review #2）：按快照输入版本集读取，
+        缺期/重述/冲突显式返回；完整语义键拆分（分部/指引不混入实际值）。"""
+        from .projector import series_set
+
+        snap = self.get(snapshot_id)
+        view = self._frozen_view(snap)
+        observations = view["observations"]
+        if metric:
+            observations = [o for o in observations if o.metric_key == metric]
+        if frequency:
+            observations = [o for o in observations if o.period.frequency == frequency]
+        s = series_set(
+            observations, sorted({o.metric_key for o in observations}),
+            conflicted_sems=view["conflicted"],
+        )
+        out = s.model_dump(mode="json")
+        out.update({
+            "snapshot_id": snapshot_id,
+            "as_of": snap["context"]["as_of"],
+            "frozen": view["frozen"],
+        })
+        return out
 
     # ---------------- changes / export ----------------
 
@@ -445,34 +546,49 @@ class DossierService:
     # ---------------- 内部 ----------------
 
     def _claims_of(self, snap: dict[str, Any]) -> list[dict[str, Any]]:
+        """快照的论断集：优先冻结 inputs（review #2），旧快照回退 as_of 查询。"""
+        inputs = snap.get("inputs") or {}
+        if "claims" in inputs:
+            return list(inputs.get("claims") or [])
         t = datetime.fromisoformat(snap["context"]["as_of"])
         return self._metrics.claims_as_of(
             snap["entity"]["kind"], snap["entity"]["id"], t, namespace=snap["context"]["namespace"]
         )
 
-    def _calculations(self, kind: str, eid: str, ns: str, t: datetime) -> list[dict[str, Any]]:
-        rows = self._metrics._conn.execute(  # noqa: SLF001 - 投影层只读
-            "SELECT payload_json FROM calculation_runs WHERE namespace = ? AND entity_kind = ?"
-            " AND entity_id = ? AND created_at <= ? ORDER BY created_at DESC LIMIT 50",
-            (ns, kind, eid, t.isoformat()),
-        ).fetchall()
-        return [json.loads(r[0]) for r in rows]
+    def _calculations_by_ids(self, calc_ids: list[str], t: datetime) -> list[dict[str, Any]]:
+        """冻结计算 id 集 → payload（只取 created_at ≤ as_of 的，双重保险）。"""
+        out: list[dict[str, Any]] = []
+        for cid in calc_ids:
+            stored = self._metrics.get_calculation(cid)
+            if stored is None:
+                continue
+            created = stored.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=UTC)
+            if created > t:
+                continue
+            out.append(stored.payload)
+        out.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+        return out
 
     def _latest_assessment(self, kind: str, eid: str, ns: str, t: datetime) -> dict | None:
+        """最新评估投影（review #11）：命名空间过滤（eval 评估不泄漏进生产档案），
+        时间过滤在 SQL 内完成（存在未来评估时返回当时最新一条，而非直接消失）。"""
         if self._events is None:
             return None
         rows = self._events._conn.execute(  # noqa: SLF001 - 投影层只读
             "SELECT payload FROM events WHERE type = 'research/assessment'"
-            " AND json_extract(payload, '$.entity') = ? ORDER BY seq DESC LIMIT 1",
-            (f"{kind}:{eid}",),
+            " AND json_extract(payload, '$.entity') = ?"
+            " AND json_extract(payload, '$.namespace') = ?"
+            " AND json_extract(payload, '$.created_at') <= ?"
+            " ORDER BY seq DESC LIMIT 1",
+            (f"{kind}:{eid}", ns, t.isoformat()),
         ).fetchall()
         if not rows:
             return None
-        payload = json.loads(rows[0][0]) if isinstance(rows[0][0], str) else rows[0][0]
-        created = payload.get("created_at", "")
-        if created and created > t.isoformat():
-            return None  # 历史视图不借用未来评估
-        return payload
+        return json.loads(rows[0][0]) if isinstance(rows[0][0], str) else rows[0][0]
 
     def _assessment_verdict(self, kind: str, eid: str, *, ns: str) -> str | None:
         a = self._latest_assessment(kind, eid, ns, datetime.now(UTC))

@@ -41,7 +41,47 @@ from .models import (
     MetricSeriesSet,
     ModuleState,
     ResearchCoverage,
+    SnapshotInputs,
 )
+
+#: 行业实体的模块标题覆写（§7.5/review #24：行业页面展示产业链/候选池，不套用个股口径）
+_INDUSTRY_MODULE_TITLES = {
+    "business_engine": "产业链与瓶颈",
+    "key_kpi": "供需与规模",
+    "peers": "候选池与竞争",
+    "revenue_segments": "子赛道",
+}
+
+
+def _mask_plan_question_status(plan: dict) -> dict:
+    """历史投影下计划被后续更新过：问题范围保留，状态/结论置为不可分辨
+    （review #10：不用今日状态冒充当时进展，也不伪造当时状态）。"""
+    masked = dict(plan)
+    masked["questions"] = [
+        {**q, "status": "historical_unknown", "conclusion": None,
+         "support_refs": [], "counter_refs": [], "unresolved": [], "attempts": []}
+        for q in plan.get("questions", [])
+    ]
+    masked["status_reliable"] = False
+    return masked
+
+
+def _plan_digest(plan: dict | None) -> str:
+    """计划指纹（进 data_hash，review #12）：范围 + 逐问题状态/结论。"""
+    if not plan:
+        return ""
+    canon = json.dumps(
+        {
+            "plan_id": plan.get("plan_id"),
+            "status": plan.get("status"),
+            "questions": sorted(
+                (q.get("question_id"), q.get("status"), q.get("conclusion"))
+                for q in plan.get("questions", [])
+            ),
+        },
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
+    return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
 #: 数值锚点字段（旧 schema）：文本里含数字但无单位/期间 → needs_normalization
 _LEGACY_NUMERIC_FIELDS = frozenset(
@@ -150,12 +190,21 @@ class DossierProjector:
         observations = self._metrics.observations_as_of(entity_kind, entity_id, t, namespace=ns)
         claims = self._metrics.claims_as_of(entity_kind, entity_id, t, namespace=ns)
         artifacts = self._metrics.artifacts_as_of(entity_kind, entity_id, t, namespace=ns)
-        plans = self._metrics.plans_for(entity_kind, entity_id, namespace=ns, limit=1)
+        # 历史纪律（review #10）：只用 as_of 前已创建的计划；问题状态被后续更新过则置不可分辨
+        plans = self._metrics.plans_for(entity_kind, entity_id, namespace=ns, limit=1, as_of=t)
         plan = plans[0] if plans else None
+        plan_status_reliable = True
+        if plan is not None:
+            updated = plan.get("updated_at")
+            if updated and updated > t.isoformat():
+                plan = _mask_plan_question_status(plan)
+                plan_status_reliable = False
         resolutions = self._metrics.resolutions_as_of(entity_kind, entity_id, t, namespace=ns)
-        conflicted_sems = set(self._metrics.conflicted_semantic_hashes(entity_kind, entity_id, namespace=ns))
-        resolved_sems = {r.semantic_hash for r in resolutions}
-        open_conflict_sems = conflicted_sems - resolved_sems
+        # 冲突集合按截止时点过滤（review #3）：未来才可知的竞争值不进历史快照
+        open_conflict_sems = set(self._metrics.conflicted_semantic_hashes(
+            entity_kind, entity_id, namespace=ns, as_of=t, exclude_resolved=True,
+        ))
+        calculation_ids = self._metrics.list_calculation_ids(entity_kind, entity_id, t, namespace=ns)
         recipe = self._recipe(context.recipe_id)
 
         snapshot = DossierSnapshot(
@@ -172,15 +221,38 @@ class DossierProjector:
             recipe, t, open_conflict_sems, ns, mode=context.mode,
         )
         snapshot.research = self._build_research_coverage(plan, claims, artifacts, t, ns)
+        # 来源目录含 claim 引用（review #22）：仅由论断引用的证据不再被抽屉接口 404
         snapshot.evidence_refs = sorted(
             {eid for f in facts.values() for eid in f.evidence_ids}
             | {ref for o in observations for ref in o.evidence_refs}
+            | {
+                ref for c in claims
+                for ref in [*c.get("support_refs", []), *c.get("counter_refs", [])]
+                if str(ref).startswith("ev-")
+            }
         )
         snapshot.document_refs = sorted({d for o in observations for d in o.document_refs})
         snapshot.decision_refs = self._decision_refs(entity_kind, entity_id, t, ns)
         snapshot.limitations = [
             "本档案是投影：结论的可信度以各模块状态与来源抽屉为准",
         ]
+        # 冻结输入版本集（review #2）：模块/序列/来源请求按这些 id 读取，
+        # 补录历史观测不改变已冻结快照；计划/问题状态进哈希（review #12）
+        snapshot.inputs = SnapshotInputs(
+            fact_ids={f: r.fact_id for f, r in sorted(facts.items())},
+            observation_ids=sorted(o.observation_id for o in observations),
+            claims=claims,
+            artifacts=[
+                {k: a.get(k) for k in ("artifact_id", "title", "status", "sufficiency",
+                                       "created_at", "plan_id", "run_id", "purpose")}
+                for a in artifacts
+            ],
+            resolution_ids=sorted(r.resolution_id for r in resolutions),
+            calculation_ids=calculation_ids,
+            conflicted_semantic_hashes=sorted(open_conflict_sems),
+            plan=plan,
+            plan_status_reliable=plan_status_reliable,
+        )
         if context.mode == "rebuilt":
             snapshot.limitations.append(
                 "基于历史证据重建：本页分析生成于今天，只使用 as_of 前可知的资料"
@@ -189,7 +261,7 @@ class DossierProjector:
             snapshot.limitations.append(
                 f"历史视图（as_of {t.isoformat(timespec='seconds')}）：正文、图表、来源与质量同一截止时点"
             )
-        # data_hash：投影输入版本集（fact/observation/claim/artifact/resolution）
+        # data_hash：冻结输入版本集（含计划问题状态与计算 id，review #12）
         inputs = {
             "facts": {f: (r.fact_id, r.version) for f, r in sorted(facts.items())},
             "observations": sorted(
@@ -198,6 +270,8 @@ class DossierProjector:
             "claims": sorted((c["claim_id"], c.get("status", "")) for c in claims),
             "artifacts": sorted(a["artifact_id"] for a in artifacts),
             "resolutions": sorted(r.resolution_id for r in resolutions),
+            "calculations": sorted(calculation_ids),
+            "plan": _plan_digest(plan),
         }
         snapshot.data_hash = snapshot.compute_data_hash(inputs)
         with contextlib.suppress(Exception):
@@ -225,12 +299,14 @@ class DossierProjector:
             if c.get("status") == "validated" and c.get("kind") in ("analysis", "fact_summary", "inference")
         ]
         validated.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+        # 用户情景 artifact 不参与默认结论投影（review #26：不自动成为发布版）
+        report_artifacts = [a for a in artifacts if a.get("purpose", "report") == "report"]
         if validated:
             summary.thesis = validated[0]["statement"]
             summary.thesis_refs = [validated[0]["claim_id"], *validated[0].get("support_refs", [])]
             summary.thesis_kind = "claim"
-        elif artifacts:
-            latest = artifacts[0]
+        elif report_artifacts:
+            latest = report_artifacts[0]
             text = _artifact_headline(latest)
             if text:
                 summary.thesis = text
@@ -298,6 +374,7 @@ class DossierProjector:
                 unit=best.unit, currency=best.currency,
                 period_label=best.period.fiscal_label or best.period.end.isoformat(),
                 nature=best.nature, observation_id=best.observation_id,
+                evidence_refs=list(best.evidence_refs),  # review #21：点击指标直达自己的来源
                 status="stale" if stale else ("conflicted" if best.status == "conflicted" else "ok"),
                 as_of_note=f"{best.period.frequency} · 可知 {best.knowledge_time.date().isoformat()}",
             ))
@@ -347,6 +424,8 @@ class DossierProjector:
         modules: dict[str, ModuleState] = {}
         for mod in MODULE_IDS:
             title = MODULE_TITLES.get(mod, mod)
+            if entity_kind == "industry":
+                title = _INDUSTRY_MODULE_TITLES.get(mod, title)  # 行业语义标题（review #24）
             obs = obs_by_module.get(mod, [])
             legacy = legacy_by_module.get(mod, [])
             mod_claims = claims_by_module.get(mod, [])
@@ -370,11 +449,13 @@ class DossierProjector:
             )
             reasons: list[str] = []
             if mod == "research_sources":
-                status = "ready" if (artifacts or claims) else ("partial" if legacy else "missing")
-                if not artifacts:
-                    reasons.append("尚无冻结研究产物（旧档案内容在数据与审计区）")
+                report_arts = [a for a in artifacts if a.get("purpose", "report") == "report"]
+                status = "ready" if (report_arts or claims) else ("partial" if legacy else "missing")
+                if not report_arts:
+                    reasons.append("尚无冻结研究产物（旧档案内容在数据与审计区；用户情景不算研究产物）")
             elif mod == "investment_snapshot":
-                if any(c.get("status") == "validated" for c in claims) or artifacts:
+                report_arts = [a for a in artifacts if a.get("purpose", "report") == "report"]
+                if any(c.get("status") == "validated" for c in claims) or report_arts:
                     status = "ready"
                 elif claims or "thesis" in facts:
                     status = "partial"
@@ -460,8 +541,10 @@ class DossierProjector:
     def _build_research_coverage(
         self, plan: dict | None, claims: list[dict], artifacts: list[dict], t: datetime, ns: str
     ) -> ResearchCoverage:
+        # 用户情景不是研究产物（review #26）：不进覆盖/首屏结论投影
+        reports = [a for a in artifacts if a.get("purpose", "report") == "report"]
         cov = ResearchCoverage(
-            artifact_refs=[a["artifact_id"] for a in artifacts],
+            artifact_refs=[a["artifact_id"] for a in reports],
         )
         if plan:
             cov.plan_id = plan.get("plan_id")
@@ -489,11 +572,13 @@ class DossierProjector:
     ) -> tuple[str, str]:
         """行业识别给出来源与可更改选择；不确定用通用（§7.5）。
 
-        优先沿用最新研究计划的配方（研究时的显式选择）；否则按档案文本提示匹配。
+        优先沿用 as_of 前最新研究计划的配方（历史快照不得采用未来计划的选择，
+        review #10）；否则按档案文本提示匹配。
         """
-        plans = self._metrics.plans_for(entity_kind, entity_id, namespace=namespace, limit=1)
+        plans = self._metrics.plans_for(entity_kind, entity_id, namespace=namespace,
+                                        limit=1, as_of=t)
         if plans:
-            return plans[0].get("recipe_id", "general"), "沿用最新研究计划的配方选择"
+            return plans[0].get("recipe_id", "general"), "沿用当时最新研究计划的配方选择"
         hints = ""
         with contextlib.suppress(Exception):
             facts = self._kb.view(entity_kind, entity_id, t, namespace=namespace)
@@ -648,8 +733,14 @@ def series_set(
     *,
     frequency: str | None = None,
     conflicted_sems: set[str] | None = None,
+    natures: tuple[str, ...] | None = None,
 ) -> MetricSeriesSet:
-    """typed 观测 → 图表序列（缺期保留断点；重述/冲突在点上标记）。"""
+    """typed 观测 → 图表序列（review #15：按完整语义键拆分）。
+
+    分组键 = metric_key + frequency + dimensions + basis + currency + nature：
+    分部/合并、GAAP/非 GAAP、披露/指引/预期各自成序列，不混合投影——
+    前端每期一点，混合分组会静默丢点并把分部/指引画成公司实际值。
+    缺期保留断点；重述/冲突在点上标记。"""
     labels = labels or {}
     conflicted = conflicted_sems or set()
     out: list[MetricSeries] = []
@@ -657,46 +748,82 @@ def series_set(
         obs = [o for o in observations if o.metric_key == key]
         if frequency:
             obs = [o for o in obs if o.period.frequency == frequency]
+        if natures:
+            obs = [o for o in obs if o.nature in natures]
         if not obs:
             continue
-        obs.sort(key=lambda o: o.period.end)
-        first = obs[0]
-        points = [
-            MetricPoint(
-                period_label=o.period.fiscal_label or o.period.end.isoformat(),
-                period_end=o.period.end.isoformat(),
-                period_start=o.period.start.isoformat() if o.period.start else None,
-                value=o.value, nature=o.nature, basis=o.basis, unit=o.unit,
-                currency=o.currency, observation_id=o.observation_id,
-                status=o.status, knowledge_time=o.knowledge_time.isoformat(),
-                conflict=o.semantic_hash() in conflicted,
+        groups: dict[tuple, list[MetricObservation]] = {}
+        for o in obs:
+            gk = (
+                o.period.frequency,
+                tuple(sorted(o.dimensions.items())),
+                o.basis,
+                o.currency,
+                o.nature,
             )
-            for o in obs
-        ]
-        out.append(MetricSeries(
-            metric_key=key, label=labels.get(key, key), unit=first.unit,
-            currency=first.currency, frequency=first.period.frequency,
-            points=points, status="ready",
-        ))
+            groups.setdefault(gk, []).append(o)
+        for (freq, dims, basis, currency, nature), group in sorted(
+            groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]), kv[0][2])
+        ):
+            group.sort(key=lambda o: o.period.end)
+            first = group[0]
+            dim_label = "·".join(v for _k, v in dims) if dims else ""
+            label_parts = [labels.get(key, key)]
+            if dim_label:
+                label_parts.append(dim_label)
+            if basis not in ("GAAP", "IFRS"):
+                label_parts.append(basis)
+            if nature not in ("reported", "calculated"):
+                label_parts.append({"guidance": "指引", "consensus": "一致预期",
+                                    "model_estimate": "模型"}.get(nature, nature))
+            points = [
+                MetricPoint(
+                    period_label=o.period.fiscal_label or o.period.end.isoformat(),
+                    period_end=o.period.end.isoformat(),
+                    period_start=o.period.start.isoformat() if o.period.start else None,
+                    value=o.value, nature=o.nature, basis=o.basis, unit=o.unit,
+                    currency=o.currency, observation_id=o.observation_id,
+                    status=o.status, knowledge_time=o.knowledge_time.isoformat(),
+                    conflict=o.semantic_hash() in conflicted,
+                )
+                for o in group
+            ]
+            out.append(MetricSeries(
+                metric_key=key, label=" · ".join(label_parts), unit=first.unit,
+                currency=currency, frequency=freq,
+                dimensions=dict(dims), basis=basis, nature=nature,
+                points=points, status="ready",
+            ))
     return MetricSeriesSet(series=out)
 
 
 def business_graph(
-    facts: dict[str, Any], claims: list[dict[str, Any]]
+    facts: dict[str, Any], claims: list[dict[str, Any]], *, entity_kind: str = "stock"
 ) -> BusinessGraph:
-    """商业引擎投影：legacy business_model 文本作 narrative；图结构待 typed 数据。
-
-    无流量数据用流程图（narrative），不能编造 Sankey 宽度（§4.4）。
-    """
+    """商业引擎/产业链投影（review #24）：股票读 business_model，行业读
+    value_chain/competition/sub_sectors；无流量数据用叙述，不编造 Sankey 宽度（§4.4）。"""
     graph = BusinessGraph()
-    bm = facts.get("business_model")
-    if bm is not None:
-        graph.narrative = bm.value if isinstance(bm.value, str) else str(bm.value)
-        graph.narrative_refs = [bm.fact_id, *bm.evidence_ids]
+    narrative_fields = (
+        ("value_chain", "competition", "sub_sectors")
+        if entity_kind == "industry"
+        else ("business_model", "future_space")
+    )
+    parts: list[str] = []
+    refs: list[str] = []
+    for field in narrative_fields:
+        rec = facts.get(field)
+        if rec is None:
+            continue
+        text = rec.value if isinstance(rec.value, str) else json.dumps(rec.value, ensure_ascii=False)
+        parts.append(text if len(parts) == 0 else f"【{field}】{text}")
+        refs.extend([rec.fact_id, *rec.evidence_ids])
+    if parts:
+        graph.narrative = "\n\n".join(parts)
+        graph.narrative_refs = refs
     for c in claims:
         if (
             not graph.narrative
-            and c.get("question_id") == "business-model"
+            and c.get("question_id") in ("business-model", "value-chain", "bottleneck", "clinical-evidence")
             and c.get("status") in ("validated", "draft")
         ):
             graph.narrative = c["statement"]

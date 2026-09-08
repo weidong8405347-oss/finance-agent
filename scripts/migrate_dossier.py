@@ -168,12 +168,19 @@ def _metric_key_of(field: str) -> str:
 
 
 def _currency_hint(field: str, value: Any) -> str | None:
+    """币种提示（review #31）：具体符号优先于通用 $——HK$ 不得被当成 USD。
+
+    顺序：HK$ → US$ → 裸 $（低置信 USD）→ 中文币种词。"""
     text = f"{field} {value}".lower()
-    if "usd" in text or "us$" in text or "$" in text or "美元" in text:
-        return "USD"
-    if "hkd" in text or "hk$" in text or "港币" in text or "港元" in text:
+    if "hk$" in text or "hkd" in text or "港币" in text or "港元" in text:
         return "HKD"
-    if "cny" in text or "rmb" in text or "人民币" in text or "元" in text:
+    if "us$" in text or "usd" in text or "美元" in text:
+        return "USD"
+    if "cny" in text or "rmb" in text or "人民币" in text:
+        return "CNY"
+    if "$" in text:
+        return "USD"  # 裸 $ 默认美元（已排除 HK$/US$ 先行匹配）
+    if "元" in text:
         return "CNY"
     return None
 

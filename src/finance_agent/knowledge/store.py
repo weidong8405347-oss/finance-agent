@@ -217,6 +217,16 @@ class BitemporalStore:
                 best[rec.field] = rec
         return best
 
+    def get_fact(self, fact_id: str) -> FactRecord | None:
+        """按 fact_id 取单版本（dossier 冻结快照按版本集读模块数据，review #2）。"""
+        row = self._conn.execute(
+            "SELECT fact_id, namespace, entity_kind, entity_id, field, value_json, event_time,"
+            " knowledge_time, version, supersedes, conflict_flag, evidence_ids, run_id"
+            " FROM facts WHERE fact_id = ?",
+            (fact_id,),
+        ).fetchone()
+        return self._row_to_fact(row) if row else None
+
     def history(
         self,
         entity_kind: str,

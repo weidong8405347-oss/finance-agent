@@ -47,3 +47,61 @@ describe("formatMetricValue", () => {
     expect(formatMetricValue(null, "USD")).toBe("—");
   });
 });
+
+// review #17：先固定完整时间轴再排列各序列——不同期间集不得错位
+import { buildOption } from "../charts";
+import type { MetricPoint, MetricSeries } from "../types";
+
+function pt(label: string, end: string, value: string | null, nature = "reported"): MetricPoint {
+  return {
+    period_label: label, period_end: end, period_start: null, value,
+    nature, basis: "GAAP", unit: "USD", currency: "USD",
+    observation_id: `obs-${label}`, status: "ok",
+    knowledge_time: "2025-01-01T00:00:00+00:00", conflict: false,
+  };
+}
+
+function ser(key: string, points: MetricPoint[], frequency = "FY"): MetricSeries {
+  return {
+    metric_key: key, label: key, unit: "USD", currency: "USD", frequency,
+    dimensions: {}, basis: "GAAP", nature: "reported",
+    points, status: "ready", issues: [],
+  };
+}
+
+describe("buildOption 时间轴对齐", () => {
+  it("后加入序列的期间不会错位先前序列（review #17 复现）", () => {
+    // 收入仅 FY2024；现金流有 FY2023+FY2024 —— 旧实现会把收入画到 FY2023
+    const { option, plottable } = buildOption([
+      ser("revenue", [pt("FY2024", "2024-12-31", "100")]),
+      ser("cfo", [pt("FY2023", "2023-12-31", "10"), pt("FY2024", "2024-12-31", "20")]),
+    ]);
+    const xAxis = (option as any).xAxis.data as string[];
+    expect(xAxis).toEqual(["FY2023", "FY2024"]); // 按 period_end 排序
+    const series = (option as any).series as { name: string; data: (number | null)[] }[];
+    const revenue = series.find((s) => s.name === "revenue")!;
+    const cfo = series.find((s) => s.name === "cfo")!;
+    expect(revenue.data).toEqual([null, 100]); // FY2023 断点，不位移
+    expect(cfo.data).toEqual([10, 20]);
+    expect(plottable.map((s) => s.metric_key)).toEqual(["revenue", "cfo"]);
+  });
+
+  it("期间标签按 period_end 排序而非字典序", () => {
+    const { option } = buildOption([
+      ser("revenue", [
+        pt("2024Q4", "2024-12-31", "4"),
+        pt("2023Q4", "2023-12-31", "3"),
+        pt("2025Q1", "2025-03-31", "5"),
+      ], "Q"),
+    ]);
+    expect((option as any).xAxis.data).toEqual(["2023Q4", "2024Q4", "2025Q1"]);
+  });
+
+  it("全部值不可绘图 → plottable 为空（调用方退回表格）", () => {
+    const { plottable, dropped } = buildOption([
+      ser("revenue", [pt("FY2024", "2024-12-31", "1.2 billion")]),
+    ]);
+    expect(plottable).toEqual([]);
+    expect(dropped.length).toBeGreaterThan(0);
+  });
+});

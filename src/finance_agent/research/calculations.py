@@ -444,15 +444,32 @@ class CalculationService:
         run_id: str | None = None,
         namespace: str = "prod",
         now: datetime | None = None,
+        as_of: datetime | None = None,
     ) -> CalculationResult:
+        """确定性计算。引用纪律（review #4/#14）：
+
+        - observation/calculation 引用必须与本次计算同命名空间、同实体，
+          且（给出 as_of 时）在截止时点前可知；
+        - 跨币种输入直接拒绝（需先经显式 fx_convert 换算链）；
+        - ttm_sum 只接受四个连续同口径季度观测引用（堵通用入口绕过连续性检查）。
+        """
         entry = FORMULA_REGISTRY.get(formula_id)
         if entry is None:
             raise CalculationError(f"未知公式 {formula_id!r}（注册表：{sorted(FORMULA_REGISTRY)}）")
         version, fn, required = entry
         assumptions = dict(assumptions or {})
-        named = self._resolve_inputs(inputs, formula_id, required, assumptions, namespace=namespace)
+        named, resolved_meta = self._resolve_inputs(
+            inputs, formula_id, required, assumptions,
+            namespace=namespace, entity_kind=entity_kind, entity_id=entity_id, as_of=as_of,
+        )
+        self._assert_currency_consistent(inputs, resolved_meta, formula_id)
+        if formula_id == "ttm_sum":
+            self._assert_ttm_inputs(inputs, resolved_meta)
         created = now or datetime.now(UTC)
-        input_hash = self._input_hash(formula_id, version, named, assumptions)
+        input_hash = self._input_hash(
+            formula_id, version, inputs, resolved_meta, assumptions,
+            entity_kind=entity_kind, entity_id=entity_id, namespace=namespace,
+        )
         calculation_id = f"calc-{uuid.uuid4().hex[:12]}"
         try:
             outcome = fn(named, assumptions)
@@ -511,19 +528,46 @@ class CalculationService:
         assumptions: dict[str, str],
         *,
         namespace: str,
-    ) -> dict[str, Decimal]:
+        entity_kind: str,
+        entity_id: str,
+        as_of: datetime | None,
+    ) -> tuple[dict[str, Decimal], dict[str, dict[str, Any]]]:
+        """解析输入 → (数值表, 引用元数据表)。引用必须同命名空间同实体，
+        as_of 给定时还必须当时可知（review #4）。"""
         named: dict[str, Decimal] = {}
+        metas: dict[str, dict[str, Any]] = {}
         for ref in inputs:
             value = ref.value
             if ref.kind in ("observation", "calculation"):
                 if not ref.ref_id:
                     raise CalculationError(f"{ref.label}: kind={ref.kind} 必须给出 ref_id")
-                stored = self._resolve_ref(ref, namespace=namespace)
-                if value is not None and stored is not None and _dec(value) != _dec(stored):
+                meta = self._store.get_ref_meta(ref.ref_id)
+                if meta is None:
+                    raise CalculationError(f"{ref.kind} 未登记: {ref.ref_id}")
+                if meta["namespace"] != namespace:
+                    raise CalculationError(
+                        f"{ref.label}: 引用 {ref.ref_id} 属于命名空间 {meta['namespace']!r}，"
+                        f"与本次计算 {namespace!r} 不符（跨命名空间引用拒绝）"
+                    )
+                if (meta["entity_kind"], meta["entity_id"]) != (entity_kind, entity_id):
+                    raise CalculationError(
+                        f"{ref.label}: 引用 {ref.ref_id} 属于 {meta['entity_kind']}:{meta['entity_id']}，"
+                        f"与本次计算实体 {entity_kind}:{entity_id} 不符（跨实体引用拒绝）"
+                    )
+                if as_of is not None and meta.get("knowledge_time"):
+                    known = datetime.fromisoformat(str(meta["knowledge_time"]))
+                    if known > as_of:
+                        raise CalculationError(
+                            f"{ref.label}: 引用 {ref.ref_id} 在 as_of={as_of.isoformat()} 时点"
+                            f"尚不可知（knowledge_time={known.isoformat()}）"
+                        )
+                stored = self._resolve_ref_value(ref)
+                if value is not None and _dec(value) != _dec(stored):
                     raise CalculationError(
                         f"{ref.label}: 传入值 {value} 与已登记引用值 {stored} 不一致（禁止漂移）"
                     )
                 value = stored
+                metas[ref.label] = meta
             if value is None:
                 raise CalculationError(f"{ref.label}: 无值且引用不可解析")
             named[ref.label] = _dec(value)
@@ -537,37 +581,118 @@ class CalculationService:
                 missing.append(numerator)
         if missing:
             raise CalculationError(f"公式 {formula_id} 缺输入: {missing}")
-        return named
+        return named, metas
 
-    def _resolve_ref(self, ref: InputRef, *, namespace: str) -> str | None:
+    def _resolve_ref_value(self, ref: InputRef) -> str:
         assert ref.ref_id is not None
         if ref.kind == "observation":
             obs = self._store.get_observation(ref.ref_id)
-            if obs is None:
-                raise CalculationError(f"observation 未登记: {ref.ref_id}")
-            if obs.value is None:
-                raise CalculationError(f"observation {ref.ref_id} 无值（status={obs.status}）")
+            if obs is None or obs.value is None:
+                raise CalculationError(f"observation {ref.ref_id} 无值或未登记")
             return obs.value
-        if ref.kind == "calculation":
-            calc = self._store.get_calculation(ref.ref_id)
-            if calc is None:
-                raise CalculationError(f"calculation 未登记: {ref.ref_id}")
-            if calc.result is None:
-                raise CalculationError(f"calculation {ref.ref_id} 无结果（status={calc.status}）")
-            return calc.result
-        return ref.value
+        calc = self._store.get_calculation(ref.ref_id)
+        if calc is None or calc.result is None:
+            raise CalculationError(f"calculation {ref.ref_id} 无结果或未登记")
+        return calc.result
+
+    def _assert_currency_consistent(
+        self, inputs: list[InputRef], metas: dict[str, dict[str, Any]], formula_id: str
+    ) -> None:
+        """跨币种输入拒绝（review #14：100 USD − 100 HKD 不得返回 0）。
+
+        币种来源：引用解析的存储记录优先，其次调用方声明的 InputRef.currency；
+        unit_conversion/fx 类公式豁免（它们本身就是换算入口）。"""
+        if formula_id in ("unit_conversion",):
+            return
+        currencies: dict[str, str] = {}
+        for ref in inputs:
+            cur = ref.currency
+            if ref.kind == "observation" and ref.label in metas:
+                obs = self._store.get_observation(ref.ref_id or "")
+                if obs is not None and obs.currency:
+                    cur = obs.currency
+            if cur:
+                currencies[ref.label] = cur
+        distinct = set(currencies.values())
+        if len(distinct) > 1:
+            raise CalculationError(
+                f"公式 {formula_id} 输入币种不一致（{currencies}）——"
+                "跨币比较必须先经显式 fx_convert 换算链（登记汇率与换算日）"
+            )
+
+    def _assert_ttm_inputs(
+        self, inputs: list[InputRef], metas: dict[str, dict[str, Any]]
+    ) -> None:
+        """通用入口的 ttm_sum 门禁（review #14）：四个输入必须是连续、同口径、
+        不同版本的季度观测引用——堵住拿同一个年度值重复冒充四季度。"""
+        from ..knowledge.metrics import ADDITIVE_FLOW_METRICS
+
+        labels = ("q1", "q2", "q3", "q4")
+        by_label = {r.label: r for r in inputs}
+        observations = []
+        for label in labels:
+            ref = by_label.get(label)
+            meta = metas.get(label)
+            if ref is None or meta is None or ref.kind != "observation" or not ref.ref_id:
+                raise CalculationError(
+                    f"ttm_sum 的 {label} 必须是 kind=observation 的引用"
+                    "（裸数字拼接/年度值充季度均拒绝；推荐用 ttm_from_observations 入口）"
+                )
+            obs = self._store.get_observation(ref.ref_id)
+            if obs is None:
+                raise CalculationError(f"ttm_sum {label}: observation 不可解析 {ref.ref_id}")
+            observations.append(obs)
+        ids = {o.observation_id for o in observations}
+        if len(ids) != 4:
+            raise CalculationError("ttm_sum 四个输入必须是四个不同的季度观测（重复引用拒绝）")
+        keys = {o.metric_key for o in observations}
+        if len(keys) != 1:
+            raise CalculationError(f"ttm_sum 四个季度必须同一 metric_key（收到 {keys}）")
+        if keys.pop() not in ADDITIVE_FLOW_METRICS:
+            raise CalculationError("TTM 仅允许可加总流量指标")
+        if any(o.period.frequency != "Q" for o in observations):
+            raise CalculationError("ttm_sum 只接受 frequency=Q 的观测（年度值充季度拒绝）")
+        bases = {(o.basis, o.currency, tuple(sorted(o.dimensions.items()))) for o in observations}
+        if len(bases) != 1:
+            raise CalculationError(f"ttm_sum 四个季度口径不一致: {bases}")
+        ordered = sorted(observations, key=lambda o: o.period.end)
+        for prev, nxt in zip(ordered, ordered[1:], strict=False):
+            if nxt.period.start is None or prev.period.end is None:
+                raise CalculationError("ttm_sum 季度缺期间起止，无法验连续性")
+            gap_days = (nxt.period.start - prev.period.end).days
+            if not -3 <= gap_days <= 3:
+                raise CalculationError(
+                    f"ttm_sum 季度不连续（{prev.period.end} → {nxt.period.start}），拒绝拼 TTM"
+                )
 
     @staticmethod
     def _input_hash(
-        formula_id: str, version: int, named: dict[str, Decimal], assumptions: dict[str, str]
+        formula_id: str,
+        version: int,
+        inputs: list[InputRef],
+        metas: dict[str, dict[str, Any]],
+        assumptions: dict[str, str],
+        *,
+        entity_kind: str,
+        entity_id: str,
+        namespace: str,
     ) -> str:
+        """幂等键含引用身份与实体（review #13）：同数值不同实体/不同引用来源
+        必须是不同计算（归属与重算血缘不错位）。"""
         canon = json.dumps(
             {
                 "formula": f"{formula_id}@{version}",
-                "inputs": {k: str(v) for k, v in sorted(named.items())},
+                "entity": f"{namespace}:{entity_kind}:{entity_id}",
+                "inputs": [
+                    {"label": r.label, "kind": r.kind, "ref_id": r.ref_id,
+                     "value": r.value, "unit": r.unit, "currency": r.currency}
+                    for r in sorted(inputs, key=lambda x: x.label)
+                ],
+                "resolved": {k: {kk: str(vv) for kk, vv in sorted(v.items())}
+                             for k, v in sorted(metas.items())},
                 "assumptions": assumptions,
             },
-            ensure_ascii=False, sort_keys=True,
+            ensure_ascii=False, sort_keys=True, default=str,
         )
         return "ih-" + hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 

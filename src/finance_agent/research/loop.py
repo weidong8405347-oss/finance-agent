@@ -104,6 +104,33 @@ def _dimension_groups(
                 break
     return [(g, fs) for g, fs in groups]
 
+#: 计划问题 module → 维度组映射（review #7）：配方用模块名（financial_quality/
+#: business_engine/risks…），维度组用旧分组名（financial/business/industry/risk_mgmt），
+#: 不映射则四组全部拿到空计划视图，并行 worker 丢失问题与验收条件
+_QUESTION_MODULE_TO_GROUP: dict[str, str] = {
+    # 股票维度组
+    "financial_quality": "financial",
+    "financials": "financial",
+    "valuation": "financial",
+    "valuation_lab": "financial",
+    "expectations": "financial",
+    "key_kpi": "financial",
+    "business_engine": "business",
+    "revenue_segments": "business",
+    "peers": "industry",
+    "management": "industry",
+    "risks": "risk_mgmt",
+    "catalysts": "risk_mgmt",
+    "catalysts_risks": "risk_mgmt",
+    # 行业维度组（F1）
+    "industry_chain": "landscape",
+    "candidate_pool": "landscape",
+    "key_kpi_industry": "market",
+    "market": "market",
+    "policy": "policy_players",
+}
+
+
 def _question_groups(plan_payload: dict) -> list[tuple[str, list[str]]]:
     """计划问题 → 维度组（§7.2）：档案已满但计划未完时，按问题 module 分组保持并行。
 
@@ -411,9 +438,10 @@ class ResearchLoop:
         analyzer = GapAnalyzer(self._store)
         gaps = analyzer.analyze(entity_kind, entity_id, now, namespace=self._namespace)
         open_conflicts = len(gaps.conflicts) + len(
-            set(self._metrics.conflicted_semantic_hashes(entity_kind, entity_id, namespace=self._namespace))
-            - {r.semantic_hash for r in self._metrics.resolutions_as_of(
-                entity_kind, entity_id, now, namespace=self._namespace)}
+            self._metrics.conflicted_semantic_hashes(
+                entity_kind, entity_id, namespace=self._namespace,
+                as_of=now, exclude_resolved=True,
+            )
         )
         assessment = assess(
             plan,
@@ -423,14 +451,14 @@ class ResearchLoop:
             open_conflicts=open_conflicts,
             stale_fields=list(gaps.stale),
             stop_reason=self.stop_reason or "",
+            namespace=self._namespace,
             now=now,
         )
         self.assessment = assessment
         self._emit(RESEARCH_ASSESSMENT, assessment.model_dump(mode="json"))
-        self.plan_payload["status"] = "completed"
-        self._metrics.save_plan(
-            plan_id=plan.plan_id, namespace=self._namespace, payload=self.plan_payload
-        )
+        # 收尾状态走锁内原子入口（不与并行问题更新互踩，review #8）
+        self._metrics.set_plan_status(plan.plan_id, "completed", namespace=self._namespace)
+        self.plan_payload = self._metrics.get_plan(self._plan_id) or self.plan_payload
 
     def _effective_budget(self, gaps) -> int:
         """预算动态化（§4.2）：显式 max_rounds 优先；其次冻结计划的模式预算（§7.7）；
@@ -563,16 +591,19 @@ class ResearchLoop:
         return group, tracker
 
     def _group_plan_view(self, group: str, fields: list[str]) -> dict | None:
-        """维度组看到的计划子集：只挂本组相关问题（module 匹配组名/字段），
-        避免跨组重复回答同一问题。"""
+        """维度组看到的计划子集（review #7）：问题按 module→维度组映射分配，
+        未映射/无模块的问题（如 targeted 自定义问题）对全部组可见（回答幂等，
+        重复推进无害）；已 answered/not_applicable 的问题不再下发。"""
         if not self.plan_payload:
             return None
-        questions = [
-            q for q in self.plan_payload.get("questions", [])
-            if q.get("module", "") == group
-            or q.get("question_id", "") in fields
-            or group in ("misc",)
-        ]
+        questions = []
+        for q in self.plan_payload.get("questions", []):
+            if q.get("status") in ("answered", "not_applicable"):
+                continue
+            module = q.get("module", "")
+            mapped = _QUESTION_MODULE_TO_GROUP.get(module, module)  # 问题组路径：组名即 module
+            if mapped == group or q.get("question_id", "") in fields or group == "misc" or not module:
+                questions.append(q)
         if not questions:
             return None
         return {**self.plan_payload, "questions": questions}

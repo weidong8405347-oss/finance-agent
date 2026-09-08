@@ -128,16 +128,15 @@ def _year_like(text: str) -> bool:
     return d == d.to_integral_value() and 1900 <= int(d) <= 2100
 
 
-def parse_raw_number(value_text: str) -> Decimal:
-    """原文值文本 → Decimal 尾数（千分位容忍；规模词剥离交给 unit_word_scale）。
+def _select_number_match(value_text: str) -> re.Match[str]:
+    """选定值文本中「真正是指标值」的数字匹配（parse 与量级绑定共用，保证一致）：
 
-    歧义消解（数值语义测试组 §13.1）：
-    1. 规模词紧邻的数字优先（'2026 revenue 1.2 billion' → 1.2）；
+    1. 规模词紧邻的数字优先（'2026 revenue 1.2 billion' → 1.2；'Q4 revenue 300 million' → 300）；
     2. 否则排除年份形态后取首个数字（'revenue 100 in 2026' → 100）；
     3. 全是年份形态才退回首个数字。
     """
     cleaned = value_text.strip().replace(",", "")
-    matches = [m.group(0) for m in _NUM_RE.finditer(cleaned)]
+    matches = list(_NUM_RE.finditer(cleaned))
     if not matches:
         raise NormalizationError(f"原文值文本中没有可解析数字: {value_text!r}")
     word = detect_scale_word(value_text, "")
@@ -147,9 +146,23 @@ def parse_raw_number(value_text: str) -> Decimal:
         )
         m = pattern.search(cleaned)
         if m is not None:
-            return _dec(m.group(1))
-    non_year = [t for t in matches if not _year_like(t)]
-    return _dec(non_year[0] if non_year else matches[0])
+            return m  # group(1) 是数字
+    non_year = [m for m in matches if not _year_like(m.group(0))]
+    return non_year[0] if non_year else matches[0]
+
+
+def parse_raw_number(value_text: str) -> Decimal:
+    """原文值文本 → Decimal 尾数（千分位容忍；规模词剥离交给 unit_word_scale；
+    会计括号负数保留符号：'( 1,234 )' → -1234，财报亏损不得记成盈利）。"""
+    cleaned = value_text.strip().replace(",", "")
+    m = _select_number_match(value_text)
+    # 规模词模式捕获组 1 才是数字；裸数字模式用 group(0)
+    value = _dec(m.group(m.lastindex or 0))
+    before = cleaned[: m.start(0)].rstrip()
+    after = cleaned[m.end(0):].lstrip()
+    if before.endswith("(") and after.startswith(")"):
+        return -abs(value)  # 会计负数：( 1,234 ) / ( 1,234 million )
+    return value
 
 
 def detect_scale_word(value_text: str, unit_text: str) -> str | None:
@@ -194,6 +207,78 @@ def format_decimal(value: Decimal) -> str:
     if normalized == normalized.to_integral_value():
         return str(normalized.quantize(Decimal(1)))
     return str(normalized)
+
+
+# ---------------- 量级绑定（review #1：数值量级必须绑定原文证据） ----------------
+
+_SCALE_WORD_PATTERN = "|".join(
+    re.escape(w) for w in sorted(SCALE_WORDS, key=len, reverse=True)
+)
+
+#: 规模词等价类（'bn'≡'billion'；'亿'=10^8 单独一类，不与 billion 混同）
+_SCALE_EQUIV: list[frozenset[str]] = [
+    frozenset({"thousand", "k", "千"}),
+    frozenset({"million", "m", "mn", "百万"}),
+    frozenset({"billion", "b", "bn"}),
+    frozenset({"trillion", "t", "万亿", "兆"}),
+    frozenset({"亿"}),
+]
+
+
+def _scale_class(word: str) -> frozenset[str]:
+    w = word.lower().rstrip("s")
+    return next((c for c in _SCALE_EQUIV if w in c), frozenset({w}))
+
+
+def _mantissa_core(value_text: str) -> str:
+    """量级绑定用的尾数数字串：与 parse_raw_number 同一选择逻辑（同一命中点）。"""
+    m = _select_number_match(value_text)
+    return m.group(m.lastindex or 0)
+
+
+def assert_magnitude_bound(value_text: str, unit_text: str, quotes: list[str]) -> None:
+    """量级一致性门禁：登记值的有效量级（尾数+规模词）必须在证据摘录中可定位。
+
+    堵住两类量级事故（review #1）：
+    - 改规模词：证据「1500 million」，提交 value_text='1500 billion' → 拒；
+    - 丢规模词：证据「1500 million」，提交 value_text='1500' 且 unit_text 无规模词
+      → 拒（摘录中该数字后跟规模词，登记值必须携带同等价类）。
+
+    两种定位强度：
+    - 规模词写在 value_text 里 → 严格相邻（数字后紧跟同等价类词，bn≡billion）；
+    - 规模词仅由 unit_text 声明（财报表头 'In millions' 模式）→ 同摘录共现
+      （数字与同等价类词均出现）；摘录里数字后跟随了不同等价类词仍拒。
+    无法定位 → NormalizationError（fail-closed，宁拒勿猜）。
+    """
+    core = _mantissa_core(value_text)
+    word_in_value = detect_scale_word(value_text, "")
+    word = word_in_value or detect_scale_word("", unit_text)
+    for quote in quotes:
+        qn = quote.replace(",", "")  # 千分位归一（'1,500' → '1500'）
+        if core not in qn:
+            continue
+        for m in re.finditer(re.escape(core), qn):
+            tail = qn[m.end():]
+            following = re.match(rf"\s*({_SCALE_WORD_PATTERN})s?(?![a-z])", tail, re.IGNORECASE)
+            if word_in_value is not None:
+                # 严格：数字后必须紧跟同等价类规模词（允许复数）
+                if following and _scale_class(following.group(1)) == _scale_class(word_in_value):
+                    return
+            elif word is not None:
+                # 表头模式：同摘录内共现同等价类词，且数字后未跟随其他等价类词
+                if following and _scale_class(following.group(1)) != _scale_class(word):
+                    continue
+                if re.search(rf"(?<![a-z]){re.escape(word)}s?(?![a-z])", qn, re.IGNORECASE):
+                    return
+            else:
+                # 登记值无规模词：摘录里该数字后不得跟规模词（否则量级丢失）
+                if not following:
+                    return
+    declared = f"{core} {word}" if word else core
+    raise NormalizationError(
+        f"量级未绑定证据：登记值 {declared!r} 无法在任何摘录中定位"
+        "（数字+规模词必须与原文一致；不允许改写或省略量级）"
+    )
 
 
 def recompute_lineage(obs: MetricObservation) -> Decimal:

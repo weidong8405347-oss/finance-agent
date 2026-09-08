@@ -185,12 +185,44 @@ class ValidationIssue(BaseModel):
     code: Literal[
         "unresolved_evidence", "unresolved_claim", "unresolved_observation",
         "unresolved_calculation", "uninterpolated_metric", "bare_number_unverified",
-        "empty_document",
+        "empty_document", "unsourced_metric_cell", "unresolved_claim_ref",
+        "claim_context_mismatch",
     ]
     block_index: int | None = None
     ref: str = ""
     message: str = ""
     hard: bool = True  # hard=True → 不能 validated（integrity 门禁）
+
+
+def ref_resolvable(
+    kb, store, ref: str, *, namespace: str = "prod",
+    entity_kind: str | None = None, entity_id: str | None = None,
+) -> bool:
+    """引用可解析性（带上下文，review #4/#5）：
+
+    - ev- → 证据已登记（证据库全局，不绑实体）；
+    - fact-/obs-/calc-/claim-/artifact-/plan- → 存在且同命名空间；
+      给出实体时还要求同实体（跨实体/跨命名空间引用 = 不可信）。
+    """
+    try:
+        if ref.startswith("ev-"):
+            kb.get_evidence(ref)
+            return True
+        if ref.startswith("fact-"):
+            row = kb._conn.execute(  # noqa: SLF001 - 只读存在性+上下文检查
+                "SELECT namespace, entity_kind, entity_id FROM facts WHERE fact_id = ?", (ref,)
+            ).fetchone()
+            if row is None or row[0] != namespace:
+                return False
+            return not (entity_kind and (row[1], row[2]) != (entity_kind, entity_id))
+        meta = store.get_ref_meta(ref)
+        if meta is None or meta["namespace"] != namespace:
+            return False
+        return not (
+            entity_kind and (meta["entity_kind"], meta["entity_id"]) != (entity_kind, entity_id)
+        )
+    except Exception:
+        return False
 
 
 class ResearchArtifact(BaseModel):
@@ -209,6 +241,8 @@ class ResearchArtifact(BaseModel):
     snapshot_refs: list[str] = Field(default_factory=list)
     status: ClaimStatus = "draft"  # draft/validated/superseded（产物同用三态）
     sufficiency: ArtifactSufficiency = "partial"
+    #: 发布用途区分（review #26）：用户情景不是默认发布版，不进档案结论/覆盖投影
+    purpose: Literal["report", "scenario"] = "report"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     evidence_cutoff: datetime | None = None
     run_id: str | None = None
@@ -248,11 +282,14 @@ class ArtifactValidator:
             if block.type == "paragraph":
                 issues.extend(self._check_paragraph(block.text, idx, allowed_numbers))
             elif block.type == "claim":
-                if self._store.get_claim(block.claim_id) is None:
+                claim = self._store.get_claim(block.claim_id)
+                if claim is None:
                     issues.append(ValidationIssue(
                         code="unresolved_claim", block_index=idx, ref=block.claim_id,
                         message=f"claim 未登记: {block.claim_id}",
                     ))
+                else:
+                    issues.extend(self._check_claim_refs(claim, idx))
             elif block.type == "metric_table":
                 for row in block.rows:
                     for cell in row:
@@ -266,6 +303,36 @@ class ArtifactValidator:
                                 ))
                             elif obs.value is not None:
                                 allowed_numbers.add(_plain(obs.value))
+                        elif cell.value is not None and not _is_exempt_number(_plain(cell.value)):
+                            # review #6：表内数值必须带观测引用（关键数值经 metric_ref，
+                            # 裸值不得进入「通过基础校验」的报告）
+                            issues.append(ValidationIssue(
+                                code="unsourced_metric_cell", block_index=idx,
+                                ref=f"{block.title}:{cell.label or cell.value}",
+                                message=(
+                                    f"metric_table 单元格值 {cell.value!r} 无 observation_id 引用"
+                                    "（表内关键数值必须绑观测；年份/小整数修辞豁免）"
+                                ),
+                            ))
+            elif block.type == "comparison":
+                # review #6：comparison 此前无验证分支——裸值/不可解析引用零问题通过
+                for item in block.items:
+                    if item.observation_id:
+                        obs = self._store.get_observation(item.observation_id)
+                        if obs is None:
+                            issues.append(ValidationIssue(
+                                code="unresolved_observation", block_index=idx,
+                                ref=item.observation_id,
+                                message=f"comparison 引用不可解析: {item.observation_id}",
+                            ))
+                        elif obs.value is not None:
+                            allowed_numbers.add(_plain(obs.value))
+                    elif item.value is not None and not _is_exempt_number(_plain(item.value)):
+                        issues.append(ValidationIssue(
+                            code="unsourced_metric_cell", block_index=idx,
+                            ref=f"{block.title}:{item.label or item.value}",
+                            message=f"comparison 项值 {item.value!r} 无 observation_id 引用",
+                        ))
             elif block.type == "chart_ref":
                 for ref in block.metric_refs:
                     if self._store.get_observation(ref) is None:
@@ -296,15 +363,39 @@ class ArtifactValidator:
                             message=f"文档未登记: {ref}",
                         ))
         for claim_id in artifact.claim_ids:
-            if self._store.get_claim(claim_id) is None:
+            claim = self._store.get_claim(claim_id)
+            if claim is None:
                 issues.append(ValidationIssue(
                     code="unresolved_claim", ref=claim_id, message=f"产物引用的 claim 未登记: {claim_id}"
                 ))
+            else:
+                issues.extend(self._check_claim_refs(claim, None))
         for calc_id in artifact.calculation_ids:
             if self._store.get_calculation(calc_id) is None:
                 issues.append(ValidationIssue(
                     code="unresolved_calculation", ref=calc_id,
                     message=f"产物引用的 calculation 未登记: {calc_id}",
+                ))
+        return issues
+
+    def _check_claim_refs(self, claim: dict[str, Any], block_index: int | None) -> list[ValidationIssue]:
+        """论断的支持/反方引用逐条验证（review #5）：存在性 + 命名空间 + 实体上下文。
+
+        只查 claim 存在无法阻止错误进入正式结论——validated 论断的两侧引用
+        都必须可在同一上下文解析。"""
+        issues: list[ValidationIssue] = []
+        ns = claim.get("namespace", "prod")
+        kind, eid = claim.get("entity_kind"), claim.get("entity_id")
+        for ref in [*claim.get("support_refs", []), *claim.get("counter_refs", [])]:
+            if not ref_resolvable(self._kb, self._store, ref, namespace=ns,
+                                  entity_kind=kind, entity_id=eid):
+                side = "支持" if ref in claim.get("support_refs", []) else "反方"
+                issues.append(ValidationIssue(
+                    code="unresolved_claim_ref", block_index=block_index, ref=ref,
+                    message=(
+                        f"claim {claim.get('claim_id')} 的{side}引用不可解析或跨上下文: {ref}"
+                        f"（namespace={ns}, entity={kind}:{eid}）"
+                    ),
                 ))
         return issues
 

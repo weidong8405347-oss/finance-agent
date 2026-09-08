@@ -328,3 +328,66 @@ class TestAssessmentEmission:
         loop.run("stock", "BE", "研究")
         assert loop.assessment is None
         assert not [e for e in events.read("live-loop") if e.type == "research/assessment"]
+
+
+class TestQuestionGroupMapping:
+    """review #7：配方模块名 → 维度组映射（financial_quality→financial 等）。"""
+
+    def test_recipe_modules_map_to_dimension_groups(self, env):
+        kb, metrics, events, *_ = env
+        plan_payload = {
+            "plan_id": "plan-g1", "entity_kind": "stock", "entity_id": "BE",
+            "objective": "深研", "mode": "deep", "recipe_id": "general", "recipe_version": "1",
+            "created_at": NOW.isoformat(), "status": "active",
+            "questions": [
+                {"question_id": "financial-quality", "text": "?", "priority": "high",
+                 "status": "unanswered", "module": "financial_quality"},
+                {"question_id": "business-model", "text": "?", "priority": "high",
+                 "status": "unanswered", "module": "business_engine"},
+                {"question_id": "moat-competition", "text": "?", "priority": "medium",
+                 "status": "unanswered", "module": "peers"},
+                {"question_id": "catalysts-risks", "text": "?", "priority": "high",
+                 "status": "unanswered", "module": "risks"},
+                {"question_id": "done-one", "text": "?", "priority": "high",
+                 "status": "answered", "module": "financial_quality"},
+            ],
+            "acceptance": "", "budgets": {}, "scope": {},
+        }
+        loop = make_loop(env, MockLLM([]))
+        loop.plan_payload = plan_payload
+        fin = loop._group_plan_view("financial", [])
+        assert fin is not None
+        qids = [q["question_id"] for q in fin["questions"]]
+        assert qids == ["financial-quality"]  # 已回答的不再下发
+        biz = loop._group_plan_view("business", [])
+        assert [q["question_id"] for q in biz["questions"]] == ["business-model"]
+        ind = loop._group_plan_view("industry", [])
+        assert [q["question_id"] for q in ind["questions"]] == ["moat-competition"]
+        risk = loop._group_plan_view("risk_mgmt", [])
+        assert [q["question_id"] for q in risk["questions"]] == ["catalysts-risks"]
+
+    def test_targeted_question_visible_to_all_groups(self, env):
+        """无模块归属的 targeted 问题对全部组可见（回答幂等，重复推进无害）。"""
+        kb, metrics, events, *_ = env
+        loop = make_loop(env, MockLLM([]))
+        loop.plan_payload = {
+            "questions": [{"question_id": "targeted-x", "text": "?", "priority": "high",
+                           "status": "unanswered", "module": ""}],
+        }
+        assert loop._group_plan_view("financial", []) is not None
+        assert loop._group_plan_view("business", []) is not None
+
+    def test_question_groups_used_when_profile_full(self, env):
+        """档案满但计划未完 → 按问题 module 建组（并行度不塌缩）。"""
+        from finance_agent.research.loop import _question_groups
+
+        groups = _question_groups({
+            "questions": [
+                {"question_id": "a", "status": "unanswered", "module": "financial_quality"},
+                {"question_id": "b", "status": "unanswered", "module": "financial_quality"},
+                {"question_id": "c", "status": "unanswered", "module": "risks"},
+                {"question_id": "d", "status": "answered", "module": "peers"},
+            ],
+        })
+        names = {g for g, _ in groups}
+        assert names == {"financial_quality", "risks"}  # answered 不建组

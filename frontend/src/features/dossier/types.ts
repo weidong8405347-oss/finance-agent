@@ -44,6 +44,7 @@ export interface KeyMetric {
   period_label: string;
   nature: string;
   observation_id: string | null;
+  evidence_refs: string[];  // 指标自己的来源（review #21：点击直达，不用全局首条证据背书）
   status: "ok" | "missing" | "stale" | "conflicted" | "not_meaningful";
   as_of_note: string;
 }
@@ -107,6 +108,9 @@ export interface MetricSeries {
   unit: string;
   currency: string | null;
   frequency: string;
+  dimensions: Record<string, string>;  // 完整语义键拆分（review #15）
+  basis: string;
+  nature: string;
   points: MetricPoint[];
   status: ModuleStatus;
   issues: string[];

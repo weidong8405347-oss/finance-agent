@@ -41,30 +41,17 @@ _WS = re.compile(r"\s+")
 _STRUCTURED_LIST_FIELDS = STRUCTURED_LIST_FIELDS
 
 
-def _ref_resolvable(kb: BitemporalStore, metrics: Any, ref: str) -> bool:
-    """引用可解析性（integrity 门禁的最小单元）：按 id 前缀路由到对应存储。"""
-    try:
-        if ref.startswith("ev-"):
-            kb.get_evidence(ref)
-            return True
-        if ref.startswith("obs-"):
-            return metrics.get_observation(ref) is not None
-        if ref.startswith("calc-"):
-            return metrics.get_calculation(ref) is not None
-        if ref.startswith("claim-"):
-            return metrics.get_claim(ref) is not None
-        if ref.startswith("artifact-"):
-            return metrics.get_artifact(ref) is not None
-        if ref.startswith("plan-"):
-            return metrics.get_plan(ref) is not None
-        if ref.startswith("fact-"):
-            row = kb._conn.execute(  # noqa: SLF001 - 只读存在性检查
-                "SELECT 1 FROM facts WHERE fact_id = ?", (ref,)
-            ).fetchone()
-            return row is not None
-    except Exception:
-        return False
-    return False
+def _ref_resolvable(
+    kb: BitemporalStore, metrics: Any, ref: str, *,
+    namespace: str = "prod", entity_kind: str | None = None, entity_id: str | None = None,
+) -> bool:
+    """引用可解析性（integrity 门禁的最小单元）：存在性 + 命名空间 + 实体上下文
+    （review #5：其他命名空间/其他实体的引用不得支撑 validated 结论）。"""
+    from .artifacts import ref_resolvable
+
+    return ref_resolvable(
+        kb, metrics, ref, namespace=namespace, entity_kind=entity_kind, entity_id=entity_id
+    )
 
 
 class _Tracker:
@@ -389,8 +376,16 @@ def make_research_tools(
             kind = str(args.get("kind") or "inference")
             if kind not in ("fact_summary", "inference", "hypothesis", "analysis"):
                 return {"content": f"rejected: 未知 kind {kind!r}", "provenance": []}
-            unresolved_refs = [r for r in support if not _ref_resolvable(store, metrics, r)]
-            status = "validated" if support and not unresolved_refs else "draft"
+            # 支持与反方引用都验（存在性+命名空间+实体，review #5）
+            canonical_id = normalize_entity_id(entity_kind, entity_id)
+            ctx = {"namespace": namespace, "entity_kind": entity_kind, "entity_id": canonical_id}
+            unresolved_refs = [r for r in support if not _ref_resolvable(store, metrics, r, **ctx)]
+            unresolved_counter = [r for r in counter if not _ref_resolvable(store, metrics, r, **ctx)]
+            status = (
+                "validated"
+                if support and not unresolved_refs and not unresolved_counter
+                else "draft"
+            )
             try:
                 claim = ResearchClaim(
                     entity_kind=entity_kind,  # type: ignore[arg-type]
@@ -417,8 +412,14 @@ def make_research_tools(
                 }))
             tracker.claims.append(claim.claim_id)
             note = ""
-            if status != "validated" and (unresolved_refs or not support):
-                note = f"（draft：支持引用缺失或不可解析 {unresolved_refs}）"
+            if status != "validated":
+                if unresolved_refs or unresolved_counter:
+                    note = (
+                        f"（draft：引用不可解析/跨上下文 support={unresolved_refs} "
+                        f"counter={unresolved_counter}）"
+                    )
+                elif not support:
+                    note = "（draft：无支持引用）"
             return {"content": json.dumps({"claim_id": claim.claim_id, "status": status, "note": note},
                                            ensure_ascii=False), "provenance": []}
 
@@ -440,6 +441,7 @@ def make_research_tools(
                     "content": f"rejected: 问题不在冻结计划中: {qid}（计划范围不可扩展）",
                     "provenance": [],
                 }
+            del question  # 门禁只用计划判存在性；更新走存储层原子入口（review #8）
             status = str(args.get("status") or "")
             if status not in ("gathering", "answered", "disputed", "unavailable", "not_applicable"):
                 return {"content": f"rejected: 未知状态 {status!r}", "provenance": []}
@@ -448,7 +450,9 @@ def make_research_tools(
             counter = [str(r) for r in (args.get("counter_refs") or [])]
             unresolved = [str(r) for r in (args.get("unresolved") or [])]
             attempts = [str(r) for r in (args.get("attempts") or [])]
-            # 门禁：answered 需结论+引用；disputed/unavailable 需原因与尝试记录（硬规则）
+            # 门禁：answered 需结论+引用（带上下文）；disputed/unavailable 需原因与尝试（硬规则）
+            canonical_id = normalize_entity_id(entity_kind, entity_id)
+            ctx = {"namespace": namespace, "entity_kind": entity_kind, "entity_id": canonical_id}
             if status == "answered":
                 if not conclusion:
                     return {"content": "rejected: answered 必须给出 conclusion", "provenance": []}
@@ -457,23 +461,38 @@ def make_research_tools(
                         "content": "rejected: answered 必须给出 support_refs（证据/观测/计算/论断 id）",
                         "provenance": [],
                     }
-                bad = [r for r in support if not _ref_resolvable(store, metrics, r)]
+                bad = [r for r in support if not _ref_resolvable(store, metrics, r, **ctx)]
                 if bad:
-                    return {"content": f"rejected: 支持引用不可解析: {bad}", "provenance": []}
+                    return {
+                        "content": f"rejected: 支持引用不可解析或跨上下文: {bad}",
+                        "provenance": [],
+                    }
+            if counter:
+                bad_counter = [r for r in counter if not _ref_resolvable(store, metrics, r, **ctx)]
+                if bad_counter:
+                    return {
+                        "content": f"rejected: 反方引用不可解析或跨上下文: {bad_counter}",
+                        "provenance": [],
+                    }
             if status in ("disputed", "unavailable") and not (unresolved or attempts):
                 return {
                     "content": f"rejected: {status} 必须记录原因（unresolved）与尝试（attempts）",
                     "provenance": [],
                 }
-            question.update({
+            # 原子更新单问题（review #8）：锁内读-改-写，并行 worker 不互盖
+            updated = metrics.update_plan_question(plan_id, qid, {
                 "status": status,
-                "conclusion": conclusion or question.get("conclusion"),
-                "support_refs": sorted(set([*question.get("support_refs", []), *support])),
-                "counter_refs": sorted(set([*question.get("counter_refs", []), *counter])),
-                "unresolved": sorted(set([*question.get("unresolved", []), *unresolved])),
-                "attempts": sorted(set([*question.get("attempts", []), *attempts])),
-            })
-            metrics.save_plan(plan_id=plan_id, namespace=namespace, payload=plan_payload)
+                "conclusion": conclusion,
+                "support_refs": support,
+                "counter_refs": counter,
+                "unresolved": unresolved,
+                "attempts": attempts,
+            }, namespace=namespace)
+            if updated is None:
+                return {
+                    "content": f"rejected: 计划/问题在更新窗口内消失: {plan_id}/{qid}",
+                    "provenance": [],
+                }
             if events is not None:
                 events.append(Event(run_id=manifest.run_id, type=RESEARCH_QUESTION_UPDATED, payload={
                     "plan_id": plan_id, "question_id": qid, "status": status,

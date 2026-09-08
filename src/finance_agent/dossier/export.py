@@ -73,8 +73,8 @@ def render_snapshot_markdown(
     if research.get("artifact_refs"):
         lines.append(f"- 研究产物: {', '.join(research['artifact_refs'])}")
     lines.append("")
-    # 已验证论断明细
-    claims = _validated_claims(metrics, entity, ctx)
+    # 已验证论断明细（冻结输入优先）
+    claims = _validated_claims(metrics, entity, ctx, snap)
     if claims:
         lines.append("## 论断明细")
         lines.append("")
@@ -115,7 +115,13 @@ def render_snapshot_markdown(
     return "\n".join(lines)
 
 
-def _validated_claims(metrics: MetricStore, entity: dict, ctx: dict) -> list[dict]:
+def _validated_claims(metrics: MetricStore, entity: dict, ctx: dict,
+                      snap: dict | None = None) -> list[dict]:
+    """导出与页面同源（review #2）：优先用快照冻结的 claim 集，
+    旧快照（无 inputs）回退 as_of 查询。"""
+    inputs = (snap or {}).get("inputs") or {}
+    if "claims" in inputs:
+        return list(inputs.get("claims") or [])
     from datetime import datetime
 
     t = datetime.fromisoformat(ctx["as_of"])
