@@ -124,21 +124,32 @@ def make_research_tools(
     tracker = _Tracker()
 
     def register_evidence(args: dict[str, Any]) -> dict[str, Any]:
-        """证据登记：只接受 chunk_id + 逐字摘录（服务端子串校验，fail-closed）。"""
+        """证据登记：接受 span_id（优先）或 chunk_id + 逐字摘录（服务端子串校验）。"""
         try:
             ev = verify_and_build(
                 chunk_store,
                 chunk_id=str(args.get("chunk_id") or ""),
                 verbatim_quote=str(args.get("verbatim_quote") or ""),
                 evidence_id=args.get("evidence_id"),
+                span_id=(str(args["span_id"]) if args.get("span_id") else None),
             )
         except EvidenceVerificationError as e:
-            tracker.rejected.append({"evidence": str(args.get("chunk_id")), "reason": str(e)})
-            return {"content": f"rejected: {e}", "provenance": []}
+            # 拒绝码 + 可修复提示（audit §3.5）：防止模型反复重试或缩短摘录丢语义
+            tracker.rejected.append({
+                "evidence": str(args.get("chunk_id") or args.get("span_id")),
+                "reason": str(e), "code": e.code,
+            })
+            return {
+                "content": json.dumps({
+                    "rejected": str(e), "code": e.code, "hint": e.hint,
+                }, ensure_ascii=False),
+                "provenance": [],
+            }
         store.add_evidence(ev)
         tracker.registered.append(ev.evidence_id)
         return {
-            "content": json.dumps({"evidence_id": ev.evidence_id}, ensure_ascii=False),
+            "content": json.dumps({"evidence_id": ev.evidence_id, "quality": ev.quality},
+                                  ensure_ascii=False),
             "provenance": [
                 {
                     "source_id": ev.source_id,
@@ -146,6 +157,43 @@ def make_research_tools(
                     "pit_grade": ev.pit_grade.value,
                 }
             ],
+        }
+
+    def read_chunk(args: dict[str, Any]) -> dict[str, Any]:
+        """按需 evidence bundle（audit §3.3/§3.5）：取回 chunk 的规范正文与可用 span。
+
+        工具响应被截断时，全文不无条件灌进上下文，而是凭 chunk_id 按需取；
+        返回的 span_id 可直接给 register_evidence（服务端填摘录，转写误差为零）。
+        """
+        cid = str(args.get("chunk_id") or "")
+        chunk = chunk_store.get(cid)
+        if chunk is None:
+            return {"content": f"error: 未知 chunk_id {cid}", "provenance": []}
+        query = str(args.get("query") or "").strip()
+        idxs = list(range(len(chunk.spans)))
+        if query:
+            hits = [i for i in idxs if query.lower() in chunk.spans[i].lower()]
+            idxs = hits or idxs
+        window = max(1, int(args.get("max_spans") or 8))
+        payload = {
+            "chunk_id": cid,
+            "source_id": chunk.source_id,
+            "url": chunk.url,
+            "quality": chunk.quality,
+            "locator": chunk.locator,
+            "available_at": chunk.available_at.isoformat() if chunk.available_at else None,
+            "pit_grade": chunk.pit_grade.value,
+            "span_count": len(chunk.spans),
+            "spans": [{"span_id": f"{cid}#s{i}", "text": chunk.spans[i]}
+                      for i in idxs[:window]],
+        }
+        return {
+            "content": json.dumps(payload, ensure_ascii=False),
+            "provenance": [{
+                "source_id": chunk.source_id,
+                "available_at": payload["available_at"],
+                "pit_grade": chunk.pit_grade.value,
+            }],
         }
 
     def propose_fact(args: dict[str, Any]) -> dict[str, Any]:
@@ -232,6 +280,7 @@ def make_research_tools(
 
     tools: dict[str, Any] = {
         "register_evidence": register_evidence,
+        "read_chunk": read_chunk,
         "propose_fact": propose_fact,
         "query_kb": query_kb,
         "resolve_conflict": resolve_conflict,
@@ -584,16 +633,29 @@ def make_research_tools(
 
     if fetch_document is not None:
         def read_edgar_filing(args: dict[str, Any]) -> dict[str, Any]:
-            """抓取 filing 正文并按 query 切窗口，窗口落 ChunkStore 供 register_evidence 引用。"""
+            """抓取 filing 正文并按 query 切窗口，窗口落 ChunkStore 供 register_evidence 引用。
+
+            抓取函数可返回 str 或 (str, TextQuality)；后者把抽取质量带进 chunk
+            （audit §3.5：乱码/扫描件单独标记，不得当作可靠数字来源）。
+            """
             record_chunk = chunk_store.get(str(args.get("chunk_id") or ""))
             if record_chunk is None:
                 return {"content": "error: 未知 chunk_id（先 query_edgar 拿 filing 记录）", "provenance": []}
             if not record_chunk.url:
                 return {"content": "error: 该记录没有可抓取的 url", "provenance": []}
             try:
-                text = fetch_document(record_chunk.url)
+                fetched = fetch_document(record_chunk.url)
             except Exception as e:
                 return {"content": f"error: 抓取失败：{type(e).__name__}: {e}", "provenance": []}
+            quality = "ok"
+            if isinstance(fetched, tuple):
+                text, tq = fetched[0], fetched[1]
+                quality = getattr(tq, "quality", str(tq))
+            else:
+                from ..gateway.text_quality import assess_text_quality
+
+                text = fetched
+                quality = assess_text_quality(text).quality
             out = []
             for window in _windows(text, str(args.get("query") or "")):
                 cid = chunk_store.add(
@@ -602,10 +664,19 @@ def make_research_tools(
                     url=record_chunk.url,
                     available_at=record_chunk.available_at,  # PIT 元数据从 filing 记录继承
                     pit_grade=record_chunk.pit_grade,
+                    quality=quality,
+                    locator={"source_chunk": record_chunk.chunk_id},
                 )
-                out.append({"chunk_id": cid, "text": window})
+                out.append({"chunk_id": cid, "text": window, "quality": quality})
+            note = ""
+            if quality in ("garbled", "needs_ocr"):
+                note = (
+                    f"\n⚠ 抽取质量={quality}：该正文不可作为结构化数值来源"
+                    "（propose_metric 会被拒）；需 OCR 或人工核对后重试。"
+                )
             return {
-                "content": json.dumps({"windows": out}, ensure_ascii=False),
+                "content": json.dumps({"windows": out, "quality": quality}, ensure_ascii=False)
+                + note,
                 "provenance": [
                     {
                         "source_id": record_chunk.source_id,
@@ -675,7 +746,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "register_evidence": {
         "name": "register_evidence",
         "description": (
-            "登记一条证据。quote 必须是所引 chunk 的逐字原文（服务端校验子串，不符即拒）；"
+            "登记一条证据。两种引用方式，优先用 span_id（服务端填摘录，不会因转写差异被拒）："
+            "① span_id=read_chunk/query_* 返回的稳定片段 id；"
+            "② chunk_id + verbatim_quote（quote 必须是该 chunk 的逐字原文，服务端校验子串）。"
             "来源与可知时刻由系统从 chunk 推导，无需自报。"
         ),
         "parameters": {
@@ -684,9 +757,26 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "chunk_id": {"type": "string",
                              "description": "检索内容 chunk id（query_* 或 read_edgar_filing 返回）"},
                 "verbatim_quote": {"type": "string", "description": "该 chunk 内的逐字原文摘录"},
+                "span_id": {"type": "string",
+                            "description": "稳定片段 id（形如 chk-0001#s3）；给了就不需 verbatim_quote"},
                 "evidence_id": {"type": "string", "description": "可选；不提供则自动生成"},
             },
-            "required": ["chunk_id", "verbatim_quote"],
+        },
+    },
+    "read_chunk": {
+        "name": "read_chunk",
+        "description": (
+            "按需读取一条检索内容（chunk）的规范正文与可用 span 列表（工具响应被截断时用）。"
+            "返回的 span_id 可直接交给 register_evidence；可用 query 关键词筛选 span。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string"},
+                "query": {"type": "string", "description": "可选：只返回包含该词的 span"},
+                "max_spans": {"type": "integer", "description": "返回 span 上限（默认 8）"},
+            },
+            "required": ["chunk_id"],
         },
     },
     "propose_fact": {

@@ -230,11 +230,45 @@ class TestFetchDispatch:
                             lambda *a, **k: _Resp({"content-type": "text/html"}, text="<p>正文</p>"))
         assert "正文" in fetch_mod.fetch_document("http://x/filing")
 
-        # PDF 路径：内容类型 application/pdf → 走 pdf_to_text（mock 掉真实解析）
+        # PDF 路径：内容类型 application/pdf → 走 pdf_to_text_paged（mock 掉真实解析）
         monkeypatch.setattr("httpx.get", lambda *a, **k: _Resp(
             {"content-type": "application/pdf"}, content=b"%PDF-1.4 fake"))
-        monkeypatch.setattr(fetch_mod, "pdf_to_text", lambda b: "PDF 正文")
+        monkeypatch.setattr(fetch_mod, "pdf_to_text_paged", lambda b, **k: ("PDF 正文", 3))
         assert fetch_mod.fetch_document("http://x/report.pdf") == "PDF 正文"
+
+    def test_checked_fetch_reports_quality(self, monkeypatch):
+        """抓取质量单独标记（audit §3.5）：PIT 等级表达不了乱码/扫描件。"""
+        import finance_agent.gateway.fetch as fetch_mod
+
+        class _Resp:
+            def __init__(self, headers, text="", content=b""):
+                self.headers, self.text, self.content = headers, text, content
+
+            def raise_for_status(self):
+                pass
+
+        monkeypatch.setattr("httpx.get", lambda *a, **k: _Resp(
+            {"content-type": "text/html"},
+            text="<p>Total revenue was 1,234 million for fiscal 2024.</p>"))
+        text, quality = fetch_mod.fetch_document_checked("http://x/filing")
+        assert "1,234 million" in text
+        assert quality.quality == "ok", quality.reasons
+
+        # 乱码抽取 → garbled（不得当作可靠数字来源）
+        monkeypatch.setattr("httpx.get", lambda *a, **k: _Resp(
+            {"content-type": "text/html"},
+            text="<p>" + "\ufffd\x02\x03\ufffd" * 40 + "</p>"))
+        _, bad = fetch_mod.fetch_document_checked("http://x/garbled")
+        assert bad.quality == "garbled"
+        assert not bad.usable_for_metrics
+
+        # 有页无字的扫描件 → needs_ocr
+        monkeypatch.setattr("httpx.get", lambda *a, **k: _Resp(
+            {"content-type": "application/pdf"}, content=b"%PDF-1.4 fake"))
+        monkeypatch.setattr(fetch_mod, "pdf_to_text_paged", lambda b, **k: ("", 42))
+        _, scanned = fetch_mod.fetch_document_checked("http://x/scan.pdf")
+        assert scanned.quality == "needs_ocr"
+        assert not scanned.usable_for_metrics
 
 
 class TestDecideCommitteeContext:

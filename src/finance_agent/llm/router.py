@@ -64,11 +64,14 @@ def _retry_after_s(e: Exception) -> float | None:
         return None
 
 
-def _with_retry(fn, *, attempts: int = 4, base: float = 2.0):
+def _with_retry(fn, *, attempts: int = 4, base: float = 2.0, gate=None):
     """限流/瞬断重试（指数退避 + Retry-After 遵从 + 抖动）。
 
     并行 worker 架构的必需品：N 路并发打同一 provider 必然偶发 429，
     没有退避重试的 fan-out 是脆弱的（2026-09-01 实测 dashscope 429 即死）。
+
+    gate（audit §3.3）：重试也吃预算——每次重试前问 RunBudget，不允就报错上浮，
+    不让退避 sleep 把剩余墙钟吃掉。
     """
     import random
     import time
@@ -78,6 +81,8 @@ def _with_retry(fn, *, attempts: int = 4, base: float = 2.0):
             return fn()
         except Exception as e:
             if i == attempts - 1 or not _is_retryable(e):
+                raise
+            if gate is not None and not gate():
                 raise
             delay = _retry_after_s(e) or (base * (2 ** i) + random.uniform(0, 0.5))
             time.sleep(min(delay, 60.0))
@@ -168,11 +173,30 @@ class OpenAICompatLLM:
         else:
             raw = os.environ.get(RETRY_ENV_VAR)
             self._retry_attempts = max(1, int(raw)) if raw and raw.isdigit() else 4
+        #: 重试准入闸（RunBudget 注入；None = 不设限）
+        self._retry_gate: Callable[[], bool] | None = None
 
     @property
     def model_name(self) -> str:
         """模型标识（过程透明：事件与 UI 展示用）。"""
         return self.spec.model
+
+    @property
+    def timeout(self) -> float:
+        """当前单请求读超时（秒）。"""
+        return self._timeout
+
+    def set_request_timeout(self, cap: float) -> None:
+        """把单请求 timeout 向下钳到剩余预算（audit §3.3）。
+
+        只降不升：角色配置的 timeout（如 research 300s）不得因预算宽松而被括大。
+        """
+        if cap and cap > 0:
+            self._timeout = min(self._timeout, float(cap))
+
+    def set_retry_gate(self, gate: Callable[[], bool] | None) -> None:
+        """注入重试准入闸（RunBudget.admit_retry）：重试也吃预算。"""
+        self._retry_gate = gate
 
     def complete(self, messages: list[dict[str, Any]], tools: list[str]) -> AssistantReply:
         body: dict[str, Any] = {"model": self.spec.model, "messages": to_openai_messages(messages)}
@@ -193,7 +217,8 @@ class OpenAICompatLLM:
         try:
             # 重试在调用点（策略层）：注入式 transport 也享受 429/5xx 退避
             resp = _with_retry(
-                lambda: self._transport(url, headers, body), attempts=self._retry_attempts
+                lambda: self._transport(url, headers, body), attempts=self._retry_attempts,
+                gate=self._retry_gate,
             )
         except Exception as e:
             raise _normalize_llm_error(e) from e
@@ -286,6 +311,8 @@ class OpenAICompatLLM:
             except Exception as e:
                 if attempt == self._retry_attempts - 1 or started or not _is_retryable(e):
                     raise _normalize_llm_error(e) from e
+                if self._retry_gate is not None and not self._retry_gate():
+                    raise _normalize_llm_error(e) from e  # 重试预算耗尽：不退避硬等
                 delay = _retry_after_s(e) or (2.0 * (2 ** attempt) + random.uniform(0, 0.5))
                 time.sleep(min(delay, 60.0))
 

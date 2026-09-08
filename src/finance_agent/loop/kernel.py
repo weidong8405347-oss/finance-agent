@@ -10,12 +10,14 @@ kernel 没有任何第二条上下文通道（原则 3）。
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
 from ..eventstore.events import (
     ASSISTANT_CHUNK,
     ASSISTANT_MESSAGE,
+    RESEARCH_BUDGET,
     STEP_END,
     STEP_START,
     TOOL_CALL,
@@ -43,6 +45,7 @@ class AgentKernel:
         tools: dict[str, ToolFn] | None = None,
         hooks: list[Hook] | None = None,
         max_steps: int = 8,
+        budget: Any | None = None,
     ):
         self._store = store
         self._llm = llm
@@ -50,7 +53,12 @@ class AgentKernel:
         self._tools = tools or {}
         self._hooks = hooks or []
         self._max_steps = max_steps
+        #: RunBudget（audit §3.3）：在 LLM/工具入口真实扣减，耗尽即停本 turn。
+        #: None = 不设限（旧行为兼容）。
+        self._budget = budget
         self._turn = 0
+        #: 预算终止原因（非 None = 本 turn 因预算提前结束，供上层归因）
+        self.budget_stop: str | None = None
 
     def run_turn(self, user_input: str | None = None) -> str:
         """跑一个 turn。user_input=None：输入已由调用方落库（inbox 语义），
@@ -73,6 +81,16 @@ class AgentKernel:
             self._emit(STEP_START, turn=turn, step=step)
             messages = self._store.derive_messages(run_id)
             watermark = self._store.head_seq(run_id)
+
+            # 预算准入（audit §3.3）：耗尽就不发请求——不发必然超时/超额的调用
+            if self._budget is not None:
+                ok, reason = self._budget.admit_llm_call()
+                if not ok:
+                    self.budget_stop = reason
+                    self._emit_budget("llm_call_denied", reason, turn=turn, step=step)
+                    self._emit(STEP_END, turn=turn, step=step)
+                    break
+                self._apply_llm_budget()
 
             ctx = HookContext(manifest=self._manifest, messages=messages, run_id=run_id, turn=turn, step=step)
             for hook in self._hooks:  # 必达：泄漏审计等；拒绝即中断本 turn
@@ -106,9 +124,27 @@ class AgentKernel:
                 for k in usage_acc:
                     v = reply.usage.get(k)
                     usage_acc[k] += v if isinstance(v, int) else 0  # 嵌套明细跳过
+            if self._budget is not None:
+                # 缺 usage 不按零计费：按上下文长度估算并单独计数（tokens_estimated）
+                self._budget.record_usage(
+                    reply.usage,
+                    context_chars=len(str(messages)) + len(reply.content or ""),
+                )
 
             for tc in reply.tool_calls:
                 self._emit(TOOL_CALL, payload=tc.model_dump(), turn=turn, step=step)
+                if self._budget is not None:
+                    ok, reason = self._budget.admit_tool()
+                    if not ok:
+                        self.budget_stop = reason
+                        self._emit_budget("tool_call_denied", reason, turn=turn, step=step)
+                        self._emit(
+                            TOOL_RESULT,
+                            payload={"call_id": tc.call_id, "name": tc.name,
+                                     "content": f"error: {reason}", "provenance": []},
+                            turn=turn, step=step,
+                        )
+                        continue
                 result = self._execute_tool(tc.name, tc.arguments)
                 self._emit(
                     TOOL_RESULT,
@@ -118,7 +154,7 @@ class AgentKernel:
                 )
 
             self._emit(STEP_END, turn=turn, step=step)
-            if not reply.tool_calls:
+            if self.budget_stop is not None or not reply.tool_calls:
                 break
 
         end_payload: dict[str, Any] = {}
@@ -128,8 +164,35 @@ class AgentKernel:
         model_name = getattr(self._llm, "model_name", None)
         if model_name:
             end_payload["model"] = model_name
+        if self.budget_stop:
+            end_payload["budget_stop"] = self.budget_stop
+        if self._budget is not None:
+            end_payload["budget"] = self._budget.snapshot().as_payload()
         self._emit(TURN_END, payload=end_payload, turn=turn)
         return final_content
+
+    def _apply_llm_budget(self) -> None:
+        """把剩余预算下推到 LLM 客户端：单请求 timeout 不超过剩余墙钟；重试也吃预算。"""
+        timeout = self._budget.llm_timeout(getattr(self._llm, "timeout", None))
+        setter = getattr(self._llm, "set_request_timeout", None)
+        if setter is not None and timeout:
+            with contextlib.suppress(Exception):  # 客户端不支持时不阻断研究
+                setter(timeout)
+        gate = getattr(self._llm, "set_retry_gate", None)
+        if gate is not None:
+            with contextlib.suppress(Exception):
+                gate(self._budget.admit_retry)
+
+    def _emit_budget(self, action: str, reason: str, *, turn: int = 0, step: int = 0) -> None:
+        """预算动作落事件（可回放：什么时候、因为哪个维度停了）。"""
+        self._emit(
+            RESEARCH_BUDGET,
+            payload={
+                "action": action, "reason": reason, "run_id": self._manifest.run_id,
+                "budget": self._budget.snapshot().as_payload() if self._budget else {},
+            },
+            turn=turn, step=step,
+        )
 
     def _execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         # 模型输出的工具参数 JSON 损坏 → 明确错误回给模型自我修正（不熔断 turn）

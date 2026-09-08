@@ -34,6 +34,11 @@ class Evidence(BaseModel):
     available_at: datetime | None = None  # 何时可知（= 数据源的公开时刻）
     pit_grade: PitGrade
     raw_ref: str | None = None  # 原始工件引用（文件路径 / blob hash）
+    #: 抽取质量（audit §3.5）：ok/partial/garbled/needs_ocr。PIT 等级只表达时间来源
+    #: 性质，表达不了乱码与扫描件；garbled/needs_ocr 的摘录不得支撑结构化数值。
+    quality: Literal["ok", "partial", "garbled", "needs_ocr"] = "ok"
+    #: 文档内定位（page/table/row/column/section）：财务证据绑定用（audit §3.2）
+    locator: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_available_at_consistency(self) -> Evidence:

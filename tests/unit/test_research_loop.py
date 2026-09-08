@@ -48,7 +48,9 @@ def scripted_llm() -> MockLLM:
     ]
     i = 1
     for n, (field, quote, value) in enumerate(facts):
-        chk = f"chk-{n + 2:04d}"
+        # 台账去重（audit §3.3）：夹具正文短于一个窗口，八次 read 切出的窗口文本完全
+        # 相同 → 同一个 chunk_id（chk-0002）。重复内容不重复占台账，这是期望行为。
+        chk = "chk-0002"
         ev = f"ev-{n}"
         replies += [
             AssistantReply(content="", tool_calls=[

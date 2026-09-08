@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from ..eventstore.events import (
     CONTEXT_INJECT,
     RESEARCH_ASSESSMENT,
+    RESEARCH_BUDGET,
     RESEARCH_PLAN_CREATED,
     RESEARCH_QUESTION_STALL,
     RESEARCH_ROUND_END,
@@ -113,6 +114,9 @@ class ResearchLoop:
         metrics: object | None = None,  # MetricStore
         metric_writer: object | None = None,  # TypedMetricWriter
         calculations: object | None = None,  # CalculationService
+        # ---- 真实预算闸（audit §3.3）----
+        budget: object | None = None,  # RunBudget；None 且有计划 → 按模式预算表自建
+        max_record_chars: int | None = None,  # 单条检索记录正文上限（超出走 read_chunk）
     ):
         self._store = store
         self._events = events
@@ -134,7 +138,17 @@ class ResearchLoop:
         self._metrics = metrics
         self._metric_writer = metric_writer
         self._calculations = calculations
+        self._run_budget = budget
+        self._max_record_chars = max_record_chars
         self.stop_reason: str | None = None
+        #: 预算终止的具体维度（wall_clock/tokens/retrieval_calls/...）——可归因，不笼统
+        self.budget_exhausted: list[str] = []
+        #: 末轮预算快照（摘要/UI 显示投入与等待原因）
+        self.budget_snapshot: dict | None = None
+        #: 本轮因墙钟超时未完成的组（慢组不拖死整轮，audit §3.3）
+        self.timed_out_groups: list[str] = []
+        #: 同 run 检索去重缓存（run() 内创建）
+        self._retrieval_cache: dict = {}
         #: stalled 时填充缺口诊断卡（research-capability-upgrade §4.3 L3）
         self.stall_diagnostic: dict | None = None
         #: 问题零推进诊断（audit §3.1）：与 stall_diagnostic 分开，指向调度/提交/来源
@@ -161,7 +175,7 @@ class ResearchLoop:
         fixed_now = now
         judge_feedback: str | None = None  # 上一轮 rubric 的软反馈
         all_rejected: list[dict] = []  # 跨轮累计被拒提案（诊断卡素材）
-        budget: int | None = None  # 首轮 gap 分析后定（动态预算）
+        round_budget: int | None = None  # 首轮 gap 分析后定（动态轮数预算）
         # 维度 researcher 方法论 playbook（每 run 记版本哈希，可复现）
         playbook_text, playbook_ver = load_playbook("dimension_researcher")
         self._emit("research/playbook", {"name": "dimension_researcher", "version": playbook_ver})
@@ -188,6 +202,22 @@ class ResearchLoop:
                 })
 
         round_no = 0
+        # 真实预算闸（audit §3.3）：设计给了 wall-clock/检索上限，旧实现只消费轮数。
+        # 未显式注入且有冻结计划 → 按模式预算表自建（deep=40min/80 次检索）。
+        run_budget = self._run_budget
+        if run_budget is None and self.plan_payload:
+            from .budget import budget_for_mode
+
+            run_budget = budget_for_mode(
+                str(self.plan_payload.get("mode") or "standard"), self.plan_payload
+            )
+            self._run_budget = run_budget
+        if run_budget is not None:
+            run_budget.start()
+            self._emit(RESEARCH_BUDGET, {"action": "start", "run_id": self._manifest.run_id,
+                                         "budget": run_budget.snapshot().as_payload()})
+        #: 同 run 检索去重（重复资料既是成本也是上下文膨胀的主因）
+        retrieval_cache: dict = self._retrieval_cache
         while True:
             if self._should_stop is not None and self._should_stop():
                 self.stop_reason = "cancelled"
@@ -212,10 +242,21 @@ class ResearchLoop:
             ):
                 self.stop_reason = "converged"
                 break
-            if budget is None:
-                budget = self._effective_budget(gaps_before)
-            if round_no > budget:
+            if round_budget is None:
+                round_budget = self._effective_budget(gaps_before)
+            if round_no > round_budget:
                 self.stop_reason = "budget"
+                self.budget_exhausted = ["max_rounds"]
+                break
+            if run_budget is not None and run_budget.is_exhausted():
+                # wall-clock/token/检索/工具 任一耗尽即停（不再只数轮数）；
+                # 已落库成果保留，末段预留给部分成果合成。
+                self.stop_reason = "budget"
+                self.budget_exhausted = run_budget.exhausted()
+                self._emit(RESEARCH_BUDGET, {
+                    "action": "research_stopped", "reason": ",".join(self.budget_exhausted),
+                    "round": round_no, "budget": run_budget.snapshot().as_payload(),
+                })
                 break
             self._emit(RESEARCH_ROUND_START, {
                 "round": round_no,
@@ -258,20 +299,47 @@ class ResearchLoop:
                     **schedule.as_payload(),
                 })
                 workers = self._worker_llms
-                from concurrent.futures import ThreadPoolExecutor
+                from concurrent.futures import ThreadPoolExecutor, wait
 
-                with ThreadPoolExecutor(max_workers=max(1, len(schedule.items))) as pool:
-                    futures = [
-                        pool.submit(
-                            self._run_group, entity_kind, entity_id, objective,
-                            gaps_before, round_no, item,
-                            workers[i % len(workers)], judge_feedback,
-                            playbook_text, chunk_store,
-                        )
-                        for i, item in enumerate(schedule.items)
-                    ]
-                    group_results = [f.result() for f in futures]
+                pool = ThreadPoolExecutor(
+                    max_workers=max(1, len(schedule.items)),
+                    thread_name_prefix=f"research-r{round_no}",
+                )
+                futures = {
+                    item.group: pool.submit(
+                        self._run_group, entity_kind, entity_id, objective,
+                        gaps_before, round_no, item,
+                        workers[i % len(workers)], judge_feedback,
+                        playbook_text, chunk_store,
+                    )
+                    for i, item in enumerate(schedule.items)
+                }
+                # 按剩余墙钟等待，不做整轮屏障（audit §3.3）：慢组超时只影响所属问题，
+                # 其余组已完成的成果立即进本轮报告。
+                remaining = run_budget.remaining_seconds() if run_budget is not None else None
+                done, not_done = wait(list(futures.values()), timeout=remaining)
+                group_results = [
+                    f.result() for f in done if not f.cancelled() and f.exception() is None
+                ]
+                timed_out = sorted(g for g, f in futures.items() if f in not_done)
+                if not_done:
+                    # 不等待未完成组（shutdown(wait=False)）：研究阶段必须在 deadline 内返回。
+                    # 未完成线程自行跑完并落库，已写入的成果不丢。
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    self._emit(RESEARCH_BUDGET, {
+                        "action": "group_timeout", "round": round_no,
+                        "groups": timed_out,
+                        "reason": "慢组超时：只影响所属问题，本轮不等待",
+                        "budget": run_budget.snapshot().as_payload() if run_budget else {},
+                    })
+                    logger.warning(
+                        "第 %d 轮有 %d 个组未在剩余墙钟内完成（%s）：不阻塞本轮验收",
+                        round_no, len(not_done), timed_out,
+                    )
+                else:
+                    pool.shutdown(wait=True)
                 trackers = [tr for _, tr in group_results]
+                self.timed_out_groups = timed_out
                 written = [f for tr in trackers for f in tr.written]
                 rejected = [r for tr in trackers for r in tr.rejected]
             else:
@@ -292,7 +360,9 @@ class ResearchLoop:
                 )
                 for source_id in self._gateway_sources:
                     tools[f"query_{source_id}"] = make_gateway_tool(
-                        self._gateway, source_id, chunk_store
+                        self._gateway, source_id, chunk_store,
+                        budget=run_budget, cache=retrieval_cache,
+                        max_record_chars=self._max_record_chars,
                     )
 
                 if round_no == 1:  # system 契约只注入一次（稳定前缀）
@@ -305,6 +375,7 @@ class ResearchLoop:
                     tools=tools,
                     hooks=self._hooks,
                     max_steps=self._max_steps,
+                    budget=run_budget,
                 )
                 kernel.run_turn(
                     build_round_brief(
@@ -369,6 +440,16 @@ class ResearchLoop:
                 break
 
         self._finalize_assessment(entity_kind, entity_id, _now(), reports)
+        if self._run_budget is not None:
+            self.budget_snapshot = self._run_budget.snapshot().as_payload()
+            # 台账级重复（同正文不同请求）与检索级重复（同请求）分开计数
+            self.budget_snapshot["duplicate_chunks"] = chunk_store.duplicates
+            self.budget_snapshot["timed_out_groups"] = list(self.timed_out_groups)
+            self._emit(RESEARCH_BUDGET, {
+                "action": "research_end", "stop_reason": self.stop_reason,
+                "exhausted": list(self.budget_exhausted),
+                "budget": self.budget_snapshot,
+            })
         return reports
 
     # ---------------- 研究充分度评估（§7.6） ----------------
@@ -479,7 +560,9 @@ class ResearchLoop:
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(
-                self._gateway, source_id, chunk_store
+                self._gateway, source_id, chunk_store,
+                budget=self._run_budget, cache=self._retrieval_cache,
+                max_record_chars=self._max_record_chars,
             )
         group_run_id = f"{self._manifest.run_id}--r{round_no}-{group}"
         self._events.append(
@@ -537,8 +620,13 @@ class ResearchLoop:
                 tools=tools,
                 hooks=self._hooks,
                 max_steps=12,  # 维度组独立步数预算（§4.2）
+                budget=self._run_budget,  # 全局墙钟/token/检索预算共享扣减（audit §3.3）
             )
             kernel.run_turn(brief)
+            if kernel.budget_stop:
+                tracker.rejected.append(
+                    {"field": f"group:{group}", "reason": f"预算终止：{kernel.budget_stop}"}
+                )
         except Exception as e:  # 单组失败不拖死整轮——记入被拒清单（可见），其余组继续
             logger.warning("维度组 %s 第 %d 轮失败：%s", group, round_no, e)
             tracker.rejected.append({"field": f"group:{group}", "reason": f"{type(e).__name__}: {e}"})

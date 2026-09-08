@@ -11,14 +11,38 @@ from typing import Any
 from .gateway import DataGateway
 
 
-def make_gateway_tool(gateway: DataGateway, source_id: str, chunk_store=None):
+def make_gateway_tool(
+    gateway: DataGateway, source_id: str, chunk_store=None, *,
+    budget=None, cache: dict | None = None, max_record_chars: int | None = None,
+):
     """生成一个工具函数：query(source 固定, request=arguments) → ToolResult dict。
 
     传入 chunk_store 时，每条记录同时落检索台账（EvidenceDesk）：返回项带 chunk_id，
     供 register_evidence 引用——「模型可见的记录才可引为证据」由此闭环。
+
+    audit §3.3 新增三个可选接缝：
+    - budget（RunBudget）：检索调用在网关入口真实扣减，耗尽即拒（不发请求）；
+    - cache：同 run 内重复请求直接复用上次结果（不重复扣预算、不重复撑大上下文）；
+    - max_record_chars：单条记录正文上限，超出则截断并告知用 read_chunk(chunk_id)
+      按需取全文（evidence bundle）——工具响应不再无条件灌满上下文。
     """
 
     def tool(arguments: dict[str, Any]) -> dict[str, Any]:
+        cache_key = None
+        if cache is not None:
+            cache_key = (source_id, json.dumps(arguments, ensure_ascii=False, sort_keys=True,
+                                               default=str))
+            hit = cache.get(cache_key)
+            if hit is not None:
+                # 命中去重：不扣检索预算、不打外部源（重复资料不该再算一次成本）
+                if budget is not None:
+                    budget.record_duplicate_retrieval()
+                return {**hit, "cached": True}
+        if budget is not None:
+            ok, reason = budget.admit_retrieval()
+            if not ok:
+                return {"content": f"rejected: {reason}", "provenance": [],
+                        "budget_denied": True}
         records = gateway.query(source_id, arguments)
         items = []
         for r in records:
@@ -27,8 +51,9 @@ def make_gateway_tool(gateway: DataGateway, source_id: str, chunk_store=None):
             if chunk_store is not None:
                 from ..knowledge.models import PitGrade
 
-                # chunk 文本必须与模型所见逐项一致（子串校验的基准）
-                item_text = json.dumps(item, ensure_ascii=False, default=str)
+                # chunk 文本必须与模型所见逐项一致（子串校验的基准）；
+                # 台账存规范正文（_canonical_text），JSON 只负责传输（audit §3.5）
+                item_text = canonical_record_text(item)
                 # 逐条有效等级（2026-09-01 实测修复）：源级 B 但本条无 available_at
                 # → 本条降级 C（Evidence 校验：A/B 级必须有时刻；不给就拒登记）
                 grade = gateway_grade(gateway, r.source_id)
@@ -40,8 +65,8 @@ def make_gateway_tool(gateway: DataGateway, source_id: str, chunk_store=None):
                     available_at=r.available_at,
                     pit_grade=PitGrade(effective),
                 )
-            items.append(item)
-        return {
+            items.append(_clamp_item(item, max_record_chars))
+        result = {
             "content": json.dumps(items, ensure_ascii=False, default=str),
             "provenance": [
                 {
@@ -52,8 +77,51 @@ def make_gateway_tool(gateway: DataGateway, source_id: str, chunk_store=None):
                 for r in records
             ],
         }
+        if cache is not None and cache_key is not None:
+            cache[cache_key] = result
+        return result
 
     return tool
+
+
+def _clamp_item(item: dict[str, Any], max_chars: int | None) -> dict[str, Any]:
+    """按需 evidence bundle（audit §3.3）：长正文截断，全文凭 chunk_id 再取。
+
+    只截长字符串字段；截断处显式告知模型如何取全文，不静默丢语义。
+    """
+    if not max_chars or max_chars <= 0:
+        return item
+    out = dict(item)
+    for key, value in item.items():
+        if isinstance(value, str) and len(value) > max_chars:
+            out[key] = value[:max_chars]
+            out[f"{key}_truncated"] = True
+            if out.get("chunk_id"):
+                out[f"{key}_full_text_via"] = f"read_chunk(chunk_id={out['chunk_id']})"
+    return out
+
+
+def canonical_record_text(item: dict[str, Any]) -> str:
+    """检索台账的规范正文（audit §3.5）：模型引用的原文基准。
+
+    旧实现把 JSON 序列化字符串当正文存进台账，而校验用原文子串匹配——
+    换行/引号被转义后，模型复制真实正文也可能被拒（本次 44 次拒绝中至少 9 次
+    属此类）。改为：文本字段原文拼接（保留换行与引号），非文本字段以
+    `key=value` 附在后面（仍可引），JSON 只用于工具传输。
+    """
+    texts: list[str] = []
+    scalars: list[str] = []
+    for key, value in item.items():
+        if key == "chunk_id":
+            continue
+        if isinstance(value, str) and value.strip():
+            texts.append(value)
+        elif value is not None and not isinstance(value, (dict, list)):
+            scalars.append(f"{key}={value}")
+        elif isinstance(value, (dict, list)):
+            scalars.append(f"{key}={json.dumps(value, ensure_ascii=False, default=str)}")
+    parts = [*texts, *scalars]
+    return "\n".join(p for p in parts if p)
 
 
 def gateway_grade(gateway: DataGateway, source_id: str) -> str:

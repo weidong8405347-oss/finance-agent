@@ -126,6 +126,9 @@ class StepDeps:
     worker_llm_for: Callable[[int], list[LLM]] | None = None
     completeness_target: float = 0.8
     decide_max_attempts: int = 2  # Q7：硬门禁打回的有界重试
+    #: 单条检索记录正文上限（audit §3.3 按需 evidence bundle）；超出部分凭
+    #: read_chunk(chunk_id) 取回——工具响应不再无条件灌满上下文
+    max_record_chars: int | None = 6000
 
 
 def _open_child(deps: StepDeps, ctx: StepContext, step: str) -> RunManifest:
@@ -178,6 +181,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         metrics=deps.metrics,
         metric_writer=deps.metric_writer,
         calculations=deps.calculations,
+        max_record_chars=deps.max_record_chars,
     )
     reports = loop.run(
         ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
@@ -243,7 +247,47 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         )
         if a.gaps:
             summary += f"；缺口：{'；'.join(a.gaps[:3])}"
+    # 预算与「执行结束 ≠ 成果可用」（audit §2/§3.3）：投入可见、停止原因可归因
+    summary += _budget_summary(loop)
     return StepResult(status="completed", summary=summary)
+
+
+def _budget_summary(loop: ResearchLoop) -> str:
+    """一行预算/停止原因摘要（audit §3.3）。
+
+    旧摘要只报末轮「12 字段、9 项 typed」，用户无法判断投入与成果；这里把五轮累计的
+    墙钟/模型调用/检索/token 与停止维度一起给出，并区分「执行结束」与「成果可用」。
+    """
+    snap = getattr(loop, "budget_snapshot", None)
+    if not snap:
+        return ""
+    parts = [
+        f"耗时 {snap.get('seconds_used', 0):.0f}s"
+        + (f"/{snap['seconds_limit']:.0f}s" if snap.get("seconds_limit") else ""),
+        f"模型调用 {snap.get('llm_calls', 0)} 次",
+        f"检索 {snap.get('retrieval_calls', 0)}"
+        + (f"/{snap['retrieval_limit']}" if snap.get("retrieval_limit") else "")
+        + (f"（重复命中 {snap['duplicate_retrievals']}）" if snap.get("duplicate_retrievals") else ""),
+    ]
+    tokens = snap.get("tokens_used", 0)
+    if tokens:
+        parts.append(
+            f"tokens {tokens}"
+            + (f"（含估算 {snap['tokens_estimated']}）" if snap.get("tokens_estimated") else "")
+        )
+    if snap.get("timed_out_groups"):
+        parts.append(f"慢组超时未等待：{'、'.join(snap['timed_out_groups'])}")
+    if loop.budget_exhausted:
+        parts.append(f"停止维度：{'、'.join(loop.budget_exhausted)}")
+    text = "；预算 " + "，".join(parts)
+    assessment = getattr(loop, "assessment", None)
+    verdict = getattr(assessment, "verdict", None)
+    if verdict and verdict != "sufficient":
+        text += (
+            f"；注意：命令执行已结束，但成果仍为部分可用（充分度 {verdict}）"
+            "——界面不得把「执行结束」当作「结论可用」"
+        )
+    return text
 
 
 def _prepare_research_plan(deps: StepDeps, ctx: StepContext) -> str | None:
