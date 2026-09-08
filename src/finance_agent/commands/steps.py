@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -187,6 +188,8 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
     )
     if loop.stop_reason == "cancelled":
+        # 取消也要保留已验证成果（audit §3.9）：部分成果冻结为 partial 产物 + 发快照
+        _publish_partial_artifact(deps, ctx, loop, datetime.now(UTC))
         return _cancelled(ctx)
     gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
 
@@ -215,6 +218,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
                 f"（{'、'.join(missing[:5])}{'…' if len(missing) > 5 else ''}）"
                 + (f"；建议：{sugg}" if sugg else "")
             )
+            _publish_partial_artifact(deps, ctx, loop, datetime.now(UTC))
             return StepResult(status="blocked", summary=summary)
         summary = (
             f"研究 {len(reports)} 轮（stalled，累计写入 {total_written} 字段"
@@ -237,6 +241,9 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         )
         if typed_out:
             summary += f"，typed 产出 {typed_out} 项（观测/论断/计算）"
+    # 预算/轮数终止：已验证成果走部分发布（audit §3.3/§3.9）——可读地交付 partial
+    if loop.stop_reason == "budget":
+        _publish_partial_artifact(deps, ctx, loop, datetime.now(UTC))
     # 研究充分度（§7.6）：字段完整 ≠ 研究充分——评估结果进摘要（RunStatus 与产物状态分离）
     if loop.assessment is not None:
         a = loop.assessment
@@ -250,6 +257,137 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
     # 预算与「执行结束 ≠ 成果可用」（audit §2/§3.3）：投入可见、停止原因可归因
     summary += _budget_summary(loop)
     return StepResult(status="completed", summary=summary)
+
+
+def _publish_partial_artifact(
+    deps: StepDeps, ctx: StepContext, loop: ResearchLoop, now: datetime
+) -> str | None:
+    """终止路径的部分成果发布（audit §3.9）：取消/超时/停滞不等最终合成。
+
+    确定性构造（不调 LLM）：已回答/争议/不可得的问题逐题成段（结论 + 引用），
+    未完成的题目用 gap_notice 显式标出；产物 status=draft、sufficiency 取评估结果，
+    并发布档案快照（页面可读到部分成果）。返回 artifact_id。
+    """
+    if deps.metrics is None:
+        return None
+    checkpoint = getattr(loop, "partial_checkpoint", None)
+    answered = (checkpoint or {}).get("answered") or []
+    claims = deps.metrics.claims_as_of(
+        ctx.entity_kind, ctx.ticker, now, statuses=("draft", "validated")
+    )
+    observations = deps.metrics.observations_as_of(ctx.entity_kind, ctx.ticker, now)
+    if not (answered or claims or observations or (checkpoint or {}).get("facts")):
+        return None  # 一无所获：不发空产物（不拿 draft 冒充成果）
+    from ..research.artifacts import (
+        ArtifactValidator,
+        GapNoticeBlock,
+        HeadingBlock,
+        ParagraphBlock,
+        ReportDocument,
+        ResearchArtifact,
+        SourceRefBlock,
+        render_markdown,
+    )
+
+    blocks: list[Any] = [HeadingBlock(level=1, text="部分成果（研究未结束）")]
+    stop = loop.stop_reason or "unknown"
+    exhausted = getattr(loop, "budget_exhausted", []) or []
+    blocks.append(ParagraphBlock(
+        text=(
+            f"本产物在研究终止时冻结（停止原因：{stop}"
+            + (f"，耗尽维度：{'、'.join(exhausted)}" if exhausted else "")
+            + "）。以下内容只包含已通过服务端校验的成果；未完成题目在下方缺口区显式列出。"
+        )
+    ))
+    refs: list[str] = []
+    for item in answered:
+        qid = str(item.get("question_id") or "")
+        status = str(item.get("status") or "")
+        conclusion = str(item.get("conclusion") or "")
+        blocks.append(HeadingBlock(level=2, text=f"[{qid}]（{status}）"))
+        blocks.append(ParagraphBlock(text=conclusion or "（无结论正文）"))
+        for ref in [*(item.get("support_refs") or []), *(item.get("counter_refs") or [])]:
+            if str(ref) not in refs:
+                refs.append(str(ref))
+        unresolved = item.get("unresolved") or []
+        if unresolved:
+            blocks.append(ParagraphBlock(text="未解决：" + "；".join(str(u) for u in unresolved)))
+    plan = (loop.plan_payload or {})
+    open_questions = [
+        q for q in plan.get("questions", []) or []
+        if q.get("status") not in ("answered", "not_applicable", "disputed", "unavailable")
+    ]
+    if open_questions:
+        blocks.append(GapNoticeBlock(
+            module="research_sources",
+            message=(
+                f"{len(open_questions)} 道问题本轮未完成："
+                + "、".join(str(q.get("question_id")) for q in open_questions[:8])
+                + ("…" if len(open_questions) > 8 else "")
+            ),
+        ))
+    ev_refs = [r for r in refs if r.startswith("ev-")]
+    if ev_refs:
+        blocks.append(SourceRefBlock(refs=ev_refs[:20], note="部分成果引用"))
+    doc = ReportDocument(
+        title=f"{ctx.ticker} 部分研究成果", entity_kind=ctx.entity_kind,
+        entity_id=ctx.ticker, blocks=blocks,
+        limitations=[
+            f"研究以 {stop} 终止，本产物为部分成果（不是最终报告）",
+            *((loop.budget_snapshot or {}).get("exhausted") and
+              ["预算耗尽维度：" + "、".join((loop.budget_snapshot or {}).get("exhausted"))] or []),
+        ],
+    ).with_id()
+    assessment = getattr(loop, "assessment", None)
+    sufficiency = str(getattr(assessment, "verdict", "") or "partial")
+    if sufficiency not in ("sufficient", "partial", "blocked"):
+        sufficiency = "partial"
+    artifact = ResearchArtifact(
+        entity_kind=ctx.entity_kind, entity_id=ctx.ticker, title=doc.title,
+        report_document=doc,
+        claim_ids=[c["claim_id"] for c in claims if c.get("status") == "validated"],
+        calculation_ids=list((checkpoint or {}).get("calculations") or []),
+        plan_id=(plan or {}).get("plan_id"),
+        status="draft", sufficiency=sufficiency,  # type: ignore[arg-type]
+        created_at=now, evidence_cutoff=now, run_id=ctx.child_run_id,
+    ).with_id()
+    artifact.validation_issues = ArtifactValidator(
+        kb=deps.kb, metric_store=deps.metrics).validate(artifact)
+    artifact.markdown = render_markdown(artifact, store=deps.metrics, kb=deps.kb)
+    deps.metrics.save_artifact(
+        artifact_id=artifact.artifact_id, namespace="prod",
+        payload=artifact.model_dump(mode="json"),
+    )
+    deps.events.append(Event(
+        run_id=ctx.child_run_id, type="research/artifact_created",
+        payload={
+            "artifact_id": artifact.artifact_id,
+            "entity": f"{ctx.entity_kind}:{ctx.ticker}",
+            "title": doc.title, "status": "draft", "sufficiency": sufficiency,
+            "partial": True, "stop_reason": stop,
+            "answered_questions": [a.get("question_id") for a in answered],
+            "open_questions": [q.get("question_id") for q in open_questions],
+            "claim_ids": artifact.claim_ids,
+            "calculation_ids": artifact.calculation_ids,
+        },
+    ))
+    path = _write_text_artifact(deps, ctx, "partial-report.md", artifact.markdown)
+    _publish_report(
+        deps, ctx, doc.title,
+        f"部分成果（{stop} 终止）：{len(answered)} 题已完成，{len(open_questions)} 题未完成",
+        path, [f"artifact: draft/{sufficiency}", "partial: true"],
+        extra={"research_artifact_id": artifact.artifact_id, "artifact_status": "draft",
+               "artifact_sufficiency": sufficiency, "partial": True},
+    )
+    # 快照发布：页面能读到部分成果（失败不阻断，service 内部已三通道可见）
+    if deps.dossier_service is not None:
+        with contextlib.suppress(Exception):
+            deps.dossier_service.open(ctx.entity_kind, ctx.ticker, run_id=ctx.session_run_id)
+    logger.info(
+        "部分成果已冻结 %s（%s 终止，%d 题完成）",
+        artifact.artifact_id, stop, len(answered),
+    )
+    return artifact.artifact_id
 
 
 def _budget_summary(loop: ResearchLoop) -> str:

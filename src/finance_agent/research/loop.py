@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -17,6 +19,7 @@ from ..eventstore.events import (
     CONTEXT_INJECT,
     RESEARCH_ASSESSMENT,
     RESEARCH_BUDGET,
+    RESEARCH_PARTIAL_PUBLISHED,
     RESEARCH_PLAN_CREATED,
     RESEARCH_QUESTION_STALL,
     RESEARCH_ROUND_END,
@@ -153,6 +156,8 @@ class ResearchLoop:
         self.stall_diagnostic: dict | None = None
         #: 问题零推进诊断（audit §3.1）：与 stall_diagnostic 分开，指向调度/提交/来源
         self.question_stall_diagnostic: dict | None = None
+        #: 最近一次部分成果检查点（audit §3.9）：取消/超时路径据此冻结 partial 产物
+        self.partial_checkpoint: dict | None = None
         #: 研究充分度评估（§7.6；有计划+新存储时填充）
         self.assessment: object | None = None
         self.plan_payload: dict | None = None
@@ -421,6 +426,7 @@ class ResearchLoop:
             self._emit_question_stall(
                 entity_kind, entity_id, round_no, report, trackers, dispatched_qids
             )
+            self._emit_partial(entity_kind, entity_id, round_no, report)
 
             coverage_ok_after = coverage_after is None or (
                 coverage_after >= target_coverage and not violations_after
@@ -679,6 +685,43 @@ class ResearchLoop:
         if not questions:
             return None
         return {**self.plan_payload, "questions": questions}
+
+    def _emit_partial(
+        self, entity_kind: str, entity_id: str, round_no: int, report: IterationReport,
+    ) -> None:
+        """部分成果检查点（audit §3.9）：每完成一个问题就落一次可发布的已验证成果。
+
+        事件携带输入指纹（plan_id + 已答问题 + 引用集），使取消/超时路径能把
+        已验证成果冻结成 partial 产物，而不是等最终合成才有可读交付。
+        """
+        if not (report.questions_advanced or report.claims_written
+                or report.observations_written or report.calculations_done):
+            return
+        answered = [
+            {"question_id": q.get("question_id"), "status": q.get("status"),
+             "conclusion": q.get("conclusion"), "support_refs": q.get("support_refs") or [],
+             "counter_refs": q.get("counter_refs") or [], "unresolved": q.get("unresolved") or []}
+            for q in (self.plan_payload or {}).get("questions", [])
+            if q.get("status") in ("answered", "disputed", "unavailable")
+        ]
+        checkpoint = {
+            "entity": f"{entity_kind}:{entity_id}",
+            "round": round_no,
+            "plan_id": self._plan_id,
+            "answered": answered,
+            "claims": list(report.claims_written),
+            "observations": list(report.observations_written),
+            "calculations": list(report.calculations_done),
+            "facts": list(report.facts_written),
+            "budget": self._run_budget.snapshot().as_payload() if self._run_budget else {},
+            "input_hash": hashlib.sha256(json.dumps(
+                {"plan": self._plan_id, "answered": [a["question_id"] for a in answered],
+                 "claims": sorted(report.claims_written),
+                 "observations": sorted(report.observations_written)},
+                ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16],
+        }
+        self.partial_checkpoint = checkpoint
+        self._emit(RESEARCH_PARTIAL_PUBLISHED, checkpoint)
 
     def _emit_question_stall(
         self, entity_kind: str, entity_id: str, round_no: int,
