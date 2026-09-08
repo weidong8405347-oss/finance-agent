@@ -495,14 +495,80 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             return {"content": json.dumps(claims[:100], ensure_ascii=False), "provenance": []}
 
         def submit_report_document(args: dict[str, Any]) -> dict[str, Any]:
+            """提交即校验（audit §3.9）：同一轮内返回可修复错误，不失掉修复机会。
+
+            旧行为：先回 accepted，最后才在 _finalize_artifact_v2 里校验——硬错只能
+            把产物降为 draft（本次事故：unresolved_claim_ref 硬失败，报告仍发布）。
+            """
             nonlocal submitted
+            from ..research.artifacts import (
+                ArtifactValidator,
+                ReportDocument,
+                ResearchArtifact,
+            )
+
+            try:
+                candidate = ReportDocument.model_validate({
+                    "title": args.get("title") or report_title,
+                    "entity_kind": ctx.entity_kind,
+                    "entity_id": ctx.ticker,
+                    "blocks": args.get("blocks") or [],
+                    "limitations": args.get("limitations") or [],
+                }).with_id()
+            except Exception as e:  # 结构非法 → 当轮回报，模型可修正重提
+                return {"content": json.dumps({
+                    "accepted": False, "code": "invalid_structure",
+                    "error": f"{type(e).__name__}: {e}"[:800],
+                    "hint": "blocks 每项必须带合法 type 与该类型必填字段",
+                }, ensure_ascii=False), "provenance": []}
+            probe = ResearchArtifact(
+                entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+                title=candidate.title, report_document=candidate,
+                claim_ids=_dedupe(_report_dependencies(candidate, deps.metrics)["claims"]),
+                calculation_ids=_report_dependencies(candidate, deps.metrics)["calculations"],
+                status="draft", sufficiency="partial", created_at=now,
+                run_id=ctx.child_run_id,
+            ).with_id()
+            issues = ArtifactValidator(kb=deps.kb, metric_store=deps.metrics).validate(probe)
+            hard = [i for i in issues if i.hard]
             submitted = args
-            return {"content": json.dumps({"accepted": True, "blocks": len(args.get("blocks") or [])},
-                                          ensure_ascii=False), "provenance": []}
+            if hard:
+                return {"content": json.dumps({
+                    "accepted": True, "validated": False,
+                    "hard_issues": [i.model_dump(mode="json") for i in hard[:10]],
+                    "soft_issues": [i.model_dump(mode="json")
+                                    for i in issues if not i.hard][:10],
+                    "hint": (
+                        "硬校验未过：修正不可解析的引用、剔除不采用的论断、或给裸数值"
+                        "补 observation_id 后重提；不修正则产物只能是 draft"
+                    ),
+                }, ensure_ascii=False), "provenance": []}
+            return {"content": json.dumps({
+                "accepted": True, "validated": True,
+                "blocks": len(candidate.blocks),
+                "soft_issues": [i.model_dump(mode="json") for i in issues][:10],
+            }, ensure_ascii=False), "provenance": []}
+
+        def query_calculations(_args: dict[str, Any]) -> dict[str, Any]:
+            """已登记计算（可重算引用）：合成时直接引用 calculation_id，不重算。"""
+            try:
+                ids = deps.metrics.list_calculation_ids(
+                    ctx.entity_kind, ctx.ticker, datetime.now(UTC), namespace="prod"
+                )
+            except Exception:  # noqa: BLE001 - 存储不支持时降级为空
+                ids = []
+            out = []
+            for cid in ids[:50]:
+                stored = deps.metrics.get_calculation(cid)
+                if stored is not None:
+                    out.append(stored.payload)
+            return {"content": json.dumps(out, ensure_ascii=False, default=str),
+                    "provenance": []}
 
         tools.update({
             "query_observations": query_observations,
             "query_claims": query_claims,
+            "query_calculations": query_calculations,
             "submit_report_document": submit_report_document,
         })
 
@@ -520,7 +586,7 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
         tools=tools,
         max_steps=12 if deps.metrics is not None else 8,
     )
-    report_md = kernel.run_turn(f"为 {ctx.entity_kind}:{ctx.ticker} 写研究报告。")
+    report_md = kernel.run_turn(_synthesize_brief(deps, ctx, view, now))
 
     if deps.metrics is not None:
         return _finalize_artifact_v2(
@@ -551,6 +617,14 @@ SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
     "query_claims": {
         "name": "query_claims",
         "description": "查询当前实体的研究论断（claim_id/statement/kind/status/支持反方引用）",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "query_calculations": {
+        "name": "query_calculations",
+        "description": (
+            "查询已登记的受控计算（calculation_id/公式/输入引用/结果）——"
+            "报告用 calculation_ref 引用，不重算"
+        ),
         "parameters": {"type": "object", "properties": {}},
     },
     "submit_report_document": {
@@ -637,6 +711,143 @@ def _synthesize_empty_v2(
     return StepResult(status="completed", summary=summary)
 
 
+def _synthesize_brief(
+    deps: StepDeps, ctx: StepContext, view: dict[str, Any], now: datetime
+) -> str:
+    """合成输入直接带目标/完整计划/评估/计算/问题证据包（audit §3.9）。
+
+    旧实现只给一句「写研究报告」，合成 agent 得自己查 KB/指标/claim 再逐条读证据，
+    12 步预算大量耗在检索上，且看不到用户目标与验收条件。
+    """
+    parts = [f"为 {ctx.entity_kind}:{ctx.ticker} 写研究报告。"]
+    if ctx.objective:
+        parts.append(f"用户研究目标（报告必须直接回答它）：{ctx.objective}")
+    if deps.metrics is None:
+        return "\n".join(parts)
+
+    plans = deps.metrics.plans_for(ctx.entity_kind, ctx.ticker, limit=1)
+    plan = plans[0] if plans else None
+    if plan:
+        parts.append(
+            f"冻结研究计划 {plan.get('plan_id')}（mode={plan.get('mode')}，"
+            f"配方 {plan.get('recipe_id')}@{plan.get('recipe_version')}）："
+        )
+        for q in (plan.get("questions") or [])[:40]:
+            status = q.get("status")
+            line = f"- [{q.get('question_id')}]（{q.get('priority')}/{status}）{q.get('text')}"
+            if q.get("conclusion"):
+                line += f"\n  当前结论：{q['conclusion']}"
+            if q.get("support_refs"):
+                line += f"\n  支持引用：{q['support_refs']}"
+            if q.get("counter_refs"):
+                line += f"\n  反方引用：{q['counter_refs']}"
+            if q.get("unresolved"):
+                line += f"\n  未解决：{q['unresolved']}"
+            parts.append(line)
+    assessment = _latest_assessment(deps, f"{ctx.entity_kind}:{ctx.ticker}")
+    if assessment:
+        cov = assessment.get("question_coverage") or {}
+        parts.append(
+            f"研究充分度评估：verdict={assessment.get('verdict')}，"
+            f"问题覆盖 {cov.get('answered')}/{cov.get('applicable')}，"
+            f"硬门禁{'通过' if assessment.get('hard_gate_passed') else '未过'}"
+            + (f"；缺口：{assessment.get('gaps')}" if assessment.get("gaps") else "")
+        )
+    try:
+        calc_ids = deps.metrics.list_calculation_ids(
+            ctx.entity_kind, ctx.ticker, now, namespace="prod"
+        )
+    except Exception:  # noqa: BLE001
+        calc_ids = []
+    if calc_ids:
+        parts.append(f"已登记计算（用 calculation_ref 引用，不重算）：{calc_ids[:20]}")
+    parts.append(
+        "写作纪律：① 首屏必须回答用户目标（候选分层/主要依据/最大分歧/限制），"
+        "背景叙述放后面；② 关键数字用 metric_table/chart_ref 带 observation_id，"
+        "不用裸值；③ 论断用 claim block 带 claim_id，引用不可解析的论断不要采用；"
+        "④ 未完成的题目用 gap_notice 显式标出，不得用推测补齐；"
+        "⑤ 无可校准数据时用证据支持的阶段与条件表达，不自行制造百分比或总分；"
+        "⑥ 最后调 submit_report_document（提交即校验，硬错会当轮返回可修原因）。"
+    )
+    del view
+    return "\n".join(parts)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(i for i in items if i))
+
+
+def _report_dependencies(doc: Any, metrics: Any) -> dict[str, list[str]]:
+    """报告**实际引用**的依赖闭包（audit §3.9）。
+
+    旧实现把当前实体全部 draft/validated claim 一并挂到报告（本次事故：
+    错误草稿 claim-a4654b90f0d9 引用不存在的 fact-commercial-breakout，
+    触发 unresolved_claim_ref 硬失败），且 calculation_ids 固定为空。
+    """
+    claims: list[str] = []
+    calcs: list[str] = []
+    observations: list[str] = []
+    for block in getattr(doc, "blocks", []) or []:
+        btype = getattr(block, "type", "")
+        if btype == "claim" and getattr(block, "claim_id", None):
+            claims.append(block.claim_id)
+        elif btype == "metric_table":
+            for row in getattr(block, "rows", []) or []:
+                for cell in row:
+                    if getattr(cell, "observation_id", None):
+                        observations.append(cell.observation_id)
+        elif btype == "comparison":
+            for item in getattr(block, "items", []) or []:
+                if getattr(item, "observation_id", None):
+                    observations.append(item.observation_id)
+        elif btype == "chart_ref":
+            observations.extend(getattr(block, "metric_refs", []) or [])
+        elif btype == "assumption_table" and getattr(block, "calculation_ref", None):
+            calcs.append(block.calculation_ref)
+    # 观测的派生计算也纳入（计算引用不丢）
+    for oid in _dedupe(observations):
+        try:
+            obs = metrics.get_observation(oid)
+        except Exception:  # noqa: BLE001 - 不可解析的引用由验证器报硬错
+            obs = None
+        if obs is not None and getattr(obs, "calculation_ref", None):
+            calcs.append(obs.calculation_ref)
+    return {
+        "claims": _dedupe(claims),
+        "calculations": _dedupe(calcs),
+        "observations": _dedupe(observations),
+    }
+
+
+def _verified_claim_ids(
+    deps: StepDeps, claim_ids: list[str], *, namespace: str = "prod",
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """只纳入引用可解析的论断；未通过的进缺口区（不靠关闭校验通过）。"""
+    from ..research.artifacts import ref_resolvable
+
+    ok: list[str] = []
+    broken: list[dict[str, Any]] = []
+    for cid in claim_ids:
+        claim = deps.metrics.get_claim(cid)
+        if claim is None:
+            broken.append({"claim_id": cid, "reason": "claim 未登记"})
+            continue
+        refs = [*(claim.get("support_refs") or []), *(claim.get("counter_refs") or [])]
+        bad = [
+            r for r in refs
+            if not ref_resolvable(
+                deps.kb, deps.metrics, r, namespace=namespace,
+                entity_kind=claim.get("entity_kind"), entity_id=claim.get("entity_id"),
+            )
+        ]
+        if bad:
+            broken.append({"claim_id": cid, "reason": f"引用不可解析: {bad}",
+                           "status": claim.get("status")})
+        else:
+            ok.append(cid)
+    return ok, broken
+
+
 def _finalize_artifact_v2(
     deps: StepDeps,
     ctx: StepContext,
@@ -687,14 +898,45 @@ def _finalize_artifact_v2(
         sufficiency = "partial"
     plans = deps.metrics.plans_for(ctx.entity_kind, ctx.ticker, limit=1)
     plan_id = plans[0].get("plan_id") if plans else None
-    claims = deps.metrics.claims_as_of(
-        ctx.entity_kind, ctx.ticker, now, statuses=("draft", "validated")
-    )
+    # 依赖闭包（audit §3.9）：只纳入报告实际引用且经校验的论断/计算，
+    # 未通过的草稿保留在缺口区（可见、可修正后重验），不靠关闭校验通过。
+    referenced = _report_dependencies(doc, deps.metrics)
+    ok_claims, broken_claims = _verified_claim_ids(deps, referenced["claims"])
+    if broken_claims:
+        from ..research.artifacts import GapNoticeBlock
+
+        # 剔除不采用的论断 block（audit §3.9）：已判定不可用的草稿不能既留在正文里
+        # 又指望校验放行——剔除 + 缺口区留痕 + 重新校验，不靠关闭校验通过。
+        broken_ids = {str(b["claim_id"]) for b in broken_claims}
+        kept, dropped = [], []
+        for block in doc.blocks:
+            if getattr(block, "type", "") == "claim" and getattr(block, "claim_id", "") in broken_ids:
+                dropped.append(str(block.claim_id))
+                continue
+            kept.append(block)
+        doc.blocks = kept
+        if dropped:
+            doc.limitations.append(
+                f"剔除未通过引用校验的论断（保留在缺口区，修正后可重新纳入）：{dropped}"
+            )
+        doc.blocks.append(GapNoticeBlock(
+            module="research_sources",
+            message=(
+                f"{len(broken_claims)} 条被引用的论断未通过引用校验，未纳入本报告依赖："
+                + "；".join(
+                    f"{b['claim_id']}（{b['reason']}）" for b in broken_claims[:5]
+                )
+            ),
+        ))
+        logger.warning(
+            "报告依赖闭包剔除 %d 条论断：%s", len(broken_claims),
+            [b["claim_id"] for b in broken_claims],
+        )
     artifact = ResearchArtifact(
         entity_kind=ctx.entity_kind, entity_id=ctx.ticker, title=report_title,
         report_document=doc,
-        claim_ids=[c["claim_id"] for c in claims],
-        calculation_ids=[],
+        claim_ids=ok_claims,
+        calculation_ids=referenced["calculations"],
         plan_id=plan_id,
         status="draft",
         sufficiency=sufficiency,  # type: ignore[arg-type]
@@ -722,6 +964,9 @@ def _finalize_artifact_v2(
             "sufficiency": artifact.sufficiency,
             "plan_id": plan_id,
             "claim_ids": artifact.claim_ids,
+            "calculation_ids": artifact.calculation_ids,
+            "excluded_claims": broken_claims,
+            "referenced_observations": referenced["observations"],
             "validation_issues": [i.model_dump(mode="json") for i in issues[:20]],
         },
     ))
@@ -751,6 +996,12 @@ def _finalize_artifact_v2(
                 ctx.entity_kind, ctx.ticker, run_id=ctx.session_run_id
             )
             snapshot_id = snap["context"]["snapshot_id"]
+            # 快照依赖进产物（audit §3.9：artifact 自身的计算与快照依赖不得为空）
+            artifact.snapshot_refs = [snapshot_id]
+            deps.metrics.save_artifact(
+                artifact_id=artifact.artifact_id, namespace="prod",
+                payload=artifact.model_dump(mode="json"),
+            )
         except Exception as e:
             logger.error("档案快照发布失败 %s:%s: %s", ctx.entity_kind, ctx.ticker, e, exc_info=True)
     _publish_report(deps, ctx, report_title, summary, path, flags, extra={

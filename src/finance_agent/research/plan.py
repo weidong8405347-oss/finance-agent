@@ -311,13 +311,41 @@ def build_plan(
                 _add(_to_question(rq))
 
     lo, hi = MODE_QUESTION_RANGE[mode]
+    # 目标编译（audit §3.4）：standard/deep 不再直接套配方问题——先把用户目标
+    # 编译成公司级比较问题（高优先），再补行业背景；截断时背景题先让位。
+    objective_keys: list[str] = []
+    objective_basis = ""
+    if mode in ("standard", "deep"):
+        from .objective import build_objective_questions, wants_company_comparison
+
+        wanted, objective_basis = wants_company_comparison(objective, entity_kind)
+        if wanted:
+            fresh = [
+                _to_question(rq) for rq in build_objective_questions(objective, entity_kind)
+                if rq.id not in seen
+            ]
+            for q in fresh:
+                seen.add(q.question_id)
+            # 目标题排在最前：截断时先让行业背景题让位（目标优先）
+            questions[:0] = fresh
+            objective_keys = [q.question_id for q in fresh]
     if len(questions) > hi:
         rank = {"high": 0, "medium": 1, "low": 2}
+        # 稳定排序：同优先级下保留插入顺序（目标题先于背景题）
         questions.sort(key=lambda q: rank[q.priority])
         questions = questions[:hi]
     budgets = Budgets(**MODE_BUDGETS[mode])
     if mode == "deep":
         budgets.question_coverage_target = 0.8
+    acceptance = (
+        f"适用关键问题 answered 覆盖 ≥{budgets.question_coverage_target:.0%}；"
+        "关键数字与关键事实句引用覆盖 100%；disputed/unavailable 必须有原因与尝试记录"
+    )
+    if objective_keys:
+        acceptance = (
+            f"用户目标必须被直接回答（目标题 {len(objective_keys)} 道全部有结论或明确未解决原因）；"
+            "背景题完成不能代替目标完成；" + acceptance
+        )
     return ResearchPlan(
         plan_id=f"plan-{uuid.uuid4().hex[:10]}",
         entity_kind=entity_kind,  # type: ignore[arg-type]
@@ -327,12 +355,14 @@ def build_plan(
         recipe_id=recipe.id,
         recipe_version=recipe.version,
         questions=questions,
-        acceptance=(
-            f"适用关键问题 answered 覆盖 ≥{budgets.question_coverage_target:.0%}；"
-            "关键数字与关键事实句引用覆盖 100%；disputed/unavailable 必须有原因与尝试记录"
-        ),
+        acceptance=acceptance,
         budgets=budgets,
-        scope={"focus": focus, "missing_fields": sorted(missing), "stale_fields": sorted(stale)},
+        scope={
+            "focus": focus, "missing_fields": sorted(missing), "stale_fields": sorted(stale),
+            # 目标编译可回放（audit §3.4）：哪些题来自目标、判定依据是什么
+            "objective_question_ids": objective_keys,
+            "objective_decomposition": objective_basis,
+        },
         base_snapshot_id=base_snapshot_id,
         created_at=now or datetime.now(UTC),
         run_id=run_id,
