@@ -161,6 +161,26 @@ CREATE TABLE IF NOT EXISTS conflict_resolutions (
     payload_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_resolutions ON conflict_resolutions(namespace, semantic_hash, resolved_at);
+
+-- 修订/失效记录（audit §3.2 修复方案 6）：错误观测不原位修改，而是追加修订行，
+-- 保留旧版本完整 payload 作为审计链；历史投影按 revised_at 判断当时是否已失效。
+CREATE TABLE IF NOT EXISTS metric_revisions (
+    revision_id TEXT PRIMARY KEY,
+    namespace TEXT NOT NULL,
+    observation_id TEXT NOT NULL,
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    replacement_observation_id TEXT,
+    dependent_refs TEXT NOT NULL DEFAULT '[]',
+    revised_at TEXT NOT NULL,
+    run_id TEXT,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_revisions_obs ON metric_revisions(namespace, observation_id, revised_at);
+CREATE INDEX IF NOT EXISTS idx_revisions_entity
+    ON metric_revisions(namespace, entity_kind, entity_id, revised_at);
 """
 
 _OBS_COLUMNS = (
@@ -375,6 +395,7 @@ class MetricStore:
             sql += " AND nature = ?"
             args.append(nature)
         rows = self._conn.execute(sql, args).fetchall()
+        invalidated = self.invalidated_observation_ids(namespace=namespace, as_of=t)
         resolutions = {
             r.semantic_hash: r
             for r in self.resolutions_as_of(entity_kind, entity_id, t, namespace=namespace)
@@ -387,6 +408,8 @@ class MetricStore:
                 best[sem] = r
         out: list[MetricObservation] = []
         for sem, r in best.items():
+            if r[0] in invalidated:
+                continue  # 已失效（修订记录生效时刻 ≤ T）：不进当前投影，旧行仍在审计链
             res = resolutions.get(sem)
             if res is not None and res.keep_observation_id != r[0]:
                 kept = self._conn.execute(
@@ -445,6 +468,86 @@ class MetricStore:
             }
             sems -= resolved
         return sorted(sems)
+
+    # ---------------- 修订/失效记录（audit §3.2 修复方案 6） ----------------
+
+    def save_revision(
+        self, *, observation_id: str, namespace: str, action: str, reason: str,
+        entity_kind: str, entity_id: str,
+        replacement_observation_id: str | None = None,
+        dependent_refs: list[str] | None = None,
+        payload: dict[str, Any] | None = None,
+        revised_at: datetime | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        """追加一条修订记录（append-only）：不原位修改冻结历史。
+
+        action: invalidated（作废）/ corrected（更正，带 replacement）/
+                needs_review（待重审）。
+        """
+        if action not in ("invalidated", "corrected", "needs_review", "superseded"):
+            raise ConflictError(f"未知修订动作 {action!r}")
+        revision_id = f"rev-{uuid.uuid4().hex[:12]}"
+        at = (revised_at or datetime.now(UTC)).isoformat()
+        record = {
+            "revision_id": revision_id, "namespace": namespace,
+            "observation_id": observation_id, "entity_kind": entity_kind,
+            "entity_id": entity_id, "action": action, "reason": reason,
+            "replacement_observation_id": replacement_observation_id,
+            "dependent_refs": list(dependent_refs or []), "revised_at": at,
+            "run_id": run_id, "observation": payload or {},
+        }
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO metric_revisions (revision_id, namespace, observation_id,"
+                " entity_kind, entity_id, action, reason, replacement_observation_id,"
+                " dependent_refs, revised_at, run_id, payload_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (revision_id, namespace, observation_id, entity_kind, entity_id, action,
+                 reason, replacement_observation_id,
+                 json.dumps(list(dependent_refs or []), ensure_ascii=False), at, run_id,
+                 json.dumps(record, ensure_ascii=False, default=str)),
+            )
+            self._conn.commit()
+        return revision_id
+
+    def revisions_for(
+        self, observation_id: str, *, namespace: str = "prod"
+    ) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT payload_json FROM metric_revisions WHERE namespace = ?"
+            " AND observation_id = ? ORDER BY revised_at",
+            (namespace, observation_id),
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def invalidated_observation_ids(
+        self, *, namespace: str = "prod", as_of: datetime | None = None
+    ) -> set[str]:
+        """已失效的观测 id（revised_at ≤ as_of）：历史投影不泄露「今天才作废」的状态。"""
+        sql = ("SELECT observation_id FROM metric_revisions WHERE namespace = ?"
+               " AND action IN ('invalidated', 'superseded')")
+        args: list[Any] = [namespace]
+        if as_of is not None:
+            sql += " AND revised_at <= ?"
+            args.append(as_of.isoformat())
+        return {r[0] for r in self._conn.execute(sql, args).fetchall()}
+
+    def refs_to(self, observation_id: str, *, namespace: str = "prod") -> dict[str, list[str]]:
+        """引用了某观测的下游产物（重审依赖用）：计算 / 论断 / 产物。"""
+        out: dict[str, list[str]] = {"calculations": [], "claims": [], "artifacts": []}
+        like = f"%{observation_id}%"
+        for table, key, bucket in (
+            ("calculation_runs", "calculation_id", "calculations"),
+            ("research_claims", "claim_id", "claims"),
+            ("research_artifacts", "artifact_id", "artifacts"),
+        ):
+            rows = self._conn.execute(
+                f"SELECT {key} FROM {table} WHERE namespace = ? AND payload_json LIKE ?",
+                (namespace, like),
+            ).fetchall()
+            out[bucket] = [r[0] for r in rows]
+        return out
 
     # ---------------- 裁决（时态化） ----------------
 

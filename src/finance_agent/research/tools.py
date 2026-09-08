@@ -332,6 +332,27 @@ def make_research_tools(
             knowledge_time = max(known) if known else datetime.now(UTC)
             grades = [e.pit_grade.value for e in evidences]
             pit = "A" if "A" in grades else ("B" if "B" in grades else "C")
+            # 抽取质量前置拦（audit §3.2）：乱码/需 OCR 的正文不得支撑正式数值——
+            # 在工具层就给可读原因，不让模型反复重试
+            bad_quality = [
+                (e.evidence_id, e.quality) for e in evidences
+                if getattr(e, "quality", "ok") in ("garbled", "needs_ocr")
+            ]
+            if bad_quality and len(bad_quality) == len(evidences):
+                reason = (
+                    f"证据抽取质量不可用 {bad_quality}：乱码/扫描件正文不得进入指标库"
+                    "（请重新抽取、换源，或改标 status=missing/unavailable）"
+                )
+                tracker.rejected.append({"metric": metric_key, "reason": reason})
+                return {"content": f"rejected: {reason}", "provenance": []}
+            # 指标主体（audit §3.2）：默认 = 研究实体；显式给出则走授权闸
+            subject_arg = args.get("subject") or {}
+            if isinstance(subject_arg, str):
+                subject_arg = {"entity_id": subject_arg}
+            _subject_kind = str(subject_arg.get("entity_kind") or entity_kind)
+            _subject_id = normalize_entity_id(
+                _subject_kind, str(subject_arg.get("entity_id") or entity_id)
+            )
             period_args = args.get("period") or {}
             try:
                 period = MetricPeriod.model_validate({
@@ -364,7 +385,14 @@ def make_research_tools(
                 "unit": str(args.get("unit") or args.get("unit_text") or ""),
                 "currency": args.get("currency"),
                 "raw": RawValue(value_text=value_text, unit_text=str(args.get("unit_text") or ""),
-                                quote_ref=evidence_ids[0]),
+                                quote_ref=evidence_ids[0],
+                                span=str(args.get("value_span") or "")),
+                # 主体与研究范围分离（audit §3.2）：公司财务写公司实体，
+                # 行业实体只能引用已入候选/已授权的主体（门禁在 writer）
+                "subject_entity_kind": _subject_kind,
+                "subject_entity_id": _subject_id,
+                # 文档定位（document/page/table/row/column）：金额类必需
+                "locator": {str(k): str(v) for k, v in (args.get("locator") or {}).items()},
                 "normalization": [s.model_dump(mode="json") for s in steps],
                 "evidence_refs": evidence_ids,
                 "document_refs": [str(d) for d in (args.get("document_refs") or [])],
@@ -847,6 +875,11 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "登记一条 typed 指标观测（结构化数值，图表/计算只消费这里）。"
             "value_text 必须是证据摘录中逐字出现的原文值（如 '1.2 billion'）；"
             "服务端自动登记规模词换算并逐步重算；期间/口径/维度必填。"
+            "数字语义门禁（违者拒写）：① metric_key 必须是注册表语义键（比例不得带币种，"
+            "合同潜在总额/已收首付款/里程碑上限是三个不同指标）；② 金额类必须给 currency "
+            "与 locator（document/page/table/row/column），裸数字摘录不得当成可靠金额；"
+            "③ 摘录含多个数字时必须给 value_span 显式选定 cell/span；"
+            "④ 公司财务写在该公司主体上（subject），不得把不同公司的收入记在行业实体上。"
             "nature=guidance 时额外给 guidance={issuer,published_at,target_period}；"
             "nature=consensus 时给 consensus={vendor,snapshot_at}。"
         ),
@@ -855,9 +888,23 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "properties": {
                 "metric_key": {"type": "string", "description": "语义键：revenue/capex/firm_backlog/arr..."},
                 "value_text": {"type": "string", "description": "原文值文本（逐字，含规模词）"},
+                "value_span": {"type": "string",
+                               "description": "摘录含多个数字时必填：包含本值的原文片段（逐字）"},
                 "unit": {"type": "string", "description": "目标单位（USD/units/ratio...）"},
                 "unit_text": {"type": "string", "description": "原文单位文本（如 'USD millions'）"},
                 "currency": {"type": "string"},
+                "subject": {
+                    "type": "object",
+                    "description": "指标主体（缺省 = 研究实体）；跨主体需在授权范围内",
+                    "properties": {
+                        "entity_kind": {"type": "string", "enum": ["stock", "industry"]},
+                        "entity_id": {"type": "string"},
+                    },
+                },
+                "locator": {
+                    "type": "object",
+                    "description": "文档定位（金额类必填）：document/page/table/row/column/section",
+                },
                 "period": {
                     "type": "object",
                     "properties": {

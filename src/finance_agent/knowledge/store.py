@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS evidence (
     retrieved_at TEXT NOT NULL,
     available_at TEXT,
     pit_grade TEXT NOT NULL,
-    raw_ref TEXT
+    raw_ref TEXT,
+    quality TEXT NOT NULL DEFAULT 'ok',
+    locator_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS facts (
     fact_id TEXT PRIMARY KEY,
@@ -68,7 +70,20 @@ class BitemporalStore:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """轻量列补齐（旧库升级）：抽取质量与文档定位（audit §3.2/§3.5）。"""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(evidence)").fetchall()}
+        if "quality" not in cols:
+            self._conn.execute(
+                "ALTER TABLE evidence ADD COLUMN quality TEXT NOT NULL DEFAULT 'ok'"
+            )
+        if "locator_json" not in cols:
+            self._conn.execute(
+                "ALTER TABLE evidence ADD COLUMN locator_json TEXT NOT NULL DEFAULT '{}'"
+            )
 
     # ---------------- 证据 ----------------
 
@@ -77,7 +92,8 @@ class BitemporalStore:
             try:
                 self._conn.execute(
                     "INSERT INTO evidence (evidence_id, source_id, url, verbatim_quote,"
-                    " retrieved_at, available_at, pit_grade, raw_ref) VALUES (?,?,?,?,?,?,?,?)",
+                    " retrieved_at, available_at, pit_grade, raw_ref, quality, locator_json)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         ev.evidence_id,
                         ev.source_id,
@@ -87,6 +103,8 @@ class BitemporalStore:
                         ev.available_at.isoformat() if ev.available_at else None,
                         ev.pit_grade.value,
                         ev.raw_ref,
+                        ev.quality,
+                        json.dumps(ev.locator, ensure_ascii=False),
                     ),
                 )
                 self._conn.commit()
@@ -96,7 +114,7 @@ class BitemporalStore:
     def get_evidence(self, evidence_id: str) -> Evidence:
         row = self._conn.execute(
             "SELECT evidence_id, source_id, url, verbatim_quote, retrieved_at, available_at,"
-            " pit_grade, raw_ref FROM evidence WHERE evidence_id = ?",
+            " pit_grade, raw_ref, quality, locator_json FROM evidence WHERE evidence_id = ?",
             (evidence_id,),
         ).fetchone()
         if row is None:
@@ -110,6 +128,8 @@ class BitemporalStore:
             available_at=datetime.fromisoformat(row[5]) if row[5] else None,
             pit_grade=PitGrade(row[6]),
             raw_ref=row[7],
+            quality=row[8] or "ok",
+            locator=json.loads(row[9] or "{}"),
         )
 
     # ---------------- 事实（append-only 版本链） ----------------

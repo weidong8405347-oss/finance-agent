@@ -15,17 +15,20 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
-from ..eventstore.events import HOOK_VERDICT, LEAKAGE_ATTEMPT, Event
+from ..eventstore.events import HOOK_VERDICT, LEAKAGE_ATTEMPT, METRIC_REVISED, Event
 from ..eventstore.store import EventStore
 from ..harness.manifest import RunManifest, RunMode
 from .errors import KnowledgeInvariantError, KnowledgeLeakError, MissingEvidenceError
+from .metric_spec import MetricSpecError, check_observation, spec_for
 from .metric_store import MetricStore
 from .metrics import MetricObservation
 from .normalization import (
     NormalizationError,
     assert_magnitude_bound,
     assert_typed_leaves,
+    assert_value_context,
     recompute_lineage,
 )
 from .store import BitemporalStore
@@ -34,12 +37,39 @@ logger = logging.getLogger("finance_agent.knowledge.metrics")
 
 METRIC_ASSERTED = "metric/asserted"
 
+#: 不可作为数值来源的抽取质量（audit §3.2/§3.5）
+_UNUSABLE_QUALITY = frozenset({"garbled", "needs_ocr"})
+
+#: 主体授权解析器：(scope_kind, scope_id, subject_kind, subject_id) → (允许, 依据/原因)
+SubjectGate = Callable[[str, str, str, str], tuple[bool, str]]
+
+
+def _unit_context(obs, evidences) -> list[str]:
+    """从观测/证据的 locator 里取表头与单位声明（量级绑定的第三类定位依据）。
+
+    财报表常见形态：正文只有 `106,303`，量表写在表头「单位：千元」——
+    两者分开存放不是可疑信号，但必须可定位到同一份文档的表/页。
+    """
+    keys = ("header", "unit", "units", "scale", "table", "column", "caption")
+    out: list[str] = []
+    for locator in (obs.locator, *(getattr(e, "locator", {}) or {} for e in evidences)):
+        for key in keys:
+            value = (locator or {}).get(key)
+            if value and str(value).strip():
+                out.append(str(value))
+    return out
+
 
 class TypedMetricWriter:
-    def __init__(self, *, store: MetricStore, kb: BitemporalStore, events: EventStore | None = None):
+    def __init__(
+        self, *, store: MetricStore, kb: BitemporalStore, events: EventStore | None = None,
+        subject_gate: SubjectGate | None = None,
+    ):
         self._store = store
         self._kb = kb
         self._events = events
+        #: 跨主体引用授权（audit §3.2）：None = 不允许跨主体（主体必等于研究实体）
+        self._subject_gate = subject_gate
 
     def write_observation(
         self, obs: MetricObservation, *, run: RunManifest, namespace: str = "prod"
@@ -74,6 +104,66 @@ class TypedMetricWriter:
         )
         return observation_id, created
 
+    # ---------------- 修订/失效（audit §3.2 修复方案 6） ----------------
+
+    def revise_observation(
+        self,
+        observation_id: str,
+        *,
+        action: str,
+        reason: str,
+        run: RunManifest,
+        namespace: str = "prod",
+        replacement_observation_id: str | None = None,
+    ) -> dict:
+        """对已落库观测建立修订/失效记录，并回出需重审的下游依赖。
+
+        纪律：不原位修改冻结历史——旧行与旧 payload 全部保留（审计链），
+        失效以追加修订行 + 投影过滤实现；依赖该观测的计算/论断/产物列为待重审。
+        """
+        obs = self._store.get_observation(observation_id)
+        if obs is None:
+            raise MissingEvidenceError(f"观测不存在: {observation_id}")
+        dependents = self._store.refs_to(observation_id, namespace=namespace)
+        flat = [f"calc:{c}" for c in dependents["calculations"]]
+        flat += [f"claim:{c}" for c in dependents["claims"]]
+        flat += [f"artifact:{a}" for a in dependents["artifacts"]]
+        revision_id = self._store.save_revision(
+            observation_id=observation_id, namespace=namespace, action=action, reason=reason,
+            entity_kind=obs.entity_kind, entity_id=obs.entity_id,
+            replacement_observation_id=replacement_observation_id,
+            dependent_refs=flat,
+            payload=obs.model_dump(mode="json"),
+            run_id=run.run_id,
+        )
+        self._emit(
+            METRIC_REVISED, run.run_id,
+            {
+                "revision_id": revision_id,
+                "observation_id": observation_id,
+                "entity": f"{obs.entity_kind}:{obs.entity_id}",
+                "metric_key": obs.metric_key,
+                "value": obs.value,
+                "action": action,
+                "reason": reason,
+                "replacement_observation_id": replacement_observation_id,
+                "dependent_refs": flat,
+                "observation": obs.model_dump(mode="json"),
+                "namespace": namespace,
+            },
+        )
+        logger.warning(
+            "观测修订 %s %s：%s（待重审依赖 %d 项）",
+            action, observation_id, reason, len(flat),
+        )
+        return {
+            "revision_id": revision_id,
+            "observation_id": observation_id,
+            "action": action,
+            "dependent_refs": flat,
+            "dependents": dependents,
+        }
+
     # ---------------- 门禁 ----------------
 
     def _gate(self, obs: MetricObservation, *, run: RunManifest, namespace: str) -> None:
@@ -87,16 +177,80 @@ class TypedMetricWriter:
         for eid in obs.evidence_refs:
             evidences.append(self._kb.get_evidence(eid))  # raises MissingEvidenceError
 
+        # 1b) 抽取质量（audit §3.2/§3.5）：乱码/扫描件不得支撑正式数值
+        if obs.status == "ok":
+            bad_quality = [
+                (e.evidence_id, getattr(e, "quality", "ok"))
+                for e in evidences
+                if getattr(e, "quality", "ok") in _UNUSABLE_QUALITY
+            ]
+            if bad_quality and all(
+                getattr(e, "quality", "ok") in _UNUSABLE_QUALITY for e in evidences
+            ):
+                raise KnowledgeInvariantError(
+                    f"观测 {obs.metric_key} 的全部证据抽取质量为 {bad_quality}："
+                    "乱码/需 OCR 的正文不得进入指标库（请重新抽取或人工核对后重试，"
+                    "或将观测标为 status=missing/unavailable）"
+                )
+
+        # 1c) 指标语义准入（audit §3.2 修复方案 2）：经济含义/单位/币种/主体/期间/
+        #     维度/值域/定位/摘录语义一次报清
+        quotes = [e.verbatim_quote for e in evidences]
+        try:
+            spec = spec_for(obs.metric_key, unit=obs.unit)
+        except MetricSpecError as e:
+            raise KnowledgeInvariantError(str(e)) from e
+        try:
+            check_observation(
+                metric_key=obs.metric_key, unit=obs.unit, currency=obs.currency,
+                value=obs.value, frequency=obs.period.frequency,
+                dimensions=obs.dimensions, subject_kind=obs.subject_kind,
+                locator={**{k: str(v) for k, v in obs.locator.items()},
+                         **{k: str(v) for k, v in
+                            ((evidences[0].locator if evidences else {}) or {}).items()}},
+                quotes=quotes, basis=obs.basis,
+            )
+        except MetricSpecError as e:
+            raise KnowledgeInvariantError(str(e)) from e
+
+        # 1d) 主体授权（audit §3.2 修复方案 1）：scope 与 subject 分离，跨主体需授权
+        if obs.is_cross_subject:
+            if self._subject_gate is None:
+                raise KnowledgeInvariantError(
+                    f"跨主体观测未装配授权闸：{obs.subject_kind}:{obs.subject_id} ≠ 研究实体 "
+                    f"{obs.entity_kind}:{obs.entity_id}（公司财务应写在公司实体上，"
+                    "行业通过候选关系读取）"
+                )
+            ok, reason = self._subject_gate(
+                obs.entity_kind, obs.entity_id, obs.subject_kind, obs.subject_id
+            )
+            if not ok:
+                raise KnowledgeInvariantError(f"观测 {obs.metric_key} 主体未授权：{reason}")
+
         # 2) 换算血缘可重算（有 raw 的观测必须逐步一致；无 raw 只校验 Decimal 合法性——
         #    模型层已保证）+ 量级绑定（review #1：数字+规模词必须在摘录中逐字可定位，
         #    堵「证据 million 提交 billion」与「丢规模词缩小 1000 倍」两类量级事故）
         if obs.raw is not None:
             recompute_lineage(obs)
             if evidences:
+                # 表头/单位上下文（audit §3.2）：locator 里的 header/unit/table 声明的量表
+                # 与正文数字分开存放是财报正常形态，量级绑定得认它
+                unit_ctx = _unit_context(obs, evidences)
                 assert_magnitude_bound(
                     obs.raw.value_text,
                     obs.raw.unit_text,
-                    [e.verbatim_quote for e in evidences],
+                    quotes,
+                    unit_context=unit_ctx,
+                )
+                # 2b) 证据上下文准入（audit §3.2 修复方案 3/4）：多数字摘录必须显式
+                #     指定 cell/span；金额类必须有规模词或表头定位
+                assert_value_context(
+                    obs.raw.value_text, obs.raw.unit_text, quotes,
+                    value_span=obs.raw.span or None,
+                    locator={**obs.locator,
+                             **{k: str(v) for k, v in
+                                ((evidences[0].locator if evidences else {}) or {}).items()}},
+                    value_kind=spec.value_kind,
                 )
 
         # 3) 引用完整性：calculated → CalculationRun 已登记；model_estimate → artifact 已冻结

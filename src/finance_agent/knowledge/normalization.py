@@ -236,18 +236,24 @@ def _mantissa_core(value_text: str) -> str:
     return m.group(m.lastindex or 0)
 
 
-def assert_magnitude_bound(value_text: str, unit_text: str, quotes: list[str]) -> None:
-    """量级一致性门禁：登记值的有效量级（尾数+规模词）必须在证据摘录中可定位。
+def assert_magnitude_bound(
+    value_text: str, unit_text: str, quotes: list[str], *,
+    unit_context: list[str] | tuple[str, ...] = (),
+) -> None:
+    """量级一致性门禁：登记值的有效量级（尾数+规模词）必须在证据中可定位。
 
     堵住两类量级事故（review #1）：
     - 改规模词：证据「1500 million」，提交 value_text='1500 billion' → 拒；
     - 丢规模词：证据「1500 million」，提交 value_text='1500' 且 unit_text 无规模词
       → 拒（摘录中该数字后跟规模词，登记值必须携带同等价类）。
 
-    两种定位强度：
+    三种定位强度：
     - 规模词写在 value_text 里 → 严格相邻（数字后紧跟同等价类词，bn≡billion）；
     - 规模词仅由 unit_text 声明（财报表头 'In millions' 模式）→ 同摘录共现
-      （数字与同等价类词均出现）；摘录里数字后跟随了不同等价类词仍拒。
+      （数字与同等价类词均出现）；摘录里数字后跟随了不同等价类词仍拒；
+    - 规模词只存在于表头/单位上下文（unit_context，来自 locator 的 header/unit 字段）
+      → 接受（audit §3.2：财务证据绑定 document→page/table→row/column 后，
+      表头声明的量级与正文数字分开存放是正常形态）。
     无法定位 → NormalizationError（fail-closed，宁拒勿猜）。
     """
     core = _mantissa_core(value_text)
@@ -270,6 +276,12 @@ def assert_magnitude_bound(value_text: str, unit_text: str, quotes: list[str]) -
                     continue
                 if re.search(rf"(?<![a-z]){re.escape(word)}s?(?![a-z])", qn, re.IGNORECASE):
                     return
+                # 表头/单位上下文声明了同等价类规模词（locator.header / locator.unit）
+                for ctx in unit_context:
+                    if ctx and re.search(
+                        rf"(?<![a-z]){re.escape(word)}s?(?![a-z])", str(ctx), re.IGNORECASE
+                    ):
+                        return
             else:
                 # 登记值无规模词：摘录里该数字后不得跟规模词（否则量级丢失）
                 if not following:
@@ -279,6 +291,113 @@ def assert_magnitude_bound(value_text: str, unit_text: str, quotes: list[str]) -
         f"量级未绑定证据：登记值 {declared!r} 无法在任何摘录中定位"
         "（数字+规模词必须与原文一致；不允许改写或省略量级）"
     )
+
+
+# ---------------- 证据上下文准入（audit §3.2 修复方案 3/4） ----------------
+
+#: 金额类值类型：裸数字摘录不足以证明标准化金额
+_MONEY_KINDS = frozenset({"currency_amount", "price"})
+#: locator 中可证明「表头/量级上下文」的键
+_LOCATOR_CONTEXT_KEYS = ("table", "page", "document", "row", "column", "section", "header")
+
+
+def _normalize_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+#: 候选值数字：排除期间/表单标签型数字（Q3、H1、FY24、10-K、v2）——
+#: 它们不是「可选的值」，计入多数字会让正常摘录被误拒
+_CANDIDATE_NUM = re.compile(
+    r"(?<![A-Za-z0-9])"          # 前面不紧跟着字母/数字（Q3 → 不算）
+    r"(-?\d[\d,]*\.?\d*)"
+    r"(?![A-Za-z0-9])"           # 后面不紧跟字母/数字（10-K 的 K、v2 不算）
+)
+#: 规模词直接连写时（'100million'）仍算候选值：允许尾随规模词
+_CANDIDATE_NUM_SCALED = re.compile(
+    r"(?<![A-Za-z0-9])(-?\d[\d,]*\.?\d*)\s?"
+    rf"(?=({'|'.join(re.escape(w) for w in sorted(SCALE_WORDS, key=len, reverse=True))})s?(?![a-z]))",
+    re.IGNORECASE,
+)
+
+
+def _quote_numbers(quote: str) -> list[str]:
+    """摘录里的**候选值**数字（去年份、去期间/表单标签、去千分位）。"""
+    cleaned = quote.replace(",", "")
+    out = [
+        m.group(1) for m in _CANDIDATE_NUM.finditer(cleaned)
+        if not _year_like(m.group(1))
+    ]
+    out += [m.group(1) for m in _CANDIDATE_NUM_SCALED.finditer(cleaned)
+            if not _year_like(m.group(1))]
+    return out
+
+
+def assert_value_context(
+    value_text: str,
+    unit_text: str,
+    quotes: list[str],
+    *,
+    value_span: str | None = None,
+    locator: dict[str, str] | None = None,
+    value_kind: str = "currency_amount",
+) -> None:
+    """数字的证据上下文准入（audit §3.2）。
+
+    堆住本次三类真实事故：
+    - `106,303 27,456` 这种多数字摘录被当成单一金额（无表头、无规模词）；
+    - `$73.7 million, or 37%` 里猜错要哪个数（金额被存成 ratio）；
+    - `193,518 81,864` 裁剪成裸数字后无法检验表头单位。
+
+    规则（fail-closed，宁拒勿猜）：
+    1. 摘录含 ≥2 个非年份数字 → 必须显式给 value_span（cell/span 定位），不许猜；
+    2. value_span 必须是摘录的逐字子串，且包含登记值的尾数；
+    3. 金额/单价类：必须有规模上下文——规模词（value_text/unit_text）或
+       locator 里的表头/页/表定位；两者都无 → 拒（裸数字不得变成可靠金额）。
+    """
+    if not quotes:
+        return
+    core = _mantissa_core(value_text)
+    core_plain = core.replace(",", "")
+    located = [q for q in quotes if core_plain in q.replace(",", "")]
+    if not located:
+        # 尾数定位不到摘录：量级绑定门禁（assert_magnitude_bound）会报错，不重复判罪
+        return
+
+    span = (value_span or "").strip()
+    if span:
+        span_n = _normalize_ws(span)
+        if not any(span_n in _normalize_ws(q) for q in located):
+            raise NormalizationError(
+                f"value_span {span!r} 不是任何证据摘录的逐字子串（不允许改写或拼接）"
+            )
+        if core_plain not in span_n.replace(",", ""):
+            raise NormalizationError(
+                f"value_span {span!r} 不包含登记值的尾数 {core_plain}"
+                "（请给出包含该数字的原文片段）"
+            )
+        context_text = span
+    else:
+        context_text = " ".join(located)
+
+    distinct = sorted(set(_quote_numbers(context_text)))
+    if len(distinct) >= 2 and not span:
+        raise NormalizationError(
+            f"摘录含多个数字 {distinct}，必须显式给出 value_span（cell/span 定位）——"
+            "不允许从如 '$73.7 million, or 37%' 这样的句子里猜要哪个数"
+        )
+
+    if value_kind in _MONEY_KINDS:
+        has_scale_word = detect_scale_word(value_text, unit_text) is not None
+        has_locator = bool(locator) and any(
+            str(locator.get(k) or "").strip() for k in _LOCATOR_CONTEXT_KEYS
+        )
+        if not has_scale_word and not has_locator:
+            raise NormalizationError(
+                f"金额类数值缺规模上下文：原文 {value_text!r} 无规模词"
+                f"（million/billion/百万/亿…），unit_text={unit_text!r} 未声明量表，"
+                "且无 locator（document/page/table/row/column）——裸数字摘录不能直接"
+                "变成可靠金额"
+            )
 
 
 def recompute_lineage(obs: MetricObservation) -> Decimal:

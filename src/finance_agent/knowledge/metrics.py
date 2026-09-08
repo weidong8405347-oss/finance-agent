@@ -65,6 +65,9 @@ class RawValue(BaseModel):
     value_text: str = Field(min_length=1)
     unit_text: str = ""
     quote_ref: str = ""
+    #: 多数字摘录里显式选定的 cell/span（audit §3.2）：逐字子串，服务端校验。
+    #: 不给则当摘录只含一个数字时才允许登记（不许猜用户要哪个数）。
+    span: str = ""
 
 
 class SourceDocument(BaseModel):
@@ -102,6 +105,10 @@ class _ObservationBase(BaseModel):
     nature: ValueNature  # 判别字段：子类收窄为 Literal 并给默认值
     entity_kind: Literal["stock", "industry"]
     entity_id: str
+    #: 指标主体（audit §3.2）：与研究范围（entity_*）分离。公司财务写公司实体，
+    #: 行业总量写行业实体；None = 主体即研究实体（向后兼容）。
+    subject_entity_kind: Literal["stock", "industry"] | None = None
+    subject_entity_id: str | None = None
     metric_key: str = Field(min_length=1)  # revenue / capex / arr / contracted_mw ...
     period: MetricPeriod
     dimensions: dict[str, str] = Field(default_factory=dict)  # segment/geography/product...
@@ -110,6 +117,9 @@ class _ObservationBase(BaseModel):
     unit: str = ""
     currency: str | None = None
     raw: RawValue | None = None
+    #: 文档内定位（document/page/table/row/column/cell/span）：财务证据绑定用
+    #: （audit §3.2：只有裸数字的摘录不能直接变成可靠金额）
+    locator: dict[str, str] = Field(default_factory=dict)
     normalization: list[dict[str, Any]] = Field(default_factory=list)  # NormalizationStep 序列化
     evidence_refs: list[str] = Field(default_factory=list)
     calculation_ref: str | None = None
@@ -146,6 +156,8 @@ class _ObservationBase(BaseModel):
     def semantic_key(self) -> dict[str, Any]:
         return {
             "entity": f"{self.entity_kind}:{self.entity_id}",
+            # 主体进语义键（audit §3.2）：相同期间不同公司的收入不得归为同一指标序列
+            "subject": f"{self.subject_kind}:{self.subject_id}",
             "metric_key": self.metric_key,
             "period_start": self.period.start.isoformat() if self.period.start else None,
             "period_end": self.period.end.isoformat(),
@@ -159,6 +171,25 @@ class _ObservationBase(BaseModel):
     def semantic_hash(self) -> str:
         canon = json.dumps(self.semantic_key(), ensure_ascii=False, sort_keys=True)
         return "sem-" + hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def subject_kind(self) -> str:
+        """指标主体类别（未显式给出 = 研究实体）。"""
+        return self.subject_entity_kind or self.entity_kind
+
+    @property
+    def subject_id(self) -> str:
+        """指标主体 id（未显式给出 = 研究实体）。"""
+        return self.subject_entity_id or self.entity_id
+
+    @property
+    def is_cross_subject(self) -> bool:
+        """是否跨主体引用（多主体研究：需在授权范围内）。"""
+        return (
+            self.subject_entity_kind is not None
+            and (self.subject_entity_kind != self.entity_kind
+                 or (self.subject_entity_id or "") != self.entity_id)
+        )
 
 
 class ReportedObservation(_ObservationBase):

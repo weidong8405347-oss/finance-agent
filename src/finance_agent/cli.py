@@ -164,12 +164,16 @@ def build_orchestrator(data_dir: Path):
     # 档案升级（knowledge-dossier-research-redesign）：typed 观测/研究产物/快照索引
     from .dossier.projector import DossierProjector
     from .dossier.service import DossierService
+    from .knowledge.metric_spec import make_subject_gate
     from .knowledge.metric_store import MetricStore
     from .knowledge.metric_writer import TypedMetricWriter
     from .research.calculations import CalculationService
 
     metrics = MetricStore(data_dir / "metrics.db")
-    metric_writer = TypedMetricWriter(store=metrics, kb=kb, events=events)
+    # 主体授权闸（audit §3.2）：公司财务写公司实体，行业只能引用已入候选/已授权的主体
+    metric_writer = TypedMetricWriter(
+        store=metrics, kb=kb, events=events, subject_gate=make_subject_gate(kb, metrics)
+    )
     calculations = CalculationService(metrics, events=events)
     gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
     gateway.register(EdgarAdapter())

@@ -356,6 +356,13 @@ def cmd_shadow(args) -> int:
 # ---------------- apply-typed ----------------
 
 
+def _is_plain_number(text: str) -> bool:
+    """是否是可直接作为 span 的纯数值文本（迁移时显式定位用）。"""
+    import re as _re
+
+    return bool(_re.fullmatch(r"-?[\d,]*\.?\d+", (text or "").strip()))
+
+
 def cmd_apply_typed(args) -> int:
     from finance_agent.harness.manifest import RunManifest, RunMode
     from finance_agent.knowledge.metric_writer import TypedMetricWriter
@@ -390,6 +397,9 @@ def cmd_apply_typed(args) -> int:
                 skipped += 1
                 continue  # 幂等：断点恢复不重复写
             period_end = date.fromisoformat(c["period_end"])
+            legacy_text = str(rec.value.get(next(
+                k for k in _STRUCTURED_PRICE_KEYS if k in rec.value
+            )) if isinstance(rec.value, dict) else rec.value)
             try:
                 obs = ReportedObservation(
                     entity_kind=kind, entity_id=eid,  # type: ignore[arg-type]
@@ -400,11 +410,20 @@ def cmd_apply_typed(args) -> int:
                     basis="operating_metric",
                     value=c["value"], unit=c["currency"], currency=c["currency"],
                     raw=RawValue(
-                        value_text=str(rec.value.get(next(
-                            k for k in _STRUCTURED_PRICE_KEYS if k in rec.value
-                        )) if isinstance(rec.value, dict) else rec.value),
+                        value_text=legacy_text,
                         unit_text=c["currency"], quote_ref=rec.evidence_ids[0],
+                        # 旧摘录常含日期/多个数字（如 "2024-03-30 收盘 119.51"）：
+                        # 显式给出 cell/span，不让门禁去猜哪个数是本值（audit §3.2）
+                        span=legacy_text if _is_plain_number(legacy_text) else "",
                     ),
+                    # 定位链（audit §3.2）：迁移值没有原始报表定位，就把「来自哪个旧字段
+                    # /哪条事实」写进 locator——金额类数值必须可回到上下文
+                    locator={
+                        "document": f"kb:{kind}:{eid}",
+                        "section": field,
+                        "source": f"legacy_migration@{MAPPING_VERSION}",
+                        "fact_id": str(rec.fact_id or ""),
+                    },
                     evidence_refs=list(rec.evidence_ids),
                     knowledge_time=rec.knowledge_time,
                     source_available_at=rec.knowledge_time,

@@ -169,6 +169,8 @@ class TestInputRefs:
                                 frequency="FY", fiscal_label="FY2024"),
             value=value, unit="USD", currency="USD",
             raw=RawValue(value_text="revenue 1500", unit_text="USD"),
+            # 裸数字必须有定位上下文（audit §3.2）：夹具声明数值来自季报表格
+            locator={"table": "revenue_summary", "row": "total"},
             evidence_refs=["ev-c1"], knowledge_time=NOW, source_available_at=NOW,
             retrieved_at=NOW, created_at=NOW, pit_grade=PitGrade.A,
         )
@@ -247,6 +249,7 @@ class TestTtm:
                                 fiscal_label=f"{end.year}Q{end.month // 3}"),
             value=value, unit="USD", currency="USD",
             raw=RV(value_text=f"quarterly revenue {value}", unit_text="USD"),
+            locator={"table": "quarterly_revenue", "row": str(end)},
             evidence_refs=[ev_id], knowledge_time=NOW, source_available_at=NOW,
             retrieved_at=NOW, created_at=NOW, pit_grade=PitGrade.A,
         )
