@@ -378,16 +378,61 @@ class TestQuestionGroupMapping:
         assert loop._group_plan_view("business", []) is not None
 
     def test_question_groups_used_when_profile_full(self, env):
-        """档案满但计划未完 → 按问题 module 建组（并行度不塌缩）。"""
+        """档案满但计划未完 → 按问题 module 建组，且建组与下发口径一致（audit §3.1）。
+
+        回归 live-a2cce641：旧实现建组用 module 原名（industry_chain）、过滤用维度名
+        （landscape），两套口径不相交 → 20 个 worker 全部拿到空计划视图。
+        """
         from finance_agent.research.loop import _question_groups
 
-        groups = _question_groups({
+        plan = {
+            "entity_kind": "stock",
             "questions": [
                 {"question_id": "a", "status": "unanswered", "module": "financial_quality"},
                 {"question_id": "b", "status": "unanswered", "module": "financial_quality"},
                 {"question_id": "c", "status": "unanswered", "module": "risks"},
                 {"question_id": "d", "status": "answered", "module": "peers"},
             ],
-        })
+        }
+        groups = _question_groups(plan)
         names = {g for g, _ in groups}
-        assert names == {"financial_quality", "risks"}  # answered 不建组
+        assert names == {"financial", "risk_mgmt"}  # answered 不建组；组名 = worker 组
+        loop = make_loop(env, MockLLM([]))
+        loop.plan_payload = plan
+        # 端到端一致：建组产出的每个组名，过滤时都能拿到它的问题（不许再出现空视图）
+        for g, _ in groups:
+            view = loop._group_plan_view(g, [])
+            assert view is not None, f"组 {g} 拿到空计划视图（建组/下发口径失配）"
+            assert view["questions"]
+        assert {q["question_id"] for q in loop._group_plan_view("financial", [])["questions"]} \
+            == {"a", "b"}
+        assert {q["question_id"] for q in loop._group_plan_view("risk_mgmt", [])["questions"]} \
+            == {"c"}
+
+    def test_industry_modules_do_not_leak_into_stock_groups(self, env):
+        """行业 module 按行业组表映射（audit §3.1：key_kpi 不得落进股票 financial 组）。"""
+        from finance_agent.research.loop import _question_groups
+        from finance_agent.research.scheduling import worker_group
+
+        assert worker_group("industry", "key_kpi") == "market"
+        assert worker_group("industry", "industry_chain") == "landscape"
+        assert worker_group("industry", "candidate_pool") == "candidate_pool"
+        assert worker_group("industry", "catalysts_risks") == "policy_players"
+        assert worker_group("stock", "key_kpi") == "financial"
+        plan = {
+            "entity_kind": "industry",
+            "questions": [
+                {"question_id": "value-chain", "status": "unanswered", "module": "industry_chain"},
+                {"question_id": "demand-supply", "status": "unanswered", "module": "key_kpi"},
+                {"question_id": "candidate-pool", "status": "unanswered",
+                 "module": "candidate_pool"},
+                {"question_id": "counter-evidence", "status": "unanswered",
+                 "module": "catalysts_risks"},
+            ],
+        }
+        names = {g for g, _ in _question_groups(plan)}
+        assert names == {"landscape", "market", "candidate_pool", "policy_players"}
+        loop = make_loop(env, MockLLM([]))
+        loop.plan_payload = plan
+        for g in sorted(names):
+            assert loop._group_plan_view(g, []) is not None

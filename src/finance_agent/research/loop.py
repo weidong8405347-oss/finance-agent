@@ -17,9 +17,11 @@ from ..eventstore.events import (
     CONTEXT_INJECT,
     RESEARCH_ASSESSMENT,
     RESEARCH_PLAN_CREATED,
+    RESEARCH_QUESTION_STALL,
     RESEARCH_ROUND_END,
     RESEARCH_ROUND_START,
     RESEARCH_RUBRIC,
+    RESEARCH_SCHEDULE,
     RESEARCH_STALL_DIAGNOSTIC,
     RUN_CREATED,
     Event,
@@ -37,7 +39,24 @@ from ..loop.kernel import AgentKernel
 from .playbooks import load_playbook
 from .prompts import GROUNDING_CONTRACT, build_round_brief
 from .report import IterationReport
+from .scheduling import (
+    DIMENSION_GROUPS_INDUSTRY,
+    DIMENSION_GROUPS_STOCK,
+    DispatchError,
+    WorkItem,
+    assert_dispatch_complete,
+    build_schedule,
+    dimension_groups,
+    pending_questions,
+    plan_view,
+    worker_group,
+)
 from .tools import make_research_tools
+
+#: 向后兼容别名（组口径唯一真相源已迁至 scheduling.py，audit §3.1）
+_dimension_groups = dimension_groups
+_DIMENSION_GROUPS_STOCK = DIMENSION_GROUPS_STOCK
+_DIMENSION_GROUPS_INDUSTRY = DIMENSION_GROUPS_INDUSTRY
 
 
 def _plan_coverage(plan_payload: dict | None) -> tuple[float | None, list[str]]:
@@ -51,99 +70,19 @@ def _plan_coverage(plan_payload: dict | None) -> tuple[float | None, list[str]]:
     cov = coverage_of(plan)
     return cov.coverage, cov.violations
 
-#: 维度组定义（P3 §4.2）：字段 → 专职 researcher 组。按实体类型分表——
-#: 行业字段与股票字段不同集（2026-09-01 实测：行业字段全落 misc 单组，丢失并行性）
-_DIMENSION_GROUPS_STOCK: dict[str, tuple[str, ...]] = {
-    "financial": ("revenue_fy", "net_income_fy", "cash_flow", "valuation"),
-    "business": ("business_model", "moat"),
-    "industry": ("peers", "market_share", "future_space"),
-    # talent_density 归 risk_mgmt 组（与 management 同根：都是「人」的维度，
-    # 2026-09-02 前未登记 → 轮转进随机组，挖不到专业指引 → 维度全空）
-    "risk_mgmt": ("risks", "management", "talent_density", "catalysts", "counter_evidence"),
-}
-_DIMENSION_GROUPS_INDUSTRY: dict[str, tuple[str, ...]] = {
-    "market": ("market_size", "growth_rate", "future_space"),
-    "landscape": ("value_chain", "competition", "sub_sectors"),
-    # player_landscape 不在 F1：它是 F2 标的池挖掘的专属产出（专用工具校验+并集纪律）
-    "policy_players": ("policy",),
-}
-
-
-def _dimension_groups(
-    missing: list[str], stale: list[str], optional_missing: list[str],
-    *, entity_kind: str = "stock", weak: list[str] | None = None,
-) -> list[tuple[str, list[str]]]:
-    """缺口字段（缺失+陈旧+可选）按维度分组；未登记进组的字段轮转分配。
-    注：player_landscape 永不分组（F2 专属产出，见 _DIMENSION_GROUPS_INDUSTRY 注释）。
-    弱字段回流（2026-09-03 整改收尾）：weak 只挂进「因缺口已激活」的本维度组，
-    让专职组顺带重写；不新建组、不轮转（weak 是引导不是缺口，不许扩大并行面）。
-    无对应激活组 → 本轮不回流（serial 路径的 brief 全量投影仍可见）。"""
-    table = _DIMENSION_GROUPS_INDUSTRY if entity_kind == "industry" else _DIMENSION_GROUPS_STOCK
-    pending = [f for f in dict.fromkeys([*missing, *stale, *optional_missing])
-               if f != "player_landscape"]
-    groups: list[list] = []
-    assigned: set[str] = set()
-    for gname, gfields in table.items():
-        hit = [f for f in pending if f in gfields]
-        if hit:
-            groups.append([gname, hit])
-            assigned.update(hit)
-    rest = [f for f in pending if f not in assigned]
-    for i, f in enumerate(rest):
-        if groups:
-            groups[i % len(groups)][1].append(f)
-        else:
-            groups.append(["misc", [f]])
-    for f in weak or []:
-        if f in assigned or f == "player_landscape":
-            continue
-        for g in groups:
-            if f in table.get(g[0], ()):
-                g[1].append(f)
-                assigned.add(f)
-                break
-    return [(g, fs) for g, fs in groups]
-
-#: 计划问题 module → 维度组映射（review #7）：配方用模块名（financial_quality/
-#: business_engine/risks…），维度组用旧分组名（financial/business/industry/risk_mgmt），
-#: 不映射则四组全部拿到空计划视图，并行 worker 丢失问题与验收条件
-_QUESTION_MODULE_TO_GROUP: dict[str, str] = {
-    # 股票维度组
-    "financial_quality": "financial",
-    "financials": "financial",
-    "valuation": "financial",
-    "valuation_lab": "financial",
-    "expectations": "financial",
-    "key_kpi": "financial",
-    "business_engine": "business",
-    "revenue_segments": "business",
-    "peers": "industry",
-    "management": "industry",
-    "risks": "risk_mgmt",
-    "catalysts": "risk_mgmt",
-    "catalysts_risks": "risk_mgmt",
-    # 行业维度组（F1）
-    "industry_chain": "landscape",
-    "candidate_pool": "landscape",
-    "key_kpi_industry": "market",
-    "market": "market",
-    "policy": "policy_players",
-}
-
 
 def _question_groups(plan_payload: dict) -> list[tuple[str, list[str]]]:
-    """计划问题 → 维度组（§7.2）：档案已满但计划未完时，按问题 module 分组保持并行。
+    """计划问题 → worker 组（§7.2；audit §3.1 修复后与下发口径同源）。
 
-    fields 置空（问题组不绑字段缺口），组名 = module；问题子集由 _group_plan_view 投影。"""
-    modules: dict[str, int] = {}
-    for q in plan_payload.get("questions", []):
-        if q.get("status") in ("answered", "not_applicable"):
-            continue
-        mod = q.get("module") or "misc"
-        modules[mod] = modules.get(mod, 0) + 1
-    if not modules:
-        return []
-    return [(mod, []) for mod in modules]
+    组名由 `worker_group(entity_kind, module)` 给出——与 `_group_plan_view` 过滤问题
+    用的是同一张表；旧实现「建组用 module 原名、过滤用维度名」导致 20 个 worker
+    全部拿到空计划视图（live-a2cce641 事故根因）。
+    """
+    groups: dict[str, list[str]] = {}
+    for q in pending_questions(plan_payload):
+        g = worker_group(str(plan_payload.get("entity_kind") or "stock"), str(q.get("module") or ""))
+        groups.setdefault(g, [])
+    return [(g, []) for g in groups]
 
 
 logger = logging.getLogger("finance_agent.research")
@@ -198,6 +137,8 @@ class ResearchLoop:
         self.stop_reason: str | None = None
         #: stalled 时填充缺口诊断卡（research-capability-upgrade §4.3 L3）
         self.stall_diagnostic: dict | None = None
+        #: 问题零推进诊断（audit §3.1）：与 stall_diagnostic 分开，指向调度/提交/来源
+        self.question_stall_diagnostic: dict | None = None
         #: 研究充分度评估（§7.6；有计划+新存储时填充）
         self.assessment: object | None = None
         self.plan_payload: dict | None = None
@@ -286,27 +227,48 @@ class ResearchLoop:
             # 每组独立 child run / 独立 context / 独立步数预算；共享 ChunkStore（锁保护）。
             # 无池 → 旧式单 kernel 路径（单 LLM 被多组共享会互相抽干脚本，且没有必要隔离）。
             trackers: list = []
+            dispatched_qids: list[str] = [str(q.get("question_id") or "")
+                                          for q in pending_questions(self.plan_payload)]
             if len(self._worker_llms) > 1:
-                # 有计划时维度分组叠加问题归属（问题.module → 字段组）；无计划保持旧分组
-                groups = _dimension_groups(
+                # 调度器产出显式 WorkItem（audit §3.1）：字段缺口 × 计划问题 → worker，
+                # 建组与问题下发同源（同一张 entity_kind+module → group 表）。
+                field_groups = dimension_groups(
                     gaps_before.missing, gaps_before.stale, gaps_before.optional_missing,
                     entity_kind=entity_kind, weak=list(gaps_before.weak),
                 )
-                if self.plan_payload and not any(g[1] for g in groups):
-                    # 档案已满但计划未完：按问题模块分组（§7.2 问题 → worker 组）
-                    groups = _question_groups(self.plan_payload)
+                schedule = build_schedule(
+                    plan_payload=self.plan_payload,
+                    entity_kind=entity_kind,
+                    field_groups=field_groups,
+                    max_workers=(self.plan_payload or {}).get("budgets", {}).get(
+                        "max_parallel_workers"
+                    ) if self.plan_payload else None,
+                )
+                if schedule.unassigned:
+                    # 问题未完整分发 = 装配缺陷：fail-loud，不带空计划烧预算
+                    raise DispatchError(
+                        f"第 {round_no} 轮调度失败：问题未完整分发 {schedule.unassigned}"
+                    )
+                if not schedule.items:
+                    schedule.items = [WorkItem(group="misc", fields=())]
+                assert_dispatch_complete(schedule, self.plan_payload)
+                dispatched_qids = schedule.dispatched_question_ids
+                self._emit(RESEARCH_SCHEDULE, {
+                    "round": round_no, "entity": f"{entity_kind}:{entity_id}",
+                    **schedule.as_payload(),
+                })
                 workers = self._worker_llms
                 from concurrent.futures import ThreadPoolExecutor
 
-                with ThreadPoolExecutor(max_workers=max(1, len(groups))) as pool:
+                with ThreadPoolExecutor(max_workers=max(1, len(schedule.items))) as pool:
                     futures = [
                         pool.submit(
                             self._run_group, entity_kind, entity_id, objective,
-                            gaps_before, round_no, gname, gfields,
+                            gaps_before, round_no, item,
                             workers[i % len(workers)], judge_feedback,
                             playbook_text, chunk_store,
                         )
-                        for i, (gname, gfields) in enumerate(groups)
+                        for i, item in enumerate(schedule.items)
                     ]
                     group_results = [f.result() for f in futures]
                 trackers = [tr for _, tr in group_results]
@@ -385,6 +347,9 @@ class ResearchLoop:
             all_rejected.extend(rejected)
 
             judge_feedback = self._judge_round(report)
+            self._emit_question_stall(
+                entity_kind, entity_id, round_no, report, trackers, dispatched_qids
+            )
 
             coverage_ok_after = coverage_after is None or (
                 coverage_after >= target_coverage and not violations_after
@@ -484,16 +449,18 @@ class ResearchLoop:
         objective: str,
         gaps_before,
         round_no: int,
-        group: str,
-        fields: list[str],
+        item: WorkItem,
         llm: LLM,
         judge_feedback: str | None,
         playbook_text: str,
         chunk_store,
     ) -> tuple[str, object]:
-        """单个维度组的一轮研究：独立 child run（context 隔离）+ 独立步数预算。
+        """单个 WorkItem 的一轮研究：独立 child run（context 隔离）+ 独立步数预算。
 
+        worker 拿到的是调度器显式下发的 question_ids（audit §3.1），不再自行推导；
+        answer_question 也只接受本 worker 被分配的问题（工具层硬门禁）。
         返回 (group, tracker)——tracker 携带字段/观测/论断/计算/问题全部进展。"""
+        group, fields = item.group, list(item.fields)
         tools, tracker = make_research_tools(
             store=self._store,
             writer=self._writer,
@@ -508,6 +475,7 @@ class ResearchLoop:
             metric_writer=self._metric_writer,
             calculations=self._calculations,
             plan_id=self._plan_id,
+            allowed_question_ids=list(item.question_ids) or None,
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(
@@ -523,6 +491,8 @@ class ResearchLoop:
                     "kind": "dimension_group",
                     "group": group,
                     "round": round_no,
+                    "question_ids": list(item.question_ids),
+                    "fields": fields,
                 },
             )
         )
@@ -545,8 +515,9 @@ class ResearchLoop:
             build_round_brief(
                 entity_kind, entity_id, objective, group_gaps, round_no,
                 judge_feedback=judge_feedback,
-                plan_payload=self._group_plan_view(group, fields),
+                plan_payload=self._group_plan_view(group, fields, item.question_ids),
                 typed_tools="propose_metric" in tools,
+                assigned_question_ids=list(item.question_ids) or None,
             )
             + f"\n\n你是「{group}」维度组的专职研究员。\n{playbook_text}"
             # 生产纪律（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）
@@ -579,34 +550,103 @@ class ResearchLoop:
                     "round": round_no,
                     "group": group,
                     "fields": fields,
+                    "question_ids": list(item.question_ids),
                     "written": list(tracker.written),
                     "rejected": list(tracker.rejected),
                     "evidence_registered": len(tracker.registered),  # 囤证据检测
                     "observations": list(tracker.observations),
                     "claims": list(tracker.claims),
                     "questions_advanced": list(tracker.questions_advanced),
+                    "answer_rejections": list(tracker.answer_rejections),
                 },
             )
         )
         return group, tracker
 
-    def _group_plan_view(self, group: str, fields: list[str]) -> dict | None:
-        """维度组看到的计划子集（review #7）：问题按 module→维度组映射分配，
-        未映射/无模块的问题（如 targeted 自定义问题）对全部组可见（回答幂等，
-        重复推进无害）；已 answered/not_applicable 的问题不再下发。"""
+    def _group_plan_view(
+        self, group: str, fields: list[str], question_ids: list[str] | tuple[str, ...] = (),
+    ) -> dict | None:
+        """维度组看到的计划子集。
+
+        audit §3.1 修复：question_ids 给定时（调度器路径）严格按它投影，不再用
+        module→组名映射二次推导——建组与下发同源，不可能再失配。
+        无 question_ids 时（旧调用/串行路径）回退到映射口径：未映射/无模块的问题
+        （如 targeted 自定义问题）对全部组可见（回答幂等，重复推进无害）。
+        """
         if not self.plan_payload:
             return None
+        if question_ids:
+            return plan_view(self.plan_payload, list(question_ids))
         questions = []
-        for q in self.plan_payload.get("questions", []):
-            if q.get("status") in ("answered", "not_applicable"):
-                continue
-            module = q.get("module", "")
-            mapped = _QUESTION_MODULE_TO_GROUP.get(module, module)  # 问题组路径：组名即 module
-            if mapped == group or q.get("question_id", "") in fields or group == "misc" or not module:
+        for q in pending_questions(self.plan_payload):
+            module = str(q.get("module", ""))
+            mapped = worker_group(str(self.plan_payload.get("entity_kind") or "stock"), module)
+            if (
+                mapped == group
+                or q.get("question_id", "") in fields
+                or group == "misc"
+                or not module
+            ):
                 questions.append(q)
         if not questions:
             return None
         return {**self.plan_payload, "questions": questions}
+
+    def _emit_question_stall(
+        self, entity_kind: str, entity_id: str, round_no: int,
+        report: IterationReport, trackers: list, dispatched_qids: list[str],
+    ) -> None:
+        """问题零推进的具体诊断（audit §3.1）。
+
+        一个调度周期没有任何问题推进就不能当作「模型不够努力」笼统处理，必须区分：
+        - not_dispatched：问题根本没进 worker 上下文（装配缺陷，本次事故形态）；
+        - submit_rejected：answer_question 被服务端门禁拒（引用/结论不合格）；
+        - source_unavailable：本轮一条证据都没登记成（源/网络/权限）；
+        - analysis_incomplete：有证据但没形成观测/论断（分析未完成）。
+        """
+        pending = pending_questions(self.plan_payload)
+        if not pending or report.questions_advanced:
+            return
+        pending_ids = [str(q.get("question_id") or "") for q in pending]
+        answer_rejections = [r for tr in trackers for r in getattr(tr, "answer_rejections", [])]
+        registered = sum(len(getattr(tr, "registered", [])) for tr in trackers)
+        produced = bool(report.observations_written or report.claims_written
+                        or report.calculations_done or report.facts_written)
+        causes: list[str] = []
+        missing_dispatch = [q for q in pending_ids if q not in set(dispatched_qids)]
+        if missing_dispatch:
+            causes.append("not_dispatched")
+        if answer_rejections:
+            causes.append("submit_rejected")
+        if registered == 0:
+            causes.append("source_unavailable")
+        if registered and not produced:
+            causes.append("hoarding_evidence")
+        if produced and not answer_rejections and not missing_dispatch:
+            causes.append("analysis_incomplete")
+        diag = {
+            "entity": f"{entity_kind}:{entity_id}",
+            "round": round_no,
+            "causes": causes or ["analysis_incomplete"],
+            "pending_question_ids": pending_ids,
+            "dispatched_question_ids": list(dispatched_qids),
+            "not_dispatched": missing_dispatch,
+            "answer_rejections": answer_rejections,
+            "evidence_registered": registered,
+            "produced": {
+                "facts": list(report.facts_written),
+                "observations": list(report.observations_written),
+                "claims": list(report.claims_written),
+                "calculations": list(report.calculations_done),
+            },
+            "suggestions": _question_stall_suggestions(causes, missing_dispatch, answer_rejections),
+        }
+        self.question_stall_diagnostic = diag
+        logger.warning(
+            "research 问题零推进 %s:%s 第 %d 轮：%s（待答 %d 题）",
+            entity_kind, entity_id, round_no, diag["causes"], len(pending_ids),
+        )
+        self._emit(RESEARCH_QUESTION_STALL, diag)
 
     def _emit_stall_diagnostic(
         self,
@@ -655,6 +695,37 @@ class ResearchLoop:
 
     def _emit(self, type_: str, payload: dict) -> None:
         self._events.append(Event(run_id=self._manifest.run_id, type=type_, payload=payload))
+
+
+def _question_stall_suggestions(
+    causes: list[str], not_dispatched: list[str], answer_rejections: list[dict],
+) -> list[str]:
+    """问题零推进的可执行建议（规则化，不依赖 LLM）。"""
+    out: list[str] = []
+    if "not_dispatched" in causes:
+        out.append(
+            f"调度装配缺陷：问题 {not_dispatched} 未下发给任何 worker"
+            "（检查 scheduling.worker_group 映射与计划 module 字段）"
+        )
+    if "submit_rejected" in causes:
+        reasons = sorted({str(r.get("reason", ""))[:80] for r in answer_rejections})
+        out.append(
+            "answer_question 被门禁拒：" + "；".join(reasons[:3])
+            + "（answered 需 conclusion + 可解析 support_refs；查不到就标 unavailable 并记 attempts）"
+        )
+    if "source_unavailable" in causes:
+        out.append(
+            "本轮零证据登记：检查数据源可用性与检索预算（gateway 预检/源降级/预算耗尽）"
+        )
+    if "hoarding_evidence" in causes:
+        out.append(
+            "囤证据空转：证据已登记但未形成观测/论断——按题推进，每题至少一条 propose_claim"
+        )
+    if not out or causes == ["analysis_incomplete"]:
+        out.append(
+            "分析未完成：有产出但未提交答案——完成一题立即 answer_question，不要攒到轮末"
+        )
+    return out
 
 
 #: 定性维度字段（当前数据源覆盖薄弱的那批——EDGAR/行情撑不起）

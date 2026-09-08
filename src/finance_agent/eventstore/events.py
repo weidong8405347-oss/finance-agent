@@ -39,6 +39,18 @@ RESEARCH_STALL_DIAGNOSTIC = "research/stall_diagnostic"
 # command 启动前数据源探活：{mode, results: {source_id: {ok, detail}}}（§4.9 预检）
 GATEWAY_PREFLIGHT = "gateway/preflight"
 
+# ---- 审计整改（docs/ai-for-science-live-a2cce641-audit-and-optimization.md）----
+# §3.1 调度装配回放：{round, items:[{group,fields,question_ids,acceptance}], unassigned}
+RESEARCH_SCHEDULE = "research/schedule"
+# §3.1 问题零推进的具体诊断（区分未分发/提交被拒/来源不可得/分析未完成）
+RESEARCH_QUESTION_STALL = "research/question_stall"
+# §3.3 真实预算扣减与终止：{deadline, spent, remaining, exhausted, action}
+RESEARCH_BUDGET = "research/budget"
+# §3.2 错误观测的修订/失效记录（保留旧版本审计链，不原位改冻结历史）
+METRIC_REVISED = "metric/revised"
+# §3.9 部分成果冻结：每完成一个问题/模块即校验并发布 partial artifact
+RESEARCH_PARTIAL_PUBLISHED = "research/partial_published"
+
 # ---- 档案升级（knowledge-dossier-research-redesign §6.5 新业务事件） ----
 RESEARCH_PLAN_CREATED = "research/plan_created"      # {plan_id, mode, recipe, questions, budgets}
 RESEARCH_QUESTION_UPDATED = "research/question_updated"  # {plan_id, question_id, status, conclusion?}

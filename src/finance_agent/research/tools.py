@@ -59,6 +59,8 @@ class _Tracker:
         self.written: list[str] = []
         self.rejected: list[dict] = []
         self.registered: list[str] = []  # 已登记证据 id（囤证据检测：登记多而写入少 = 空转）
+        #: answer_question 被拒记录（audit §3.1）：问题零推进时区分「未分发」与「提交失败」
+        self.answer_rejections: list[dict] = []
         # 研究升级（§7.7）：进展不仅记录 facts_written，还记录观测/论断/计算/问题，
         # 防止「有价值分析但没写字段」被误判 stalled
         self.observations: list[str] = []
@@ -72,6 +74,17 @@ class _Tracker:
             self.written or self.observations or self.claims
             or self.calculations or self.questions_advanced
         )
+
+
+def _reject_answer(tracker: _Tracker, question_id: str, reason: str) -> dict[str, Any]:
+    """answer_question 被拒的统一出口：同时计入 tracker.answer_rejections。
+
+    audit §3.1：问题零推进时必须能区分「未分发」与「提交失败」，所以拒绝不能只
+    回给模型就丢掉。
+    """
+    tracker.answer_rejections.append({"question_id": question_id, "reason": reason})
+    tracker.rejected.append({"question": question_id, "reason": reason})
+    return {"content": f"rejected: {reason}", "provenance": []}
 
 
 def _windows(text: str, query: str, *, width: int = 1600, max_windows: int = 4) -> list[str]:
@@ -106,6 +119,7 @@ def make_research_tools(
     metric_writer: Any | None = None,  # TypedMetricWriter
     calculations: Any | None = None,  # CalculationService
     plan_id: str | None = None,  # 冻结的研究计划（answer_question 的落点）
+    allowed_question_ids: list[str] | None = None,  # 调度器下发的本 worker 问题集
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -376,14 +390,34 @@ def make_research_tools(
             kind = str(args.get("kind") or "inference")
             if kind not in ("fact_summary", "inference", "hypothesis", "analysis"):
                 return {"content": f"rejected: 未知 kind {kind!r}", "provenance": []}
+            # 引用未知 question_id 的 claim 不得正式归档（audit §3.1）：编造的问题归属
+            # 会把论断投到错误模块（本次事故：三条 claim 误用模块名 key_kpi 当 question_id）
+            question_id = args.get("question_id")
+            if question_id:
+                plan_payload = metrics.get_plan(plan_id) if plan_id else None
+                known = {str(q.get("question_id") or "")
+                         for q in (plan_payload or {}).get("questions", [])}
+                if plan_payload is not None and str(question_id) not in known:
+                    reason = (
+                        f"question_id {question_id!r} 不在冻结计划中（可用：{sorted(known)}）"
+                    )
+                    tracker.rejected.append({"claim": statement[:40], "reason": reason})
+                    return {"content": f"rejected: {reason}", "provenance": []}
+                if allowed_question_ids is not None and str(question_id) not in allowed_question_ids:
+                    # 本 worker 未被分配该问题：仍可写，但不得 validated（越位结论不入正式产物）
+                    pass
             # 支持与反方引用都验（存在性+命名空间+实体，review #5）
             canonical_id = normalize_entity_id(entity_kind, entity_id)
             ctx = {"namespace": namespace, "entity_kind": entity_kind, "entity_id": canonical_id}
             unresolved_refs = [r for r in support if not _ref_resolvable(store, metrics, r, **ctx)]
             unresolved_counter = [r for r in counter if not _ref_resolvable(store, metrics, r, **ctx)]
+            out_of_scope = bool(
+                question_id and allowed_question_ids is not None
+                and str(question_id) not in allowed_question_ids
+            )
             status = (
                 "validated"
-                if support and not unresolved_refs and not unresolved_counter
+                if support and not unresolved_refs and not unresolved_counter and not out_of_scope
                 else "draft"
             )
             try:
@@ -413,7 +447,11 @@ def make_research_tools(
             tracker.claims.append(claim.claim_id)
             note = ""
             if status != "validated":
-                if unresolved_refs or unresolved_counter:
+                if out_of_scope:
+                    note = (
+                        f"（draft：问题 {question_id} 未分配给本 worker，越位结论不入正式产物）"
+                    )
+                elif unresolved_refs or unresolved_counter:
                     note = (
                         f"（draft：引用不可解析/跨上下文 support={unresolved_refs} "
                         f"counter={unresolved_counter}）"
@@ -437,14 +475,20 @@ def make_research_tools(
                 (q for q in plan_payload.get("questions", []) if q.get("question_id") == qid), None
             )
             if question is None:
-                return {
-                    "content": f"rejected: 问题不在冻结计划中: {qid}（计划范围不可扩展）",
-                    "provenance": [],
-                }
+                return _reject_answer(
+                    tracker, qid,
+                    f"问题不在冻结计划中: {qid}（计划范围不可扩展）",
+                )
+            if allowed_question_ids is not None and qid not in allowed_question_ids:
+                # 调度器已把问题显式分配给各 worker（audit §3.1）：越位回答会让验收无法归因
+                return _reject_answer(
+                    tracker, qid,
+                    f"问题 {qid} 未分配给本 worker（本组待答：{sorted(allowed_question_ids)}）",
+                )
             del question  # 门禁只用计划判存在性；更新走存储层原子入口（review #8）
             status = str(args.get("status") or "")
             if status not in ("gathering", "answered", "disputed", "unavailable", "not_applicable"):
-                return {"content": f"rejected: 未知状态 {status!r}", "provenance": []}
+                return _reject_answer(tracker, qid, f"未知状态 {status!r}")
             conclusion = str(args.get("conclusion") or "").strip()
             support = [str(r) for r in (args.get("support_refs") or [])]
             counter = [str(r) for r in (args.get("counter_refs") or [])]
@@ -455,30 +499,28 @@ def make_research_tools(
             ctx = {"namespace": namespace, "entity_kind": entity_kind, "entity_id": canonical_id}
             if status == "answered":
                 if not conclusion:
-                    return {"content": "rejected: answered 必须给出 conclusion", "provenance": []}
+                    return _reject_answer(tracker, qid, "answered 必须给出 conclusion")
                 if not support:
-                    return {
-                        "content": "rejected: answered 必须给出 support_refs（证据/观测/计算/论断 id）",
-                        "provenance": [],
-                    }
+                    return _reject_answer(
+                        tracker, qid,
+                        "answered 必须给出 support_refs（证据/观测/计算/论断 id）",
+                    )
                 bad = [r for r in support if not _ref_resolvable(store, metrics, r, **ctx)]
                 if bad:
-                    return {
-                        "content": f"rejected: 支持引用不可解析或跨上下文: {bad}",
-                        "provenance": [],
-                    }
+                    return _reject_answer(
+                        tracker, qid, f"支持引用不可解析或跨上下文: {bad}"
+                    )
             if counter:
                 bad_counter = [r for r in counter if not _ref_resolvable(store, metrics, r, **ctx)]
                 if bad_counter:
-                    return {
-                        "content": f"rejected: 反方引用不可解析或跨上下文: {bad_counter}",
-                        "provenance": [],
-                    }
+                    return _reject_answer(
+                        tracker, qid, f"反方引用不可解析或跨上下文: {bad_counter}"
+                    )
             if status in ("disputed", "unavailable") and not (unresolved or attempts):
-                return {
-                    "content": f"rejected: {status} 必须记录原因（unresolved）与尝试（attempts）",
-                    "provenance": [],
-                }
+                return _reject_answer(
+                    tracker, qid,
+                    f"{status} 必须记录原因（unresolved）与尝试（attempts）",
+                )
             # 原子更新单问题（review #8）：锁内读-改-写，并行 worker 不互盖
             updated = metrics.update_plan_question(plan_id, qid, {
                 "status": status,
@@ -489,10 +531,9 @@ def make_research_tools(
                 "attempts": attempts,
             }, namespace=namespace)
             if updated is None:
-                return {
-                    "content": f"rejected: 计划/问题在更新窗口内消失: {plan_id}/{qid}",
-                    "provenance": [],
-                }
+                return _reject_answer(
+                    tracker, qid, f"计划/问题在更新窗口内消失: {plan_id}/{qid}"
+                )
             if events is not None:
                 events.append(Event(run_id=manifest.run_id, type=RESEARCH_QUESTION_UPDATED, payload={
                     "plan_id": plan_id, "question_id": qid, "status": status,
