@@ -24,9 +24,8 @@ from ..knowledge.metrics import MetricObservation
 from ..knowledge.snapshot import kb_snapshot_id
 from ..knowledge.store import BitemporalStore
 from ..research.plan import Recipe, load_recipe, select_recipe
+from . import registry as module_registry
 from .models import (
-    MODULE_IDS,
-    MODULE_TITLES,
     SCHEMA_VERSION,
     BusinessGraph,
     DossierContext,
@@ -44,13 +43,26 @@ from .models import (
     SnapshotInputs,
 )
 
-#: 行业实体的模块标题覆写（§7.5/review #24：行业页面展示产业链/候选池，不套用个股口径）
+#: 行业实体的模块标题覆写（§7.5/review #24）——已迁至 registry（audit §3.6），
+#: 保留常量只为旧测试/旧调用兼容
 _INDUSTRY_MODULE_TITLES = {
-    "business_engine": "产业链与瓶颈",
-    "key_kpi": "供需与规模",
-    "peers": "候选池与竞争",
-    "revenue_segments": "子赛道",
+    m.module_id: m.title for m in module_registry.INDUSTRY_MODULES
 }
+
+
+def _structures_from(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+    """从冻结产物取结构化产物（audit §3.7）：最新 report 产物优先。
+
+    只读已冻结的 artifact.structures——不在投影时调 LLM 临时生成图。
+    """
+    out: dict[str, Any] = {}
+    for art in artifacts:  # artifacts_as_of 已按 created_at 倒序
+        if art.get("purpose", "report") != "report":
+            continue
+        structures = art.get("structures") or {}
+        for kind, payload in structures.items():
+            out.setdefault(kind, payload)
+    return out
 
 
 def _mask_plan_question_status(plan: dict) -> dict:
@@ -206,19 +218,24 @@ class DossierProjector:
         ))
         calculation_ids = self._metrics.list_calculation_ids(entity_kind, entity_id, t, namespace=ns)
         recipe = self._recipe(context.recipe_id)
+        #: 结构化产物（来自冻结产物，确定性投影）+ 模块注册表（前后端同源）
+        structures = _structures_from(artifacts)
 
         snapshot = DossierSnapshot(
             schema_version=SCHEMA_VERSION,
             entity=EntityRef(kind=entity_kind, id=entity_id, name=name or entity_id),  # type: ignore[arg-type]
             context=context,
             recipe={"id": recipe.id, "version": recipe.version},
+            structures=structures,
+            module_registry=module_registry.as_payload(entity_kind),
         )
         snapshot.summary = self._build_summary(
-            facts, observations, claims, artifacts, recipe, t
+            facts, observations, claims, artifacts, recipe, t,
+            entity_kind=entity_kind, entity_id=entity_id, plan=plan, structures=structures,
         )
         snapshot.modules = self._build_modules(
             entity_kind, entity_id, facts, observations, claims, artifacts,
-            recipe, t, open_conflict_sems, ns, mode=context.mode,
+            recipe, t, open_conflict_sems, ns, mode=context.mode, structures=structures,
         )
         snapshot.research = self._build_research_coverage(plan, claims, artifacts, t, ns)
         # 来源目录含 claim 引用（review #22）：仅由论断引用的证据不再被抽屉接口 404
@@ -272,6 +289,7 @@ class DossierProjector:
             "resolutions": sorted(r.resolution_id for r in resolutions),
             "calculations": sorted(calculation_ids),
             "plan": _plan_digest(plan),
+            "structures": sorted(structures.keys()),
         }
         snapshot.data_hash = snapshot.compute_data_hash(inputs)
         with contextlib.suppress(Exception):
@@ -290,10 +308,22 @@ class DossierProjector:
         artifacts: list[dict[str, Any]],
         recipe: Recipe,
         t: datetime,
+        *,
+        entity_kind: str = "stock",
+        entity_id: str = "",
+        plan: dict[str, Any] | None = None,
+        structures: dict[str, Any] | None = None,
     ) -> DossierSummary:
         summary = DossierSummary()
-        # 研究结论：validated claim（analysis/fact_summary 优先）> artifact 摘要 >
-        # legacy thesis（标 legacy_analysis——旧 thesis 不是 reported fact，§2.2）
+        structures = structures or {}
+        exec_sum = structures.get("executive_summary") or {}
+        candidates = structures.get("candidate_assessment") or {}
+        # 研究结论（audit §3.8）：优先用回答用户目标的结构化摘要，而不是「最后创建的
+        # 一条 validated claim」当总论
+        if exec_sum.get("answer"):
+            summary.thesis = str(exec_sum["answer"])
+            summary.thesis_refs = list(exec_sum.get("refs") or [])
+            summary.thesis_kind = "claim"
         validated = [
             c for c in claims
             if c.get("status") == "validated" and c.get("kind") in ("analysis", "fact_summary", "inference")
@@ -301,47 +331,123 @@ class DossierProjector:
         validated.sort(key=lambda c: c.get("created_at", ""), reverse=True)
         # 用户情景 artifact 不参与默认结论投影（review #26：不自动成为发布版）
         report_artifacts = [a for a in artifacts if a.get("purpose", "report") == "report"]
-        if validated:
-            summary.thesis = validated[0]["statement"]
-            summary.thesis_refs = [validated[0]["claim_id"], *validated[0].get("support_refs", [])]
-            summary.thesis_kind = "claim"
-        elif report_artifacts:
-            latest = report_artifacts[0]
-            text = _artifact_headline(latest)
-            if text:
-                summary.thesis = text
-                summary.thesis_refs = [latest["artifact_id"]]
-                summary.thesis_kind = "draft" if latest.get("status") == "draft" else "claim"
-        else:
-            draft = [c for c in claims if c.get("status") == "draft"]
-            thesis_fact = facts.get("thesis")
-            if draft:
-                draft.sort(key=lambda c: c.get("created_at", ""), reverse=True)
-                summary.thesis = draft[0]["statement"]
-                summary.thesis_refs = [draft[0]["claim_id"]]
-                summary.thesis_kind = "draft"
-            elif thesis_fact is not None and isinstance(thesis_fact.value, str):
-                summary.thesis = thesis_fact.value.strip()[:300]
-                summary.thesis_refs = [thesis_fact.fact_id]
-                summary.thesis_kind = "legacy_analysis"
-        # 最近变化：最新 3 条 validated/draft claim（按创建时间）
-        recent = sorted(claims, key=lambda c: c.get("created_at", ""), reverse=True)[:3]
-        summary.key_changes = [c["statement"][:120] for c in recent if c.get("statement")]
-        # 关键驱动：business-model/revenue-engine 问题的结论（计划问题投影）
+        if summary.thesis is None:
+            if validated:
+                summary.thesis = validated[0]["statement"]
+                summary.thesis_refs = [validated[0]["claim_id"], *validated[0].get("support_refs", [])]
+                summary.thesis_kind = "claim"
+            elif report_artifacts:
+                latest = report_artifacts[0]
+                text = _artifact_headline(latest)
+                if text:
+                    summary.thesis = text
+                    summary.thesis_refs = [latest["artifact_id"]]
+                    summary.thesis_kind = "draft" if latest.get("status") == "draft" else "claim"
+            else:
+                draft = [c for c in claims if c.get("status") == "draft"]
+                thesis_fact = facts.get("thesis")
+                if draft:
+                    draft.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+                    summary.thesis = draft[0]["statement"]
+                    summary.thesis_refs = [draft[0]["claim_id"]]
+                    summary.thesis_kind = "draft"
+                elif thesis_fact is not None and isinstance(thesis_fact.value, str):
+                    summary.thesis = thesis_fact.value.strip()[:300]
+                    summary.thesis_refs = [thesis_fact.fact_id]
+                    summary.thesis_kind = "legacy_analysis"
+        # 目标与候选分层（audit §3.4/§3.8）：首屏回答「哪些公司、依据是什么」
+        summary.objective = str((plan or {}).get("objective") or exec_sum.get("objective") or "")
+        summary.tiers = {str(k): [str(x) for x in v] for k, v in (exec_sum.get("tiers") or {}).items()}
+        if not summary.tiers and candidates.get("candidates"):
+            for item in candidates["candidates"]:
+                tier = str(item.get("tier") or "needs_review")
+                label = str(item.get("name") or item.get("entity_id") or "")
+                summary.tiers.setdefault(tier, []).append(label)
+        summary.biggest_disagreement = str(exec_sum.get("biggest_disagreement") or "")
+        # 最近变化（audit §3.8）：不再拿「最后三条 claim 各截 120 字」冒充 diff——
+        # 改为本次研究的可分辨进展（问题结论/新验证论断），保留完整句
+        changes: list[str] = []
+        for q in (plan or {}).get("questions", []) or []:
+            if q.get("status") in ("answered", "disputed", "unavailable") and q.get("conclusion"):
+                changes.append(f"[{q.get('question_id')}] {q['conclusion']}")
+        for c in validated[:3]:
+            if c.get("statement") and c["statement"] not in changes:
+                changes.append(c["statement"])
+        summary.key_changes = changes[:5]
+        # 关键驱动：目标维度/商业引擎类问题的结论（按注册表归位，不再只认三个股票问题 id）
+        driver_modules = {"objective", "business_engine", "key_kpi", "candidate_pool",
+                          "financial_quality", "revenue_segments"}
         for c in claims:
-            if c.get("question_id") in ("revenue-engine", "business-model", "order-to-revenue"):
-                summary.drivers.append(c["statement"][:120])
-        # 最大反证：counter_refs 的 claim 或 counter-evidence 问题结论
-        counter = [c for c in claims if c.get("counter_refs") or c.get("question_id") == "counter-evidence"]
+            qid = c.get("question_id") or ""
+            q_module = next(
+                (str(q.get("module") or "") for q in (plan or {}).get("questions", []) or []
+                 if q.get("question_id") == qid), ""
+            )
+            if (q_module in driver_modules or qid.startswith("objective-")) \
+                    and c.get("statement") and c["statement"] not in summary.drivers:
+                summary.drivers.append(c["statement"])
+        summary.drivers = summary.drivers[:5]
+        if not summary.drivers and exec_sum.get("main_basis"):
+            summary.drivers = [str(x) for x in exec_sum["main_basis"]][:5]
+        # 最大反证：不硬截断（audit §3.8：反证在句中截断会失真）
+        counter = [c for c in claims if c.get("counter_refs") or c.get("question_id") == "counter-evidence"
+                   or str(c.get("question_id") or "").startswith("objective-counter_evidence")]
         if counter:
             counter.sort(key=lambda c: c.get("created_at", ""), reverse=True)
-            summary.counter_evidence = counter[0]["statement"][:200]
-            summary.counter_refs = [counter[0]["claim_id"]]
+            summary.counter_evidence = counter[0]["statement"]
+            summary.counter_refs = [counter[0]["claim_id"], *counter[0].get("counter_refs", [])]
         elif "counter_evidence" in facts:
             value = facts["counter_evidence"].value
-            summary.counter_evidence = (value if isinstance(value, str) else str(value))[:200]
+            summary.counter_evidence = value if isinstance(value, str) else str(value)
+        # 限制与未核验部分：结构产物 + 计划未解决项（全文保留，不截断）
+        limits: list[str] = [str(x) for x in (exec_sum.get("limitations") or [])]
+        limits += [str(x) for x in (candidates.get("limitations") or [])]
+        for q in (plan or {}).get("questions", []) or []:
+            for u in q.get("unresolved") or []:
+                limits.append(f"[{q.get('question_id')}] {u}")
+        for c in claims[:10]:
+            limits += [str(x) for x in (c.get("limitations") or [])]
+        summary.limitations = list(dict.fromkeys(limits))[:12]
+        # 问题进展：无论是否已有 assessment 都显示（audit §3.8：0/9 不得隐藏）
+        questions = (plan or {}).get("questions", []) or []
+        applicable = [q for q in questions if q.get("priority") == "high"
+                      and q.get("status") != "not_applicable"]
+        answered = [q for q in applicable if q.get("status") == "answered"]
+        if questions:
+            summary.question_progress = (
+                f"关键问题 {len(answered)}/{len(applicable)} 已回答"
+                f"（全部问题 {sum(1 for q in questions if q.get('status') == 'answered')}"
+                f"/{len(questions)}）"
+            )
+            if (plan or {}).get("status") == "active":
+                summary.question_progress += "；研究进行中"
+        # 可信度分层（audit §3.8）：沿用现有能力时只写「引用通过基础校验」，
+        # 不把 validated 谎称为「事实已核对」
+        validated_n = len(validated)
+        bound_obs = sum(1 for o in observations if o.status == "ok" and (o.locator or o.raw))
+        sufficiency = next(
+            (str(a.get("sufficiency")) for a in report_artifacts if a.get("sufficiency")), ""
+        )
+        summary.credibility = {
+            "refs_resolvable": f"{validated_n} 条论断引用通过基础校验（存在性+命名空间+实体上下文）",
+            "facts_checked": (
+                f"{bound_obs} 项 typed 观测带原文锚点/定位并过换算链重算"
+                if bound_obs else "无带定位的 typed 观测（关键数字未核对）"
+            ),
+            "analysis_reviewed": (
+                "尚无人工/二次复核：validated 仅表示引用可解析，不表示证据充分支持整句话"
+            ),
+            "sufficiency": sufficiency or "尚无充分度评估（未冻结研究产物）",
+        }
+        if exec_sum.get("credibility"):
+            summary.credibility.update(
+                {str(k): str(v) for k, v in exec_sum["credibility"].items()}
+            )
         # 关键指标：行业模板 KPI → 最新 typed 观测（缺 = 缺口，不补零）
-        summary.key_metrics = self._key_metrics(observations, recipe, t)
+        summary.key_metrics = self._key_metrics(
+            observations, recipe, t, entity_kind=entity_kind,
+            entity_id=entity_id or str((plan or {}).get("entity_id") or ""),
+        )
         if claims:
             summary.updated_at = max(
                 datetime.fromisoformat(c["created_at"]) for c in claims if c.get("created_at")
@@ -349,17 +455,26 @@ class DossierProjector:
         return summary
 
     def _key_metrics(
-        self, observations: list[MetricObservation], recipe: Recipe, t: datetime
+        self, observations: list[MetricObservation], recipe: Recipe, t: datetime,
+        *, entity_kind: str = "stock", entity_id: str = "",
     ) -> list[KeyMetric]:
         by_key: dict[str, list[MetricObservation]] = {}
         for o in observations:
+            # KPI 卡只读本实体自己的指标（audit §3.2）：跨主体观测（行业里写公司数）
+            # 属于候选矩阵，不得当作行业 KPI 投影
+            if entity_id and o.subject_id != entity_id:
+                continue
             by_key.setdefault(o.metric_key, []).append(o)
+        #: 公司 KPI 名与行业 KPI 名不同（audit §3.6）：同一经济含义的别名归一
+        aliases = _KPI_ALIASES.get(entity_kind, {})
         out: list[KeyMetric] = []
         for spec in recipe.kpis[:6]:  # 首屏约 5–6 个指标（§4.3）
-            cands = [
-                o for o in by_key.get(spec.key, [])
-                if o.status == "ok" and o.value is not None and not o.dimensions
-            ]
+            keys = [spec.key, *aliases.get(spec.key, [])]
+            pool = [o for k in keys for o in by_key.get(k, []) if o.status == "ok"
+                    and o.value is not None]
+            plain = [o for o in pool if not o.dimensions]
+            # 带维度的观测不再被直接过滤掉（audit §3.6）：无总量时用分部值并标注维度
+            cands = plain or pool
             if not cands:
                 out.append(KeyMetric(
                     metric_key=spec.key, label=spec.label, status="missing",
@@ -369,14 +484,18 @@ class DossierProjector:
             # 期间最新（period_end 最大）；同期间取 knowledge_time 最新
             best = max(cands, key=lambda o: (o.period.end, o.knowledge_time))
             stale = self._is_stale(best.knowledge_time, t, recipe, spec.key)
+            dim_note = "；".join(f"{k}={v}" for k, v in sorted(best.dimensions.items()))
             out.append(KeyMetric(
-                metric_key=spec.key, label=spec.label, value=best.value,
+                metric_key=best.metric_key, label=spec.label, value=best.value,
                 unit=best.unit, currency=best.currency,
                 period_label=best.period.fiscal_label or best.period.end.isoformat(),
                 nature=best.nature, observation_id=best.observation_id,
                 evidence_refs=list(best.evidence_refs),  # review #21：点击指标直达自己的来源
                 status="stale" if stale else ("conflicted" if best.status == "conflicted" else "ok"),
-                as_of_note=f"{best.period.frequency} · 可知 {best.knowledge_time.date().isoformat()}",
+                as_of_note=(
+                    f"{best.period.frequency} · 可知 {best.knowledge_time.date().isoformat()}"
+                    + (f" · {dim_note}" if dim_note else "")
+                ),
             ))
         return out
 
@@ -395,7 +514,9 @@ class DossierProjector:
         open_conflict_sems: set[str],
         namespace: str,
         mode: str = "live",
+        structures: dict[str, Any] | None = None,
     ) -> dict[str, ModuleState]:
+        structures = structures or {}
         now = datetime.now(UTC)
         has_current_data = None
         if mode == "historical":
@@ -408,27 +529,48 @@ class DossierProjector:
 
         obs_by_module: dict[str, list[MetricObservation]] = {}
         for o in observations:
-            obs_by_module.setdefault(_module_of_metric(o.metric_key, recipe), []).append(o)
+            # 注册表优先（audit §3.6：行业指标不得被配方口径塞进股票 financial 组），
+            # 配方口径兜底；带 segment 维度的收入归分部模块
+            mod = module_registry.module_of_metric(entity_kind, o.metric_key) \
+                or _module_of_metric(o.metric_key, recipe)
+            if o.dimensions.get("segment") and o.metric_key == "revenue":
+                mod = "revenue_segments" if entity_kind == "stock" else "key_kpi"
+            obs_by_module.setdefault(mod, []).append(o)
         legacy_by_module: dict[str, list[Any]] = {}
         for field, rec in facts.items():
-            mod = _LEGACY_FIELD_MODULE.get(field)
+            spec = next(
+                (m for m in module_registry.modules_for(entity_kind)
+                 if field in m.legacy_fields), None
+            )
+            mod = spec.module_id if spec else _LEGACY_FIELD_MODULE.get(field)
             if mod:
                 legacy_by_module.setdefault(mod, []).append(rec)
         claims_by_module: dict[str, list[dict]] = {}
         for c in claims:
-            mod = _module_of_question(c.get("question_id"))
+            mod = _claim_module(entity_kind, c, recipe)
             if mod:
                 claims_by_module.setdefault(mod, []).append(c)
         conflict_obs = {o.semantic_hash() for o in observations} & open_conflict_sems
 
         modules: dict[str, ModuleState] = {}
-        for mod in MODULE_IDS:
-            title = MODULE_TITLES.get(mod, mod)
-            if entity_kind == "industry":
-                title = _INDUSTRY_MODULE_TITLES.get(mod, title)  # 行业语义标题（review #24）
+        # 模块清单由注册表决定（audit §3.6）：行业不再遍历固定十个股票模块，
+        # 不适用项标 not_applicable（不当作研究缺失，也不占默认导航）
+        for spec in module_registry.modules_for(entity_kind):
+            mod = spec.module_id
+            if not module_registry._applicable(spec, entity_kind):  # noqa: SLF001
+                modules[mod] = ModuleState(
+                    status="not_applicable", title=spec.title,
+                    reasons=[f"该模块不适用于 {entity_kind} 实体（信息架构由配方/注册表决定）"],
+                )
+                continue
+            title = spec.title
             obs = obs_by_module.get(mod, [])
             legacy = legacy_by_module.get(mod, [])
             mod_claims = claims_by_module.get(mod, [])
+            #: 本模块的结构产物（§3.7）：有结构 = 有可渲染交付，不只靠旧字段
+            mod_structures = {
+                kind: structures[kind] for kind in spec.structures if kind in structures
+            }
             latest_kt = max(
                 [o.knowledge_time for o in obs] + [r.knowledge_time for r in legacy],
                 default=None,
@@ -438,6 +580,7 @@ class DossierProjector:
                 "obs": sorted(o.observation_id for o in obs),
                 "facts": sorted((r.fact_id, r.version) for r in legacy),
                 "claims": sorted(c["claim_id"] for c in mod_claims),
+                "structures": sorted(mod_structures.keys()),
             }
             if mod == "research_sources":
                 digest_src["artifacts"] = sorted(a["artifact_id"] for a in artifacts)
@@ -488,7 +631,15 @@ class DossierProjector:
                     status = "missing"
                     reasons.append("无估值输入（市场数据/财务观测）")
             else:
-                if obs:
+                if mod_structures:
+                    # 结构产物就绪（产业链图/候选矩阵/时间线）= 有可渲染交付。
+                    # 关系图的证据是 evidence_refs 而不是 typed 观测，不额外要求数值。
+                    if _structure_has_content(mod_structures):
+                        status = "ready"
+                    else:
+                        status = "partial"
+                        reasons.append("结构产物为空壳（无节点/候选/时间线项）——不作就绪宣称")
+                elif obs:
                     status = "ready"
                     if mod == "key_kpi" or mod == "financial_quality":
                         required = [k.key for k in recipe.kpis if k.required]
@@ -600,6 +751,21 @@ class DossierProjector:
 # ---------------- 辅助 ----------------
 
 
+#: 同一经济含义的 KPI 别名（audit §3.6：公司 KPI 因名字不同在行业页不可见）
+_KPI_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "industry": {
+        "market_size": ("tam", "market_size_total", "industry_revenue"),
+        "growth_rate": ("market_growth", "industry_growth", "cagr"),
+        "capacity_supply": ("capacity", "supply", "contracted_mw"),
+    },
+    "stock": {
+        "revenue": ("total_revenue", "sales"),
+        "gross_margin": ("gm", "gross_margin_pct"),
+        "firm_backlog": ("backlog", "orders"),
+    },
+}
+
+
 def _module_of_metric(metric_key: str, recipe: Recipe) -> str:
     kpi_keys = {k.key for k in recipe.kpis}
     financial = {"revenue", "net_income", "cfo", "capex", "fcf", "gross_margin", "operating_margin",
@@ -651,6 +817,80 @@ def _module_of_question(question_id: str | None) -> str | None:
         "candidate-pool": "peers",
     }
     return mapping.get(question_id or "")
+
+
+#: 行业实体：股票模块名 → 行业模块（claim/问题归位用，audit §3.6）
+_STOCK_TO_INDUSTRY_MODULE = {
+    "business_engine": "industry_chain",
+    "revenue_segments": "industry_chain",
+    "peers": "candidate_pool",
+    "key_kpi": "key_kpi",
+    "financial_quality": "key_kpi",
+    "catalysts_risks": "catalysts_risks",
+    "expectations": "key_kpi",
+    "valuation_lab": "candidate_pool",
+}
+
+#: 目标维度（objective.py）→ 模块：按实体类型分开
+_OBJECTIVE_DIMENSION_MODULE = {
+    "industry": {
+        "technology_moat": "candidate_pool",
+        "commercial_proof": "key_kpi",
+        "sustainability": "candidate_pool",
+        "counter_evidence": "catalysts_risks",
+        "investability": "candidate_pool",
+        "commercial_breakout": "candidate_pool",
+    },
+    "stock": {
+        "technology_moat": "business_engine",
+        "commercial_proof": "financial_quality",
+        "sustainability": "financial_quality",
+        "counter_evidence": "catalysts_risks",
+        "investability": "peers",
+        "commercial_breakout": "business_engine",
+    },
+}
+
+
+#: 结构产物的「有内容」判据：任一键非空即算就绪（空壳不宣称 ready）
+_STRUCTURE_CONTENT_KEYS = ("nodes", "candidates", "items", "rows", "answer", "tiers")
+
+
+def _structure_has_content(structures: dict[str, Any]) -> bool:
+    for payload in structures.values():
+        if not isinstance(payload, dict):
+            continue
+        for key in _STRUCTURE_CONTENT_KEYS:
+            if payload.get(key):
+                return True
+    return False
+
+
+def _claim_module(entity_kind: str, claim: dict[str, Any], recipe: Recipe) -> str | None:
+    """claim → 档案模块（audit §3.6）：统一校验，不再让 claim 漂在模块外。
+
+    三种形态都能归位：
+    - question_id 是注册表里的模块名（本次事故：三条 claim 误用 key_kpi）；
+    - question_id 是配方问题 id（value-chain/candidate-pool/...）；
+    - question_id 是目标编译题（objective-<dimension>-<hash>）。
+    """
+    qid = str(claim.get("question_id") or "")
+    if not qid:
+        return None
+    known = {m.module_id for m in module_registry.modules_for(entity_kind)}
+    if qid in known:
+        return qid
+    if qid.startswith("objective-"):
+        parts = qid.split("-")
+        dim = parts[1] if len(parts) > 2 else ""
+        table = _OBJECTIVE_DIMENSION_MODULE.get(entity_kind, _OBJECTIVE_DIMENSION_MODULE["stock"])
+        return table.get(dim)
+    mod = _module_of_question(qid)
+    if mod is None:
+        return None
+    if entity_kind == "industry":
+        return _STOCK_TO_INDUSTRY_MODULE.get(mod, mod)
+    return mod
 
 
 def _artifact_headline(artifact: dict[str, Any]) -> str | None:
@@ -798,11 +1038,44 @@ def series_set(
 
 
 def business_graph(
-    facts: dict[str, Any], claims: list[dict[str, Any]], *, entity_kind: str = "stock"
+    facts: dict[str, Any], claims: list[dict[str, Any]], *, entity_kind: str = "stock",
+    structures: dict[str, Any] | None = None,
 ) -> BusinessGraph:
-    """商业引擎/产业链投影（review #24）：股票读 business_model，行业读
-    value_chain/competition/sub_sectors；无流量数据用叙述，不编造 Sankey 宽度（§4.4）。"""
+    """商业引擎/产业链投影（review #24 + audit §3.7）。
+
+    结构优先：有冻结的 IndustryMap 结构产物就填 nodes/edges/layers（带证据、
+    可点击）；无流量数据时 flow_known=False，前端画等宽边而不是假 Sankey。
+    旧文本字段（value_chain/competition/sub_sectors 或 business_model）只作叙述兼容。
+    """
+    from .models import BusinessGraphEdge, BusinessGraphNode
+
     graph = BusinessGraph()
+    imap = (structures or {}).get("industry_map") or {}
+    for node in imap.get("nodes") or []:
+        graph.nodes.append(BusinessGraphNode(
+            node_id=str(node.get("node_id") or ""),
+            label=str(node.get("label") or node.get("node_id") or ""),
+            kind="input" if str(node.get("layer")) == "upstream" else "other",
+            note=str(node.get("note") or ""),
+            layer=str(node.get("layer") or ""),
+            company_refs=[str(x) for x in (node.get("company_refs") or [])],
+            bottleneck=bool(node.get("bottleneck")),
+            evidence_refs=[str(x) for x in (node.get("evidence_refs") or [])],
+        ))
+    for edge in imap.get("edges") or []:
+        graph.edges.append(BusinessGraphEdge(
+            source=str(edge.get("source") or ""),
+            target=str(edge.get("target") or ""),
+            label=str(edge.get("note") or edge.get("relation") or ""),
+            relation=str(edge.get("relation") or "supplies"),
+            flow_known=bool(edge.get("flow_known")),
+            value_ref=(str(edge["flow_value"]) if edge.get("flow_value") else None),
+            evidence_refs=[str(x) for x in (edge.get("evidence_refs") or [])],
+        ))
+    graph.layers = [str(x) for x in (imap.get("layers") or [])]
+    graph.routes = [dict(x) for x in (imap.get("routes") or []) if isinstance(x, dict)]
+    graph.bottlenecks = [str(x) for x in (imap.get("bottlenecks") or [])]
+
     narrative_fields = (
         ("value_chain", "competition", "sub_sectors")
         if entity_kind == "industry"

@@ -1,0 +1,438 @@
+"""行业信息架构与结构化产物验收（audit §3.6/§3.7/§3.8 + §5 验收用例 5/6）。
+
+事故形态：
+- 行业 recipe 定义六个模块，后端遍历固定十个股票模块，前端固定 SECTION_ORDER 只做
+  四个标题替换——行业页面仍占用财务/预期/估值栏目，「子赛道」实际读公司收入，
+  「候选池」从 peers 字段找代码，与已有 player_landscape 不连通；
+- `business_graph()` 只拼旧文本，nodes=0、edges=0，页面显示长文本与原始 JSON；
+- 首屏直接取最后创建的 validated claim 当总论，最近变化是最后三条 claim 各截
+  120 字，反证在「68% vs 传统 3」处截断，行业驱动为空（只认三个股票问题 id）；
+- verdict=null 时连 0/9 也隐藏。
+"""
+
+from datetime import UTC, date, datetime
+
+import pytest
+
+from finance_agent.decision.store import DecisionStore
+from finance_agent.dossier import registry as module_registry
+from finance_agent.dossier.projector import DossierProjector, _claim_module, business_graph
+from finance_agent.dossier.service import DossierService
+from finance_agent.dossier.structures import (
+    StructureError,
+    parse_structures,
+    validate_structures,
+)
+from finance_agent.eventstore.store import EventStore
+from finance_agent.knowledge.metric_store import MetricStore
+from finance_agent.knowledge.metrics import MetricPeriod, RawValue, ReportedObservation
+from finance_agent.knowledge.models import Evidence, Fact, PitGrade
+from finance_agent.knowledge.normalization import normalize_raw
+from finance_agent.knowledge.store import BitemporalStore
+
+T0 = datetime(2024, 6, 1, tzinfo=UTC)
+T1 = datetime(2025, 1, 31, tzinfo=UTC)
+H1_2024 = MetricPeriod(start=date(2024, 1, 1), end=date(2024, 6, 30), frequency="H1",
+                       fiscal_label="2024H1")
+FY2024 = MetricPeriod(start=date(2024, 1, 1), end=date(2024, 12, 31), frequency="FY",
+                      fiscal_label="FY2024")
+OBJECTIVE = "究竟哪些公司是真的在形成技术护城河以及有比较大可能能够取得商业爆发"
+
+
+@pytest.fixture()
+def env(tmp_path):
+    kb = BitemporalStore(tmp_path / "kb.db")
+    metrics = MetricStore(tmp_path / "m.db")
+    events = EventStore(tmp_path / "e.db")
+    decisions = DecisionStore(tmp_path / "d.db")
+    projector = DossierProjector(kb=kb, metrics=metrics, decisions=decisions)
+    service = DossierService(kb=kb, metrics=metrics, projector=projector, events=events,
+                             decisions=decisions)
+    return kb, metrics, events, projector, service
+
+
+def seed_ev(kb, eid="ev-1", quote="AI for Science 平台收入 1500 million（FY2024）"):
+    kb.add_evidence(Evidence(
+        evidence_id=eid, source_id="web_search", url="https://x.com/a",
+        verbatim_quote=quote, retrieved_at=T0, available_at=T0, pit_grade=PitGrade.B,
+    ))
+
+
+def seed_obs(metrics, kb, *, metric_key="revenue", value_text="1500 million",
+             period=FY2024, entity_kind="industry", entity_id="ai-for-science",
+             dimensions=None, evidence=("ev-1",)):
+    value, steps = normalize_raw(value_text, "USD")
+    obs = ReportedObservation(
+        entity_kind=entity_kind, entity_id=entity_id, metric_key=metric_key, period=period,
+        value=value, unit="USD", currency="USD", dimensions=dimensions or {},
+        raw=RawValue(value_text=value_text, unit_text="USD"),
+        normalization=[s.model_dump(mode="json") for s in steps],
+        evidence_refs=list(evidence), knowledge_time=T1, source_available_at=T0,
+        retrieved_at=T1, created_at=T1, pit_grade=PitGrade.B,
+    )
+    return metrics.assert_observation(obs)[0]
+
+
+STRUCTURES = {
+    "industry_map": {
+        "nodes": [
+            {"node_id": "compute", "label": "上游算力", "layer": "upstream",
+             "bottleneck": True, "evidence_refs": ["ev-1"]},
+            {"node_id": "platform", "label": "中游平台", "layer": "midstream",
+             "company_refs": ["SDGR", "2228.HK"], "evidence_refs": ["ev-1"]},
+            {"node_id": "apps", "label": "下游科研应用", "layer": "downstream"},
+        ],
+        "edges": [
+            {"source": "compute", "target": "platform", "relation": "supplies",
+             "flow_known": False, "evidence_refs": ["ev-1"]},
+            {"source": "platform", "target": "apps", "relation": "enables"},
+        ],
+        "layers": ["upstream", "midstream", "downstream"],
+        "bottlenecks": ["compute"],
+        "routes": [{"route": "物理仿真", "maturity": "中", "companies": "SDGR"}],
+    },
+    "candidate_assessment": {
+        "objective": OBJECTIVE,
+        "criteria": ["技术壁垒有一手证据", "商业兑现有披露数字", "可交易"],
+        "candidates": [
+            {"entity_id": "SDGR", "name": "Schrödinger", "listing_status": "listed",
+             "market": "NASDAQ", "security_relation": "同一主体", "tier": "included",
+             "technology_stage": "外部验证", "commercial_stage": "复购扩单",
+             "moat_evidence": ["ev-1"], "reason": "物理仿真平台 + 药企复购",
+             "next_validation": "FY2025 Q1 财报的软件收入增速", "investable": True},
+            {"entity_id": " XtalPi", "name": "晶泰科技", "listing_status": "listed",
+             "market": "HKEX", "tier": "needs_review", "reason": "首付款与潜在总额未拆分",
+             "investable": True},
+        ],
+        "stage_definitions": {"外部验证": "第三方客户/同行复核", "复购扩单": "已有重复订单"},
+    },
+    "validation_timeline": {
+        "items": [
+            {"event": "SDGR FY2025 Q1 财报", "window_start": "2025-02", "window_end": "2025-03",
+             "status": "expected", "trigger_condition": "软件收入同比增速 ≥20%",
+             "affected_judgment": "商业兑现阶段判定", "company_refs": ["SDGR"]},
+        ],
+    },
+    "executive_summary": {
+        "objective": OBJECTIVE,
+        "answer": "现有证据只支持 Schrödinger 进入候选（平台 + 复购），晶泰待核实首付款拆分。",
+        "tiers": {"included": ["Schrödinger"], "needs_review": ["晶泰科技"]},
+        "main_basis": ["平台外部验证", "复购扩单证据"],
+        "biggest_disagreement": "软件收入增速是否可持续（68% vs 传统 3%）",
+        "limitations": ["未检索到独立第三方对平台精度的复核"],
+        "question_progress": "关键问题 0/9 已回答",
+        "refs": ["ev-1"],
+        "credibility": {"data_cutoff": "2025-01-31"},
+    },
+}
+
+
+def seed_artifact(metrics, *, structures=None, status="validated"):
+    metrics.save_artifact(artifact_id="art-1", namespace="prod", payload={
+        "artifact_id": "art-1", "entity_kind": "industry", "entity_id": "ai-for-science",
+        "title": "AI for Science 研究", "status": status, "sufficiency": "partial",
+        "purpose": "report", "created_at": T1.isoformat(),
+        "structures": structures if structures is not None else STRUCTURES,
+        "report_document": {"title": "t", "entity_kind": "industry",
+                            "entity_id": "ai-for-science", "blocks": []},
+    })
+
+
+# ---------------- 1. 模块注册表（§3.6） ----------------
+
+
+class TestModuleRegistry:
+    def test_industry_navigation_is_industry_shaped(self):
+        nav = [m.module_id for m in module_registry.nav_modules("industry")]
+        assert nav == ["investment_snapshot", "industry_chain", "candidate_pool",
+                       "key_kpi", "catalysts_risks", "research_sources"]
+
+    def test_stock_only_modules_are_not_applicable_not_missing(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        snap, _ = service.open("industry", "ai-for-science")
+        for mod in ("financial_quality", "expectations", "valuation_lab", "peers",
+                    "business_engine", "revenue_segments"):
+            assert snap["modules"][mod]["status"] == "not_applicable", mod
+            assert "不适用" in snap["modules"][mod]["reasons"][0]
+
+    def test_registry_is_projected_for_frontend(self, env):
+        """前端按快照里的注册表渲染，不再硬编码 SECTION_ORDER。"""
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        snap, _ = service.open("industry", "ai-for-science")
+        reg = snap["module_registry"]
+        assert reg["registry_version"] == module_registry.REGISTRY_VERSION
+        renderers = {m["module_id"]: m["renderer"] for m in reg["modules"]}
+        assert renderers["industry_chain"] == "industry_map"
+        assert renderers["candidate_pool"] == "candidate_matrix"
+        assert renderers["catalysts_risks"] == "validation_timeline"
+
+    def test_industry_module_accepts_module_id_lookup(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        snap, _ = service.open("industry", "ai-for-science")
+        for mod in ("industry_chain", "candidate_pool", "catalysts_risks"):
+            payload = service.module(snap["context"]["snapshot_id"], mod)
+            assert payload.module == mod
+
+    def test_h1_observations_are_not_dropped(self, env):
+        """audit §3.6：财务只读 FY/Q，本次 H1 数据被排除。"""
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_obs(metrics, kb, period=H1_2024, entity_kind="stock", entity_id="BE",
+                 value_text="700 million")
+        snap, _ = service.open("stock", "BE")
+        payload = service.module(snap["context"]["snapshot_id"], "financial_quality")
+        h1 = payload.payload["h1"]
+        assert h1["series"], "H1 数据被排除在财务模块外"
+        assert h1["series"][0]["points"][0]["value"] == "700000000"
+
+
+class TestClaimModuleRouting:
+    def test_module_name_misused_as_question_id_still_routes(self):
+        """audit §3.6：三条 claim 误用模块名 key_kpi 当 question_id。"""
+        assert _claim_module("industry", {"question_id": "key_kpi"}, None) == "key_kpi"
+        assert _claim_module("stock", {"question_id": "financial_quality"}, None) \
+            == "financial_quality"
+
+    def test_objective_questions_route_by_entity_kind(self):
+        qid = "objective-technology_moat-abc123"
+        assert _claim_module("industry", {"question_id": qid}, None) == "candidate_pool"
+        assert _claim_module("stock", {"question_id": qid}, None) == "business_engine"
+        assert _claim_module("industry", {"question_id": "objective-counter_evidence-x"}, None) \
+            == "catalysts_risks"
+
+    def test_recipe_questions_map_to_industry_modules(self):
+        assert _claim_module("industry", {"question_id": "value-chain"}, None) == "industry_chain"
+        assert _claim_module("industry", {"question_id": "candidate-pool"}, None) \
+            == "candidate_pool"
+        assert _claim_module("industry", {"question_id": "demand-supply"}, None) == "key_kpi"
+
+
+# ---------------- 2. 结构产物校验（§3.7） ----------------
+
+
+class TestStructureValidation:
+    def test_valid_structures_pass(self):
+        parsed = parse_structures(STRUCTURES)
+        assert validate_structures(parsed) == []
+
+    def test_unknown_kind_rejected(self):
+        with pytest.raises(StructureError, match="未知结构产物"):
+            parse_structures({"sankey_chart": {"nodes": []}})
+
+    def test_dangling_edge_rejected(self):
+        broken = {"industry_map": {"nodes": [{"node_id": "a", "label": "A"}],
+                                   "edges": [{"source": "a", "target": "ghost"}],
+                                   "layers": ["upstream"]}}
+        issues = validate_structures(parse_structures(broken))
+        assert any("target 未定义" in i for i in issues)
+
+    def test_fabricated_flow_rejected(self):
+        """无流量数据不许编造 Sankey 宽度。"""
+        bad = {"industry_map": {
+            "nodes": [{"node_id": "a", "label": "A"}, {"node_id": "b", "label": "B"}],
+            "edges": [{"source": "a", "target": "b", "flow_known": False,
+                       "flow_value": "obs-1"}],
+            "layers": ["upstream", "downstream"],
+        }}
+        assert any("flow_known" in i for i in validate_structures(parse_structures(bad)))
+
+    def test_candidate_rules(self):
+        bad = {"candidate_assessment": {"candidates": [
+            {"entity_id": "X", "tier": "excluded"},                      # 淘汰无原因
+            {"entity_id": "Y", "listing_status": "listed"},               # 上市无市场
+            {"entity_id": "Z", "listing_status": "private", "investable": True},
+            {"entity_id": "X", "tier": "included", "reason": "重复"},      # 公司重复
+        ]}}
+        issues = validate_structures(parse_structures(bad))
+        assert any("淘汰必须给原因" in i for i in issues)
+        assert any("上市必须给市场" in i for i in issues)
+        assert any("不得标为可交易候选" in i for i in issues)
+        assert any("公司重复" in i for i in issues)
+
+    def test_comparison_matrix_chartable_requires_comparability(self):
+        bad = {"comparison_matrix": {
+            "columns": [{"id": "c1", "label": "收入"}],
+            "rows": [{"label": "SDGR", "cells": {"c1": "100"}, "comparable": False}],
+            "chartable": True,
+        }}
+        issues = validate_structures(parse_structures(bad))
+        assert any("不可比却未给原因" in i for i in issues)
+        assert any("不得标 chartable" in i for i in issues)
+
+    def test_timeline_expected_needs_window_and_trigger(self):
+        bad = {"validation_timeline": {"items": [{"event": "财报", "status": "expected"}]}}
+        issues = validate_structures(parse_structures(bad))
+        assert any("缺时间范围" in i for i in issues)
+        assert any("缺触发条件" in i for i in issues)
+
+    def test_unresolvable_reference_reported(self):
+        parsed = parse_structures(STRUCTURES)
+        issues = validate_structures(parsed, resolvable=lambda ref: ref != "ev-1")
+        assert any("引用不可解析 ev-1" in i for i in issues)
+
+    def test_executive_summary_requires_answer(self):
+        issues = validate_structures(parse_structures({"executive_summary": {"objective": "x"}}))
+        assert any("必须给出回答用户目标的结论" in i for i in issues)
+
+
+class TestBusinessGraphProjection:
+    def test_nodes_and_edges_come_from_structure(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        kb.assert_fact(Fact(
+            entity_kind="industry", entity_id="ai-for-science", field="value_chain",
+            value="上游算力 → 中游平台 → 下游科研应用", knowledge_time=T0,
+            evidence_ids=["ev-1"],
+        ))
+        graph = business_graph(kb.view("industry", "ai-for-science", T1), [],
+                               entity_kind="industry", structures=STRUCTURES)
+        assert len(graph.nodes) == 3 and len(graph.edges) == 2
+        assert graph.layers == ["upstream", "midstream", "downstream"]
+        assert any(n.bottleneck for n in graph.nodes)
+        assert graph.nodes[1].company_refs == ["SDGR", "2228.HK"]
+        assert graph.edges[0].flow_known is False  # 等宽边，不编造流量
+        assert "上游算力" in graph.narrative  # 旧文本仍在（兼容区）
+
+    def test_module_payload_exposes_graph_structurally(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_obs(metrics, kb)  # 有 typed 观测支撑 → ready（只有结构无观测则 partial）
+        seed_artifact(metrics)
+        snap, _ = service.open("industry", "ai-for-science")
+        payload = service.module(snap["context"]["snapshot_id"], "industry_chain")
+        assert len(payload.payload["nodes"]) == 3
+        assert payload.payload["edges"][0]["relation"] == "supplies"
+        assert payload.payload["bottlenecks"] == ["compute"]
+        assert payload.status == "ready"
+
+    def test_candidate_pool_payload_has_companies_and_reasons(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_artifact(metrics)
+        snap, _ = service.open("industry", "ai-for-science")
+        payload = service.module(snap["context"]["snapshot_id"], "candidate_pool")
+        cands = payload.payload["candidates"]
+        assert len(cands) == 2
+        assert cands[0]["entity_id"] == "SDGR" and cands[0]["reason"]
+        assert payload.payload["criteria"]
+        assert payload.payload["stage_definitions"]
+        # 旧 player_landscape 仍可读（连通，不是替换）
+        assert "legacy" in payload.payload
+
+    def test_candidate_pool_without_structure_is_honest(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        snap, _ = service.open("industry", "ai-for-science")
+        payload = service.module(snap["context"]["snapshot_id"], "candidate_pool")
+        assert payload.payload["candidates"] == []
+        assert any("尚无结构化候选评估" in n for n in payload.payload["notes"])
+
+    def test_timeline_reaches_catalysts_module(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_artifact(metrics)
+        snap, _ = service.open("industry", "ai-for-science")
+        payload = service.module(snap["context"]["snapshot_id"], "catalysts_risks")
+        items = payload.payload["items"]
+        assert items and items[0]["trigger_condition"]
+        assert items[0]["status"] == "expected"
+
+
+# ---------------- 3. 首屏摘要与可信度（§3.8） ----------------
+
+
+class TestExecutiveSummary:
+    def test_thesis_answers_objective_not_last_claim(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_artifact(metrics)
+        # 一条更晚创建的 validated claim（旧实现会把它当总论）
+        metrics.save_claim(claim_id="claim-late", namespace="prod", payload={
+            "claim_id": "claim-late", "entity_kind": "industry",
+            "entity_id": "ai-for-science", "kind": "inference", "status": "validated",
+            "statement": "某条与目标无关的晚期论断", "created_at": T1.isoformat(),
+            "support_refs": ["ev-1"], "counter_refs": [],
+        })
+        snap, _ = service.open("industry", "ai-for-science")
+        summary = snap["summary"]
+        assert summary["thesis"].startswith("现有证据只支持 Schrödinger")
+        assert summary["objective"] == OBJECTIVE or summary["objective"] == ""
+        assert summary["tiers"]["included"] == ["Schrödinger"]
+        assert "68% vs 传统 3%" in summary["biggest_disagreement"]
+
+    def test_disagreement_and_limitations_not_truncated(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        long_text = "反证：" + "证据削弱优势的具体说明。" * 30
+        structures = dict(STRUCTURES)
+        structures["executive_summary"] = {
+            **STRUCTURES["executive_summary"],
+            "biggest_disagreement": long_text,
+            "limitations": ["限制：" + "未披露项说明。" * 30],
+        }
+        seed_artifact(metrics, structures=structures)
+        snap, _ = service.open("industry", "ai-for-science")
+        assert snap["summary"]["biggest_disagreement"] == long_text
+        assert snap["summary"]["limitations"][0].endswith("未披露项说明。")
+
+    def test_credibility_is_split_not_overclaimed(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_artifact(metrics)
+        seed_obs(metrics, kb)
+        snap, _ = service.open("industry", "ai-for-science")
+        cred = snap["summary"]["credibility"]
+        assert set(cred) >= {"refs_resolvable", "facts_checked", "analysis_reviewed",
+                             "sufficiency"}
+        assert "基础校验" in cred["refs_resolvable"]
+        assert "不表示证据充分支持整句话" in cred["analysis_reviewed"]
+        assert cred["sufficiency"] == "partial"
+        # 结构产物可以补充可信度条目（合并，不覆盖服务端算出的四项）
+        assert cred["data_cutoff"] == "2025-01-31"
+
+    def test_question_progress_visible_even_at_zero(self, env):
+        """verdict=null / 0 覆盖时也必须显示问题进展（audit §3.8）。"""
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        metrics.save_plan(plan_id="plan-1", namespace="prod", payload={
+            "plan_id": "plan-1", "entity_kind": "industry", "entity_id": "ai-for-science",
+            "objective": OBJECTIVE, "mode": "deep", "recipe_id": "industry",
+            "recipe_version": "1", "created_at": T0.isoformat(), "status": "active",
+            "questions": [
+                {"question_id": f"q{i}", "text": "?", "priority": "high",
+                 "status": "unanswered", "module": "candidate_pool"} for i in range(9)
+            ],
+            "budgets": {}, "scope": {},
+        })
+        snap, _ = service.open("industry", "ai-for-science")
+        assert snap["summary"]["question_progress"] == "关键问题 0/9 已回答（全部问题 0/9）；研究进行中"
+        assert snap["research"]["answered"] == 0 and snap["research"]["required"] == 9
+        assert snap["summary"]["objective"] == OBJECTIVE
+
+    def test_key_changes_are_not_truncated_duplicates(self, env):
+        """最近变化不再拿最后三条 claim 各截 120 字冒充 diff。"""
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        metrics.save_plan(plan_id="plan-1", namespace="prod", payload={
+            "plan_id": "plan-1", "entity_kind": "industry", "entity_id": "ai-for-science",
+            "objective": OBJECTIVE, "mode": "deep", "recipe_id": "industry",
+            "recipe_version": "1", "created_at": T0.isoformat(), "status": "active",
+            "questions": [
+                {"question_id": "value-chain", "text": "?", "priority": "high",
+                 "status": "answered", "module": "industry_chain",
+                 "conclusion": "产业链分三层，利润集中在中游平台。"},
+                {"question_id": "bottleneck", "text": "?", "priority": "high",
+                 "status": "unavailable", "module": "industry_chain",
+                 "conclusion": "瓶颈环节暂无公开数据。",
+                 "unresolved": ["缺供需数据"], "attempts": ["检索行业报告未果"]},
+            ],
+            "budgets": {}, "scope": {},
+        })
+        snap, _ = service.open("industry", "ai-for-science")
+        changes = snap["summary"]["key_changes"]
+        assert any("利润集中在中游平台" in c for c in changes)
+        assert all(len(c) > 20 for c in changes)  # 完整句，不是 120 字硬截
+        assert any("缺供需数据" in x for x in snap["summary"]["limitations"])

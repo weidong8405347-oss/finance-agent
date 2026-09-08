@@ -239,6 +239,10 @@ class ResearchArtifact(BaseModel):
     calculation_ids: list[str] = Field(default_factory=list)
     plan_id: str | None = None
     snapshot_refs: list[str] = Field(default_factory=list)
+    #: 结构化产物（audit §3.7）：industry_map / candidate_assessment /
+    #: comparison_matrix / validation_timeline / executive_summary——
+    #: 合成器产候选、服务端验证、projector 确定性投影（不在读页面时调 LLM）
+    structures: dict[str, Any] = Field(default_factory=dict)
     status: ClaimStatus = "draft"  # draft/validated/superseded（产物同用三态）
     sufficiency: ArtifactSufficiency = "partial"
     #: 发布用途区分（review #26）：用户情景不是默认发布版，不进档案结论/覆盖投影

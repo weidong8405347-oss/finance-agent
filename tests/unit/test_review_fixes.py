@@ -586,7 +586,7 @@ class TestProjectionSemantics:
         assert "ev-only-claim" in snap["evidence_refs"]
 
     def test_industry_value_chain_projected(self, env):
-        """#24：行业档案的产业链内容不再空投影。"""
+        """#24 + audit §3.6：行业档案的产业链内容不再空投影，且不再借用股票模块改标题。"""
         kb, metrics, events, mw, calcs, projector, service = env
         seed_ev(kb, "ev-i1", "AI for Science value chain description")
         kb.assert_fact(Fact(
@@ -595,7 +595,16 @@ class TestProjectionSemantics:
             evidence_ids=["ev-i1"],
         ))
         snap, _ = service.open("industry", "ai-for-science")
-        assert snap["modules"]["business_engine"]["title"] == "产业链与瓶颈"
-        mod = service.module(snap["context"]["snapshot_id"], "business_engine")
+        # 行业信息架构由注册表定义：产业链有自己的模块，股票专属模块标 not_applicable
+        assert snap["modules"]["industry_chain"]["title"] == "产业链与技术路线"
+        assert snap["modules"]["business_engine"]["status"] == "not_applicable"
+        registry = snap["module_registry"]
+        assert registry["registry_version"] and registry["entity_kind"] == "industry"
+        nav = [m["module_id"] for m in registry["modules"] if m["default_nav"]]
+        assert nav[:3] == ["investment_snapshot", "industry_chain", "candidate_pool"]
+        mod = service.module(snap["context"]["snapshot_id"], "industry_chain")
         assert "上游算力" in mod.payload["graph"]["narrative"]
         assert mod.payload["graph"]["narrative_refs"]
+        # 尚无结构化图时诚实告知，不拿叙述冒充关系图
+        assert mod.payload["nodes"] == []
+        assert any("尚无结构化产业链图" in n for n in mod.payload["notes"])

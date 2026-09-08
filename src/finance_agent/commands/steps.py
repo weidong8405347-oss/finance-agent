@@ -471,6 +471,7 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
 
     tools: dict[str, Any] = {"query_kb": query_kb, "read_evidence": read_evidence}
     submitted: dict[str, Any] | None = None
+    submitted_structures: dict[str, Any] = {}
     contract = _SYNTHESIZE_CONTRACT
     if deps.metrics is not None:
         contract = _SYNTHESIZE_CONTRACT_V2
@@ -565,10 +566,52 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             return {"content": json.dumps(out, ensure_ascii=False, default=str),
                     "provenance": []}
 
+        def submit_structures(args: dict[str, Any]) -> dict[str, Any]:
+            """结构化产物提交即校验（audit §3.7）：图/矩阵/时间线不许到发布才发现非法。
+
+            服务端只做确定性验证（引用可解析/图完整/可比口径）；通过的结构进冻结
+            产物，projector 按注册表投影到对应模块。
+            """
+            nonlocal submitted_structures
+            from ..dossier.structures import (
+                StructureError,
+                parse_structures,
+                structures_payload,
+                validate_structures,
+            )
+            from ..research.artifacts import ref_resolvable
+
+            try:
+                parsed = parse_structures(args.get("structures") or {})
+            except StructureError as e:
+                return {"content": json.dumps({
+                    "accepted": False, "code": "invalid_structure", "error": str(e)[:800],
+                }, ensure_ascii=False), "provenance": []}
+
+            def _resolvable(ref: str) -> bool:
+                return ref_resolvable(
+                    deps.kb, deps.metrics, ref, namespace="prod",
+                    entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+                )
+
+            issues = validate_structures(parsed, resolvable=_resolvable)
+            if issues:
+                return {"content": json.dumps({
+                    "accepted": False, "code": "structure_validation",
+                    "issues": issues[:20],
+                    "hint": "修正后重提：引用必须可解析，淘汰/不可比必须给原因，"
+                            "flow_known=False 不得给 flow_value",
+                }, ensure_ascii=False), "provenance": []}
+            submitted_structures = structures_payload(parsed)
+            return {"content": json.dumps({
+                "accepted": True, "structures": sorted(submitted_structures),
+            }, ensure_ascii=False), "provenance": []}
+
         tools.update({
             "query_observations": query_observations,
             "query_claims": query_claims,
             "query_calculations": query_calculations,
+            "submit_structures": submit_structures,
             "submit_report_document": submit_report_document,
         })
 
@@ -590,7 +633,8 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
 
     if deps.metrics is not None:
         return _finalize_artifact_v2(
-            deps, ctx, report_title, view, report_md, submitted, now
+            deps, ctx, report_title, view, report_md, submitted, now,
+            structures=submitted_structures,
         )
 
     artifact = _write_text_artifact(deps, ctx, "report.md", report_md or "（空报告）")
@@ -626,6 +670,36 @@ SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
             "报告用 calculation_ref 引用，不重算"
         ),
         "parameters": {"type": "object", "properties": {}},
+    },
+    "submit_structures": {
+        "name": "submit_structures",
+        "description": (
+            "提交结构化产物（服务端验证后冻结，projector 确定性投影到对应模块）。"
+            "structures 的键限定：industry_map{nodes[{node_id,label,layer,company_refs,"
+            "bottleneck,evidence_refs}],edges[{source,target,relation,flow_known,flow_value,"
+            "evidence_refs}],layers,routes,bottlenecks} / candidate_assessment{objective,"
+            "criteria,candidates[{entity_id,name,listing_status,market,security_relation,tier,"
+            "technology_stage,commercial_stage,moat_evidence,commercial_evidence,"
+            "sustainability_evidence,counter_evidence,reason,next_validation,evidence_refs,"
+            "investable}],stage_definitions} / comparison_matrix{title,columns[{id,label,"
+            "period,unit}],rows[{label,cells,observation_ids,comparable,incomparable_reason}],"
+            "chartable} / validation_timeline{items[{event,window_start,window_end,status,"
+            "trigger_condition,affected_judgment,company_refs,evidence_refs}]} / "
+            "executive_summary{objective,answer,tiers,main_basis,biggest_disagreement,"
+            "limitations,question_progress,refs,credibility}。"
+            "硬纪律：引用必须可解析；淘汰与不可比必须给原因；无流量数据时 "
+            "flow_known=false 且不填 flow_value；无可校准依据时不给概率百分比或总分。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "structures": {
+                    "type": "object",
+                    "description": "kind → 结构体（可只提交已备好的那几类）",
+                },
+            },
+            "required": ["structures"],
+        },
     },
     "submit_report_document": {
         "name": "submit_report_document",
@@ -856,6 +930,7 @@ def _finalize_artifact_v2(
     report_md: str | None,
     submitted: dict[str, Any] | None,
     now: datetime,
+    structures: dict[str, Any] | None = None,
 ) -> StepResult:
     """验证→冻结→发布：ReportDocument → ResearchArtifact → report.md → 档案快照。
 
@@ -937,6 +1012,7 @@ def _finalize_artifact_v2(
         report_document=doc,
         claim_ids=ok_claims,
         calculation_ids=referenced["calculations"],
+        structures=dict(structures or {}),
         plan_id=plan_id,
         status="draft",
         sufficiency=sufficiency,  # type: ignore[arg-type]
@@ -966,6 +1042,7 @@ def _finalize_artifact_v2(
             "claim_ids": artifact.claim_ids,
             "calculation_ids": artifact.calculation_ids,
             "excluded_claims": broken_claims,
+            "structures": sorted((structures or {}).keys()),
             "referenced_observations": referenced["observations"],
             "validation_issues": [i.model_dump(mode="json") for i in issues[:20]],
         },

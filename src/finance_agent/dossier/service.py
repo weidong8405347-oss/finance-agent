@@ -124,11 +124,19 @@ class DossierService:
     def module(
         self, snapshot_id: str, module: str, *, params: dict[str, Any] | None = None
     ) -> ModulePayload:
-        if module not in MODULE_IDS and module not in ("legacy_audit", "timeline"):
-            raise DossierError(f"未知模块 {module!r}（可用：{list(MODULE_IDS)}）", status=422)
         snap = self.get(snapshot_id)
         ctx = snap["context"]
         entity = snap["entity"]
+        # 模块白名单由注册表决定（audit §3.6）：行业模块（industry_chain/candidate_pool）
+        # 不再是「未知模块 422」
+        from . import registry as module_registry
+
+        known = {m.module_id for m in module_registry.modules_for(entity["kind"])}
+        if module not in known and module not in MODULE_IDS \
+                and module not in ("legacy_audit", "timeline"):
+            raise DossierError(
+                f"未知模块 {module!r}（可用：{sorted(known)}）", status=422
+            )
         t = datetime.fromisoformat(ctx["as_of"])
         ns = ctx["namespace"]
         kind, eid = entity["kind"], entity["id"]
@@ -232,9 +240,56 @@ class DossierService:
                 "assessment": self._latest_assessment(entity_kind, entity_id, ns, t),
                 "notes": frozen_note,
             }
-        if module == "business_engine":
-            graph = business_graph(facts, claims, entity_kind=entity_kind)
-            return {"graph": graph.model_dump(mode="json"), "notes": frozen_note}
+        if module in ("business_engine", "industry_chain"):
+            graph = business_graph(
+                facts, claims, entity_kind=entity_kind,
+                structures=snap.get("structures") or {},
+            )
+            payload: dict[str, Any] = {
+                "graph": graph.model_dump(mode="json"), "notes": list(frozen_note),
+            }
+            imap = (snap.get("structures") or {}).get("industry_map") or {}
+            if module == "industry_chain":
+                payload["nodes"] = imap.get("nodes") or []
+                payload["edges"] = imap.get("edges") or []
+                payload["layers"] = imap.get("layers") or []
+                payload["routes"] = imap.get("routes") or []
+                payload["bottlenecks"] = imap.get("bottlenecks") or []
+                payload["limitations"] = imap.get("limitations") or []
+                if not payload["nodes"]:
+                    payload["notes"].append(
+                        "尚无结构化产业链图（nodes/edges）：下方为旧字段叙述，不作关系图渲染"
+                    )
+            return payload
+        if module == "candidate_pool":
+            """公司与护城河（audit §3.7）：候选评估矩阵优先，旧 peers/player_landscape 兼容。"""
+            structures = snap.get("structures") or {}
+            assessment = structures.get("candidate_assessment") or {}
+            matrix = structures.get("comparison_matrix") or {}
+            legacy = [
+                f.model_dump(mode="json")
+                for f in legacy_fact_items(self._kb, facts)
+                if f.field in ("player_landscape", "competition", "peers", "sub_sectors")
+            ]
+            peer_obs = self._peer_observations(entity_kind, entity_id, facts, t, ns)
+            notes = list(frozen_note)
+            candidates = assessment.get("candidates") or []
+            if not candidates:
+                notes.append(
+                    "尚无结构化候选评估（CandidateAssessment）：下方为旧字段与同业观测，"
+                    "不能当作筛选结果（入选/淘汰/待核实原因缺失）"
+                )
+            return {
+                "candidates": candidates,
+                "criteria": assessment.get("criteria") or [],
+                "objective": assessment.get("objective") or "",
+                "stage_definitions": assessment.get("stage_definitions") or {},
+                "comparison": matrix,
+                "legacy": legacy,
+                "peer_series": peer_obs,
+                "limitations": assessment.get("limitations") or [],
+                "notes": notes,
+            }
         if module == "revenue_segments":
             seg_obs = [o for o in observations if o.dimensions.get("segment")]
             segments = sorted({o.dimensions["segment"] for o in seg_obs})
@@ -293,6 +348,9 @@ class DossierService:
                 consolidated, keys, labels, frequency=frequency or "FY", conflicted_sems=conflicted
             )
             q = series_set(consolidated, keys, labels, frequency="Q", conflicted_sems=conflicted)
+            # H1/TTM 不得丢失（audit §3.6：本次 H1 数据被排除在财务模块外）
+            h1 = series_set(consolidated, keys, labels, frequency="H1", conflicted_sems=conflicted)
+            ttm = series_set(consolidated, keys, labels, frequency="TTM", conflicted_sems=conflicted)
             calcs = self._calculations_by_ids(view["calculation_ids"], t)
             legacy = [
                 f.model_dump(mode="json")
@@ -304,6 +362,8 @@ class DossierService:
             return {
                 "fy": fy.model_dump(mode="json"),
                 "quarterly": q.model_dump(mode="json"),
+                "h1": h1.model_dump(mode="json"),
+                "ttm": ttm.model_dump(mode="json"),
                 "calculations": calcs,
                 "legacy": legacy,
                 "notes": notes,
@@ -363,8 +423,21 @@ class DossierService:
                 _claim_item(c) for c in claims
                 if c.get("question_id") in ("catalysts-risks", "counter-evidence",
                                             "customer-concentration", "regulatory-path", "policy")
+                or str(c.get("question_id") or "").startswith("objective-counter_evidence")
             ]
-            return {"legacy": legacy, "claims": risk_claims, "notes": frozen_note}
+            timeline = (snap.get("structures") or {}).get("validation_timeline") or {}
+            notes = list(frozen_note)
+            if not timeline.get("items"):
+                notes.append(
+                    "尚无验证时间线（ValidationTimeline）：下方为论断与旧字段，"
+                    "不展示无依据的概率"
+                )
+            return {
+                "legacy": legacy, "claims": risk_claims,
+                "items": timeline.get("items") or [],
+                "limitations": timeline.get("limitations") or [],
+                "notes": notes,
+            }
         # 注：entity_kind/entity_id 仅供回退路径与 peers 跨实体查询使用；
         # 其余模块一律消费冻结视图（review #2）
         if module == "research_sources":

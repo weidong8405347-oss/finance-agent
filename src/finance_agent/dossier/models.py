@@ -112,6 +112,18 @@ class DossierSummary(BaseModel):
     counter_refs: list[str] = Field(default_factory=list)
     key_metrics: list[KeyMetric] = Field(default_factory=list)
     updated_at: datetime | None = None
+    # ---- audit §3.8：首屏必须回答目标，并诚实表达可信度与限制 ----
+    #: 用户研究目标原文（首屏结论必须对它作答，不得静默换成背景叙述）
+    objective: str = ""
+    #: 候选分层（tier → 公司）：来自 CandidateAssessment/ExecutiveSummary 结构产物
+    tiers: dict[str, list[str]] = Field(default_factory=dict)
+    biggest_disagreement: str = ""
+    #: 限制与未核验部分（不被硬截断，全文保留）
+    limitations: list[str] = Field(default_factory=list)
+    #: 问题进展：无论是否已有 assessment 都显示（0/9 不得隐藏）
+    question_progress: str = ""
+    #: 可信度分层：引用可解析 / 事实已核对 / 分析已复核 / 研究充分度
+    credibility: dict[str, str] = Field(default_factory=dict)
 
 
 class SnapshotInputs(BaseModel):
@@ -162,6 +174,12 @@ class DossierSnapshot(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     data_hash: str = ""
     inputs: SnapshotInputs = Field(default_factory=SnapshotInputs)
+    #: 结构化产物投影（audit §3.7）：industry_map/candidate_assessment/
+    #: comparison_matrix/validation_timeline/executive_summary——来自冻结产物，
+    #: 不在请求时调 LLM 临时生成
+    structures: dict[str, Any] = Field(default_factory=dict)
+    #: 模块注册表投影（audit §3.6）：前端据此渲染导航与组件，不再硬编码 SECTION_ORDER
+    module_registry: dict[str, Any] = Field(default_factory=dict)
 
     def data_hash_of(self) -> str:
         """内容寻址：投影输入的版本集（fact/observation/claim/artifact/resolution id+版本）。"""
@@ -245,6 +263,12 @@ class BusinessGraphNode(BaseModel):
     label: str
     kind: Literal["customer", "product", "revenue", "cost", "cashflow", "input", "other"] = "other"
     note: str = ""
+    #: 产业链分层（audit §3.7）：upstream/midstream/downstream/platform/application
+    layer: str = ""
+    #: 关联公司（页面点击联动到候选行）
+    company_refs: list[str] = Field(default_factory=list)
+    bottleneck: bool = False
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class BusinessGraphEdge(BaseModel):
@@ -255,6 +279,10 @@ class BusinessGraphEdge(BaseModel):
     label: str = ""
     #: 流量宽度只能来自带来源的数值；无数据用流程图（不能编造 Sankey 宽度，§4.4）
     value_ref: str | None = None  # observation_id
+    #: 关系类型与流量可知性（audit §3.7：flow_known=False → 前端画等宽边）
+    relation: str = "supplies"
+    flow_known: bool = False
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class BusinessGraph(BaseModel):
@@ -264,6 +292,10 @@ class BusinessGraph(BaseModel):
     edges: list[BusinessGraphEdge] = Field(default_factory=list)
     narrative: str = ""  # 兼容投影的 legacy 文本（business_model 字段）
     narrative_refs: list[str] = Field(default_factory=list)
+    #: 分层顺序与技术路线（行业图布局用）
+    layers: list[str] = Field(default_factory=list)
+    routes: list[dict[str, str]] = Field(default_factory=list)
+    bottlenecks: list[str] = Field(default_factory=list)
 
 
 class ClaimItem(BaseModel):
