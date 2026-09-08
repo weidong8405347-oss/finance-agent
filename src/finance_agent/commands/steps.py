@@ -979,7 +979,11 @@ def _synthesize_brief(
         "不用裸值；③ 论断用 claim block 带 claim_id，引用不可解析的论断不要采用；"
         "④ 未完成的题目用 gap_notice 显式标出，不得用推测补齐；"
         "⑤ 无可校准数据时用证据支持的阶段与条件表达，不自行制造百分比或总分；"
-        "⑥ 最后调 submit_report_document（提交即校验，硬错会当轮返回可修原因）。"
+        "⑥ 先调 submit_structures 提交结构化产物（行业实体至少交 industry_map + "
+        "candidate_assessment + executive_summary；有验证节点时交 "
+        "validation_timeline；同口径数据齐时交 comparison_matrix）——页面靠这些"
+        "结构渲染关系图与公司矩阵，不靠长文本；提交即校验，引用不可解析会被退回；"
+        "⑦ 最后调 submit_report_document（提交即校验，硬错会当轮返回可修原因）。"
     )
     del view
     return "\n".join(parts)

@@ -1,8 +1,9 @@
 # Knowledge 档案升级实施状态对照
 
 > 对照 [knowledge-dossier-research-redesign.md](knowledge-dossier-research-redesign.md) v1.0 的落地清单。
-> 更新：2026-09-07 · 分支 `feat/knowledge-dossier-research-upgrade`。
+> 更新：2026-09-08 · 分支 `fix/research-audit-a2cce641-remediation`（上一分支已合并进 `main`）。
 > 状态口径：**已落地** = 有代码与测试；**部分** = 契约已落地但依赖数据/后续阶段；**未做** = 本期未实施（如实标注，不宣称 ready）。
+> 本轮增量：[ai-for-science-live-a2cce641 审计](ai-for-science-live-a2cce641-audit-and-optimization.md) 的 P0/P1 整改，逐项对照见 [整改状态](ai-for-science-audit-remediation.md)。
 
 ## 里程碑完成度
 
@@ -83,18 +84,39 @@
 
 ## 已知边界与后续（如实清单）
 
+> 2026-09-08 审计整改后的状态修订（audit §6 建议）：**基础契约与部分单股链路已完成，
+> 行业深研与生产质量验收进行中**。逐项整改对照见
+> [ai-for-science-audit-remediation.md](ai-for-science-audit-remediation.md)。
+
 1. **数据源未扩展**：guidance/consensus/电话会/A 股结构化披露依赖 §9.1 的 adapter 验证任务；相关模块当前按契约降级（missing + 原因），这是设计要求的行为，不是缺陷掩盖。
 2. **事件溯源重建**：`metric/asserted` 事件带完整 payload 可重建观测索引，但「先事件后投影 + offset」的严格顺序与全量重放工具未实施；当前一致性靠幂等键（semantic_hash/input_hash/data_hash）。
 3. **历史裁决批量回填**（M4）与 HTML 导出：未做。旧 fact 冲突的时态裁决投影仅新观测通道具备；旧通道保持原 `resolve_conflict` 行为（新页面历史视图中旧字段裁决入口已设只读）。
-4. **浏览器 E2E**：前端逻辑经 vitest 覆盖（路由/数值边界），三档视口的截图验收（§13.3）未跑真实浏览器。
+4. **浏览器 E2E**：前端逻辑经 vitest 覆盖（路由/数值边界），三档视口的截图验收（§13.3 / audit §5 用例 7）未跑真实浏览器。
 5. **性能目标**（p95 <300/500ms、数万观测）：本地 27 实体规模下即时响应；设计要求的规模压测未做。
-6. **wall-clock/检索调用硬预算**：以轮次×步数近似，未按 §7.7 表实施计时器与 per-provider 限速。
+6. ~~**wall-clock/检索调用硬预算**：以轮次×步数近似~~ → **已整改**（audit §3.3）：`research/budget.py` 的 RunBudget 在 LLM 与网关入口真实扣减墙钟/token/检索/工具/重试，慢组超时不再拖住整轮。
+7. **上下文压缩未做**（audit §3.3 余项）：检索去重、按需 evidence bundle（`read_chunk`）与长正文截断已落地，但 kernel 多步重送历史的摘要/压缩仍未实施——长轮次上下文成本仍会增长。
+8. **真实行业深研效果评估未跑**（audit §5 用例 8）：修复前后同目标/同证据截止/相近预算的对照运行（有效问题覆盖、关键数值错误率、来源可解析率、重复资料、有效产出时间与成本）需要一次真实付费运行，尚未执行。
 
 ## 验证入口
 
 ```bash
-uv run pytest tests                        # 489 passed, 9 skipped（含 135 个新用例 + 35 个 review 回归用例）
-cd frontend && npm test && npm run build   # 37 passed；主包 206KB + echarts 懒加载 chunk
+uv run pytest tests                        # 632 passed, 9 skipped（含审计整改新增 92 例）
+cd frontend && npm test && npm run build   # 40 passed；tsc + vite 构建通过
 uv run python scripts/migrate_dossier.py --data-dir data inventory   # 迁移盘点（只读）
+uv run python scripts/revise_observations.py --data-dir data \
+    --observation obs-xxxx --action needs_review --reason "…"        # 观测修订干跑
 uv run python -m finance_agent serve       # → #/knowledge 列表 → 实体档案 → 来源抽屉 → 补研
+```
+
+审计整改的专项验收入口（对应 audit §5 用例 1-6）：
+
+```bash
+uv run pytest tests/unit/test_research_scheduling.py        # 用例1 问题分发装配回放
+uv run pytest tests/unit/test_metric_semantics_gate.py      # 用例2 错误数据四例
+uv run pytest tests/unit/test_evidence_authenticity.py      # 用例3 来源真实性
+uv run pytest tests/unit/test_run_budget.py                 # 用例4 预算/慢组故障注入
+uv run pytest tests/unit/test_industry_modules_structures.py # 用例5 真实产物回放
+uv run pytest tests/unit/test_partial_publish.py            # 部分发布与终止路径
+uv run pytest tests/unit/test_objective_compilation.py \
+           tests/unit/test_report_dependency_closure.py     # 目标编译与报告依赖闭包
 ```
