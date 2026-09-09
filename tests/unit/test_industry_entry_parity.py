@@ -11,13 +11,11 @@ typed 工具可用、产出落同一个 typed 库（同一页面可读）、预�
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 from test_commands import make_deps
 
 from finance_agent.commands.steps import StepContext, _industry_loop
 from finance_agent.knowledge.metric_store import MetricStore
 from finance_agent.knowledge.metric_writer import TypedMetricWriter
-from finance_agent.knowledge.models import PitGrade
 from finance_agent.llm.base import AssistantReply, ToolCall
 from finance_agent.research.calculations import CalculationService
 
