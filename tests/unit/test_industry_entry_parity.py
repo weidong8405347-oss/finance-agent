@@ -89,7 +89,7 @@ class TestIndustryEntryParity:
         """typed 工具在 F1 入口可用，产出落同一个库（同一档案页可读）。"""
         deps, events, kb, metrics = make_industry_deps(
             tmp_path, {"research": [F1_SCRIPT]})
-        loop = _industry_loop(deps, make_ctx(), "industry_map")
+        _industry_loop(deps, make_ctx(), "industry_map")
         obs = metrics.observations_as_of("industry", "ai-for-science", datetime.now(UTC))
         assert [o.metric_key for o in obs] == ["market_size"], \
             "F1 入口没有 typed 产出（旧路径只有 propose_fact）"
