@@ -4,8 +4,16 @@ export interface SessionRow {
   title: string | null;
   started_at: string;
   last_active: string;
-  status: "idle" | "running" | "done" | "error" | "cancelled";
+  /** 活动状态：运行中 > 错误 > 拦停 > 取消 > 完成 > 空闲（与上一条命令结果分开） */
+  status: "idle" | "running" | "done" | "error" | "blocked" | "cancelled";
   status_detail: string | null;
+  last_outcome: string | null;
+  running_commands: string[];
+  open_turns: number;
+  last_blocked: string | null;
+  last_error: string | null;
+  /** 运行中但超过阈值无事件：进程可能被杀，诚实标注（不假装活着） */
+  possibly_stale: boolean;
 }
 
 export interface CommandSpec {
@@ -49,8 +57,38 @@ export interface EntityRow {
   conflict_count: number;
   last_knowledge_time: string | null;
   quality_score: number;
-  quality_status: "verified" | "draft";
+  quality_status: "verified" | "draft" | "purged";
   quality_issues: string[];
+  purged?: boolean;
+  purge_mode?: string;
+  purged_at?: string;
+}
+
+/** 删除回执（knowledge/purged）：逐项可核对，不笼统报「已清理」 */
+export interface PurgeReport {
+  entity_kind: string;
+  entity_id: string;
+  mode: "tombstone" | "hard";
+  namespace: string;
+  reason: string;
+  purged_at: string;
+  counts: Record<string, number>;
+  orphan_evidence_deleted: number;
+  evidence_remaining: number | null;
+  files_removed: string[];
+  restorable: boolean;
+  warnings: string[];
+  total_rows_deleted: number;
+}
+
+export interface SessionDeleteResult {
+  run_id: string;
+  deleted_runs: string[];
+  total_events: number;
+  counts: Record<string, number>;
+  files_removed: string[];
+  reason: string;
+  forced: boolean;
 }
 
 export interface ArchiveRow {
@@ -165,6 +203,19 @@ async function get<T>(url: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+/** DELETE/POST 带查询参数：失败时把服务端 detail 带出来（删除必须能解释为什么被拒） */
+async function send<T>(url: string, method: "DELETE" | "POST"): Promise<T> {
+  const resp = await fetch(url, { method });
+  const body = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    const detail = body && typeof body === "object" && "detail" in body
+      ? String((body as { detail: unknown }).detail)
+      : `${resp.status}`;
+    throw new Error(detail);
+  }
+  return body as T;
+}
+
 async function post<T>(url: string, body?: unknown): Promise<T> {
   const resp = await fetch(url, {
     method: "POST",
@@ -206,7 +257,26 @@ export interface ProviderProbeResult {
 export const api = {
   sessions: () => get<SessionRow[]>("/api/sessions"),
   sessionEvents: (runId: string) => get<EventRow[]>(`/api/sessions/${runId}/events`),
-  entities: () => get<EntityRow[]>("/api/knowledge/entities"),
+  /** 删除会话（级联子 run + 报告目录）；运行中需 force */
+  deleteSession: (runId: string, opts?: { force?: boolean; reason?: string }) =>
+    send<SessionDeleteResult>(
+      `/api/sessions/${encodeURIComponent(runId)}?force=${opts?.force ? "true" : "false"}`
+      + `&reason=${encodeURIComponent(opts?.reason ?? "")}`, "DELETE"),
+  entities: (includePurged = false) =>
+    get<EntityRow[]>(`/api/knowledge/entities?include_purged=${includePurged}`),
+  purgedEntities: () =>
+    get<{ entity_kind: string; entity_id: string; mode: string; reason: string;
+          purged_at: string }[]>("/api/knowledge/purged"),
+  /** 删除知识实体：tombstone（默认，可恢复）/ hard（真删行+孤儿证据+存档，不可恢复） */
+  deleteEntity: (kind: string, id: string, opts?: { mode?: "tombstone" | "hard";
+                                                     reason?: string }) =>
+    send<PurgeReport>(
+      `/api/knowledge/${kind}/${encodeURIComponent(id)}?mode=${opts?.mode ?? "tombstone"}`
+      + `&reason=${encodeURIComponent(opts?.reason ?? "")}`, "DELETE"),
+  restoreEntity: (kind: string, id: string, reason = "") =>
+    send<{ restored: boolean; entity: string }>(
+      `/api/knowledge/${kind}/${encodeURIComponent(id)}/restore?reason=${encodeURIComponent(reason)}`,
+      "POST"),
   archives: (kind: string, id: string) =>
     get<ArchiveRow[]>(`/api/knowledge/${kind}/${id}/archives`),
   archiveUrl: (kind: string, id: string, name: string) =>

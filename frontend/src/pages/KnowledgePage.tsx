@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { api } from "../api";
 import { navigate } from "../app/route";
 import { dossierApi } from "../features/dossier/api";
 import { ModuleStateBadge } from "../features/dossier/components";
@@ -36,6 +37,10 @@ export default function KnowledgePage() {
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [issueFilter, setIssueFilter] = useState<IssueFilter>("all");
   const [view, setView] = useState<"table" | "cards">("table");
+  const [showPurged, setShowPurged] = useState(false);
+  const [purged, setPurged] = useState<{ entity_kind: string; entity_id: string;
+                                          mode: string; reason: string;
+                                          purged_at: string }[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +54,16 @@ export default function KnowledgePage() {
       });
     return () => { cancelled = true; };
   }, [tick]);
+
+  // 已删除（墓碑）清单：可审计、可恢复
+  useEffect(() => {
+    if (!showPurged) return;
+    let cancelled = false;
+    api.purgedEntities()
+      .then((r) => { if (!cancelled) setPurged(r); })
+      .catch(() => { if (!cancelled) setPurged([]); });
+    return () => { cancelled = true; };
+  }, [showPurged, tick]);
 
   const filtered = useMemo(() => {
     if (!rows) return [];
@@ -64,6 +79,48 @@ export default function KnowledgePage() {
 
   const openDossier = (r: EntityRowV2) =>
     navigate({ page: "knowledge", kind: r.kind as "stock" | "industry", id: r.id, params: {} });
+
+  // 删除档案（用户诉求：清掉历史低质量内容）：默认墓碑（可恢复），
+  // 硬删需二次确认且说清不可恢复——删了什么、多少行、是否清了孤儿证据都回显
+  const [purgeMsg, setPurgeMsg] = useState<string | null>(null);
+  const onDelete = async (r: EntityRowV2, mode: "tombstone" | "hard") => {
+    const label = `${r.kind}:${r.id}`;
+    const first = window.confirm(
+      mode === "hard"
+        ? `彻底删除 ${label}？\n\n将真删事实/观测/论断/计划/产物/快照/决策卡的行，`
+          + `并清理只被它引用的孤儿证据与磁盘存档。\n⚠ 不可恢复（事件日志只保留删除审计）。`
+        : `删除 ${label}？\n\n默认为墓碑删除：列表与档案页立即不再出现，`
+          + `事实/观测行保留可审计，可在「已删除」里恢复。`
+    );
+    if (!first) return;
+    if (mode === "hard" && !window.confirm(`再次确认：彻底删除 ${label} 不可恢复。继续？`)) return;
+    const reason = window.prompt("删除原因（进审计记录）", "历史低质量内容") ?? "";
+    try {
+      const res = await api.deleteEntity(r.kind, r.id, { mode, reason });
+      const parts = [
+        `${mode === "hard" ? "已彻底删除" : "已删除（墓碑）"} ${label}`,
+        res.total_rows_deleted ? `删 ${res.total_rows_deleted} 行` : "未删行",
+        res.orphan_evidence_deleted ? `孤儿证据 ${res.orphan_evidence_deleted} 条` : "",
+        res.files_removed.length ? `文件 ${res.files_removed.length} 项` : "",
+        res.restorable ? "可在「已删除」恢复" : "不可恢复",
+      ].filter(Boolean);
+      setPurgeMsg(parts.join("；"));
+      setTick((t) => t + 1);
+    } catch (e) {
+      setPurgeMsg(`删除失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const onRestore = async (kind: string, id: string) => {
+    try {
+      await api.restoreEntity(kind, id, "用户在知识页恢复");
+      setPurgeMsg(`已恢复 ${kind}:${id}`);
+      setShowPurged(false);
+      setTick((t) => t + 1);
+    } catch (e) {
+      setPurgeMsg(`恢复失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   return (
     <div>
@@ -86,6 +143,13 @@ export default function KnowledgePage() {
           <option value="draft">待验收</option>
         </select>
         <div className="ml-auto flex gap-1">
+          <button onClick={() => setShowPurged((v) => !v)}
+                  className={`rounded px-2 py-0.5 text-xs ${
+                    showPurged ? "bg-neutral-900 text-white" : "border border-neutral-200 text-neutral-500"
+                  }`}
+                  title="已删除（墓碑）清单：可审计、可恢复">
+            已删除
+          </button>
           {(["table", "cards"] as const).map((v) => (
             <button key={v} onClick={() => setView(v)}
                     className={`rounded px-2 py-0.5 text-xs ${view === v ? "bg-neutral-100 font-semibold text-neutral-800" : "text-neutral-400"}`}>
@@ -94,6 +158,49 @@ export default function KnowledgePage() {
           ))}
         </div>
       </div>
+
+      {purgeMsg && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700">
+          <span>{purgeMsg}</span>
+          <button onClick={() => setPurgeMsg(null)}
+                  className="ml-auto text-neutral-400 hover:text-neutral-600">✕</button>
+        </div>
+      )}
+
+      {showPurged && (
+        <div className="mb-3 rounded-lg border border-neutral-200 bg-white p-3">
+          <div className="mb-2 text-xs font-semibold text-neutral-500">
+            已删除（墓碑）——事件日志保留删除审计；tombstone 可恢复，hard 不可恢复
+          </div>
+          {purged.length === 0
+            ? <div className="text-xs text-neutral-400">（无已删除实体）</div>
+            : (
+              <ul className="space-y-1">
+                {purged.map((p) => (
+                  <li key={`${p.entity_kind}:${p.entity_id}`}
+                      className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="font-mono text-neutral-700">{p.entity_kind}:{p.entity_id}</span>
+                    <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
+                      p.mode === "hard"
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-neutral-200 bg-neutral-50 text-neutral-600"
+                    }`}>
+                      {p.mode === "hard" ? "已彻底删除" : "墓碑"}
+                    </span>
+                    <span className="text-neutral-400">{fmtDate(p.purged_at)}</span>
+                    {p.reason && <span className="text-neutral-500">原因：{p.reason}</span>}
+                    {p.mode === "tombstone" && (
+                      <button onClick={() => void onRestore(p.entity_kind, p.entity_id)}
+                              className="rounded border border-neutral-200 px-1.5 py-0.5 text-[11px] text-neutral-600 hover:border-green-300 hover:text-green-700">
+                        恢复
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+        </div>
+      )}
 
       {error && (
         <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
@@ -190,10 +297,22 @@ export default function KnowledgePage() {
                     </td>
                     <td className="px-3 py-2 font-mono text-xs text-neutral-500">{fmtDate(r.last_knowledge_time)}</td>
                     <td className="px-3 py-2">
-                      <button onClick={(e) => { e.stopPropagation(); openDossier(r); }}
-                              className="rounded border border-neutral-200 px-2 py-0.5 text-xs hover:border-neutral-400">
-                        阅读 →
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button onClick={(e) => { e.stopPropagation(); openDossier(r); }}
+                                className="rounded border border-neutral-200 px-2 py-0.5 text-xs hover:border-neutral-400">
+                          阅读 →
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); void onDelete(r, "tombstone"); }}
+                                title="删除（墓碑：列表与档案页不再出现，可在「已删除」恢复）"
+                                className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs text-neutral-400 hover:border-red-300 hover:text-red-600">
+                          删除
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); void onDelete(r, "hard"); }}
+                                title="彻底删除（真删行 + 孤儿证据 + 磁盘存档；不可恢复）"
+                                className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs text-neutral-400 hover:border-red-400 hover:bg-red-50 hover:text-red-700">
+                          彻底删
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

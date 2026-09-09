@@ -88,8 +88,26 @@ def create_dossier_router(
     def list_entities(
         namespace: str = "prod",
         as_of: Annotated[datetime | None, Query()] = None,
+        include_purged: bool = False,
     ) -> list[dict[str, Any]]:
-        return dossier.entities(namespace=namespace, as_of=as_of)
+        rows = dossier.entities(namespace=namespace, as_of=as_of)
+        if include_purged:
+            for row in rows:
+                row["purged"] = kb.is_purged(
+                    str(row.get("kind") or row.get("entity_kind") or ""),
+                    str(row.get("id") or row.get("entity_id") or ""),
+                    namespace=namespace,
+                )
+            return rows
+        # 已删除（墓碑/硬删）实体不进默认列表
+        return [
+            row for row in rows
+            if not kb.is_purged(
+                str(row.get("kind") or row.get("entity_kind") or ""),
+                str(row.get("id") or row.get("entity_id") or ""),
+                namespace=namespace,
+            )
+        ]
 
     @router.get("/knowledge/{kind}/{entity_id}/dossier")
     def open_dossier(
@@ -101,6 +119,12 @@ def create_dossier_router(
     ) -> dict[str, Any]:
         if kind not in ("stock", "industry"):
             raise HTTPException(status_code=422, detail=f"未知实体类型 {kind!r}")
+        if kb.is_purged(kind, entity_id, namespace=namespace):
+            raise HTTPException(
+                status_code=410,
+                detail=f"{kind}:{entity_id} 已删除（墓碑），不投影档案；"
+                       f"恢复调 POST /api/knowledge/{kind}/{entity_id}/restore",
+            )
         if mode not in ("live", "historical", "rebuilt"):
             raise HTTPException(status_code=422, detail=f"未知模式 {mode!r}")
         if as_of is not None and mode == "live":

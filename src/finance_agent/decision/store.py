@@ -77,5 +77,19 @@ class DecisionStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [DecisionCard(**json.loads(r[0])) for r in rows]
 
+    def delete_entity(
+        self, entity_kind: str, entity_id: str, *, namespace: str | None = None
+    ) -> int:
+        """硬删除实体的决策卡（研究产物删除时一并清，不留孤儿卡片）。"""
+        sql = "DELETE FROM decisions WHERE entity_kind = ? AND entity_id = ?"
+        args: list[str] = [entity_kind, entity_id]
+        if namespace is not None:
+            sql += " AND namespace = ?"
+            args.append(namespace)
+        with self._lock:
+            cur = self._conn.execute(sql, args)
+            self._conn.commit()
+        return cur.rowcount
+
     def close(self) -> None:
         self._conn.close()

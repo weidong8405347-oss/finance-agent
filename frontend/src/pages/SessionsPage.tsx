@@ -10,6 +10,8 @@ const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
   running: { text: "运行中", cls: "bg-blue-100 text-blue-700" },
   done: { text: "已完成", cls: "bg-green-100 text-green-700" },
   error: { text: "失败", cls: "bg-red-100 text-red-700" },
+  // blocked = 研究停滞、管道拦停（不是系统故障，不併入失败）
+  blocked: { text: "已拦停", cls: "bg-amber-100 text-amber-700" },
   cancelled: { text: "已取消", cls: "bg-neutral-200 text-neutral-500" },
   idle: { text: "空闲", cls: "bg-neutral-100 text-neutral-500" },
 };
@@ -78,6 +80,30 @@ export default function SessionsPage() {
     if (selected) await api.stopSession(selected).catch(() => {});
   };
 
+  // 删除会话（含子 run 与报告目录）：二次确认 + 运行中先停再删，失败原因不吞
+  const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
+  const onDeleteSession = async (s: SessionRow) => {
+    const running = s.status === "running";
+    const ok = window.confirm(
+      `删除会话 ${s.title || s.run_id}？\n\n`
+      + `将删除该会话及其全部子 run 的事件与报告文件（不可恢复）。\n`
+      + (running ? "⚠ 该会话仍在运行：会先尝试停止再删。\n" : "")
+    );
+    if (!ok) return;
+    try {
+      if (running) await api.stopSession(s.run_id).catch(() => {});
+      const res = await api.deleteSession(s.run_id, {
+        force: running, reason: "用户在会话页删除",
+      });
+      if (selected === s.run_id) { setSelected(null); setEvents([]); }
+      refreshSessions();
+      setDeleteMsg(`已删除 ${res.deleted_runs.length} 个 run（共 ${res.total_events} 条事件）`
+        + (res.files_removed.length ? `、${res.files_removed.length} 个报告目录` : ""));
+    } catch (e) {
+      setDeleteMsg(`删除失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   return (
     <div className="flex" style={{ height: "calc(100vh - 45px)" }}>
       {/* 侧栏：会话列表（收窄可折叠；子 run 不进列表） */}
@@ -94,27 +120,59 @@ export default function SessionsPage() {
             {sessions.map((s) => {
               const st = STATUS_LABEL[s.status] ?? STATUS_LABEL.idle;
               return (
-                <li key={s.run_id}>
-                  <button
-                    onClick={() => setSelected(s.run_id)}
-                    className={`w-full rounded-lg px-2.5 py-2 text-left ${
+                <li key={s.run_id}
+                    className={`group relative rounded-lg ${
                       selected === s.run_id ? "bg-neutral-100 ring-1 ring-neutral-300" : "hover:bg-neutral-50"
-                    }`}
+                    }`}>
+                  <div
+                    onClick={() => setSelected(s.run_id)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === "Enter") setSelected(s.run_id); }}
+                    className="cursor-pointer px-2.5 py-2 pr-7"
                   >
                     <div className="truncate text-[13px]">{s.title || s.run_id}</div>
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className={`rounded px-1.5 py-0.5 text-[10px] ${st.cls}`}>{st.text}</span>
+                    <div className="mt-1 flex items-center justify-between gap-1">
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] ${st.cls}`}>
+                        {st.text}
+                        {s.status === "running" && s.possibly_stale && "（可能已中断）"}
+                      </span>
                       <span className="text-[10px] text-neutral-400">{relTime(s.last_active)}</span>
                     </div>
-                    {s.status === "error" && s.status_detail && (
+                    {/* 运行中时把上一条命令的结果单独说清（不拿旧结果当当前状态） */}
+                    {s.status === "running" && s.last_outcome && s.last_outcome !== "completed" && (
+                      <div className="mt-1 text-[10px] text-neutral-400">
+                        上一条命令：{STATUS_LABEL[s.last_outcome]?.text ?? s.last_outcome}
+                      </div>
+                    )}
+                    {(s.status === "error" || s.status === "blocked") && s.status_detail && (
                       <div className="mt-1 select-text break-all text-[11px] text-red-500">{s.status_detail}</div>
                     )}
+                  </div>
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      await onDeleteSession(s);
+                    }}
+                    title={s.status === "running"
+                      ? "删除会话（运行中：会先停止再删）"
+                      : "删除会话（含子 run 与报告文件）"}
+                    className="absolute right-1.5 top-1.5 rounded px-1 py-0.5 text-[11px] text-neutral-300 hover:bg-red-50 hover:text-red-600 group-hover:text-neutral-400"
+                  >
+                    ✕
                   </button>
                 </li>
               );
             })}
             {sessions.length === 0 && <li className="px-2 py-1 text-xs text-neutral-400">暂无会话</li>}
           </ul>
+          {deleteMsg && (
+            <div className="mt-2 rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px] text-neutral-600">
+              {deleteMsg}
+              <button onClick={() => setDeleteMsg(null)}
+                      className="ml-1 text-neutral-400 hover:text-neutral-600">✕</button>
+            </div>
+          )}
         </aside>
       )}
 

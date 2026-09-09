@@ -100,7 +100,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],  # vite dev
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
     evals_path = Path(evals_dir)
@@ -156,6 +156,28 @@ def create_app(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.delete("/api/sessions/{run_id}")
+    def delete_session(
+        run_id: str,
+        force: bool = False,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """删除会话（含全部子 run）与其报告目录。
+
+        正在跑的会话默认 409：先 stop 再删，或显式 force=true——避免删掉一个
+        仍在写库的运行留下半截数据。删除本身落 `session/deleted` 审计事件。
+        """
+        from ..knowledge.purge import PurgeError, purge_session
+
+        try:
+            return purge_session(
+                events=events, run_id=run_id, force=force, reason=reason,
+                reports_dir=reports_path,
+            )
+        except PurgeError as e:
+            code = 409 if "仍在运行" in str(e) else 422
+            raise HTTPException(status_code=code, detail=str(e)) from e
+
     # ---------------- Commands ----------------
 
     @app.get("/api/commands")
@@ -165,11 +187,12 @@ def create_app(
     # ---------------- Knowledge（as_of 时光机） ----------------
 
     @app.get("/api/knowledge/entities")
-    def list_entities(namespace: str = "prod") -> list[dict[str, Any]]:
+    def list_entities(namespace: str = "prod", include_purged: bool = False) -> list[dict[str, Any]]:
         """档案列表投影：完整度/陈旧/冲突/最近可知时刻 + verify 准入质量投影。
 
         完整度只回答「schema 字段有没有值」；质量分/验收状态回答「值配不配进知识库」
         （验收事故：完整度 100% 但点进去没内容——两个口径从此并排展示）。
+        已删除（墓碑）实体默认不进列表；include_purged=true 才带出（带 purged 标记）。
         """
         from ..knowledge.gaps import GapAnalyzer
         from ..knowledge.verify import verify_entity
@@ -183,6 +206,9 @@ def create_app(
         now = datetime.now(UTC)
         out = []
         for r in rows:
+            purged = kb.is_purged(r[0], r[1], namespace=namespace)
+            if purged and not include_purged:
+                continue
             g = analyzer.analyze(r[0], r[1], now, namespace=namespace)
             q = verify_entity(kb, r[0], r[1], now, namespace=namespace)
             out.append(
@@ -197,9 +223,72 @@ def create_app(
                     "quality_score": q.quality_score,
                     "quality_status": q.status,
                     "quality_issues": q.issues,
+                    "purged": purged,
                 }
             )
+        # 已删除但已无事实行的实体（hard 模式）也需要可见，否则用户无法确认删干净了
+        if include_purged:
+            seen = {(e["kind"], e["id"]) for e in out}
+            for tomb in kb.purged_entities(namespace=namespace):
+                key = (tomb["entity_kind"], tomb["entity_id"])
+                if key not in seen:
+                    out.append({
+                        "kind": key[0], "id": key[1], "field_count": 0,
+                        "last_knowledge_time": None, "completeness": 0.0,
+                        "stale_count": 0, "conflict_count": 0, "quality_score": 0.0,
+                        "quality_status": "purged", "quality_issues": [tomb["reason"]],
+                        "purged": True, "purge_mode": tomb["mode"],
+                        "purged_at": tomb["purged_at"],
+                    })
         return out
+
+    @app.get("/api/knowledge/purged")
+    def list_purged(namespace: str = "prod") -> list[dict[str, str]]:
+        """已删除实体清单（墓碑）：删除可审计、tombstone 可恢复。"""
+        return kb.purged_entities(namespace=namespace)
+
+    @app.delete("/api/knowledge/{kind}/{entity_id}")
+    def delete_entity(
+        kind: str,
+        entity_id: str,
+        mode: str = "tombstone",
+        namespace: str = "prod",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """删除知识实体。
+
+        - mode=tombstone（默认）：写墓碑 + 审计事件，所有读路径过滤；行还在，可 restore；
+        - mode=hard：额外真删 kb.facts / metrics 九表 / decisions 的行，清两库都不再
+          引用的孤儿证据，删磁盘存档——**不可恢复**。
+        事件日志保留（含 knowledge/purged 审计），因此重放不会静默复活已删实体。
+        """
+        from ..knowledge.purge import PurgeError, purge_entity
+
+        if kind not in ("stock", "industry"):
+            raise HTTPException(status_code=422, detail=f"未知实体类型 {kind!r}")
+        try:
+            report = purge_entity(
+                kb=kb, metrics=metrics, decisions=decisions, events=events,
+                entity_kind=kind, entity_id=entity_id, mode=mode, namespace=namespace,
+                reason=reason, reports_dir=reports_path, knowledge_dir=knowledge_path,
+            )
+        except PurgeError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return report.as_payload()
+
+    @app.post("/api/knowledge/{kind}/{entity_id}/restore")
+    def restore_entity(kind: str, entity_id: str, namespace: str = "prod",
+                       reason: str = "") -> dict[str, Any]:
+        """撤销墓碑（仅 tombstone 可恢复；hard 已删行 → 409）。"""
+        from ..knowledge.purge import restore_entity as _restore
+
+        if _restore(kb=kb, entity_kind=kind, entity_id=entity_id, events=events,
+                    namespace=namespace, reason=reason):
+            return {"restored": True, "entity": f"{kind}:{entity_id}"}
+        raise HTTPException(
+            status_code=409,
+            detail=f"{kind}:{entity_id} 无法恢复（不是 tombstone 删除，或未曾删除）",
+        )
 
     @app.get("/api/knowledge/{kind}/{entity_id}")
     def entity_profile(
@@ -209,6 +298,13 @@ def create_app(
         namespace: str = "prod",
     ) -> dict[str, Any]:
         t = as_of or datetime.now(UTC)
+        if kb.is_purged(kind, entity_id, namespace=namespace):
+            # 已删除（墓碑）：410 Gone，不静默返回空档案让用户以为「没研究过」
+            raise HTTPException(
+                status_code=410,
+                detail=f"{kind}:{entity_id} 已删除（墓碑）；如需恢复调 "
+                       f"POST /api/knowledge/{kind}/{entity_id}/restore",
+            )
         profile = kb.view(kind, entity_id, t, namespace=namespace)
         from ..knowledge.verify import field_issues, verify_entity
 

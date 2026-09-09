@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -48,6 +49,18 @@ CREATE TABLE IF NOT EXISTS facts (
     run_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_facts_asof ON facts(namespace, entity_kind, entity_id, field, knowledge_time);
+
+-- 实体墓碑（用户发起的删除，默认模式）：不删事实行，但所有读路径过滤。
+-- 事件日志保持 append-only（真相源不被反向污染），重放时墓碑同样生效。
+CREATE TABLE IF NOT EXISTS purged_entities (
+    namespace TEXT NOT NULL,
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    purged_at TEXT NOT NULL,
+    PRIMARY KEY (namespace, entity_kind, entity_id)
+);
 """
 
 
@@ -334,6 +347,105 @@ class BitemporalStore:
             evidence_ids=json.loads(row[11]),
             run_id=row[12],
         )
+
+    # ---------------- 实体删除（用户发起；默认墓碑，显式 hard 才删行） ----------------
+
+    def mark_purged(
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod",
+        mode: str = "tombstone", reason: str = "", purged_at: datetime | None = None,
+    ) -> None:
+        """实体墓碑（append 一行，不动事实）：所有读路径据此过滤。"""
+        from datetime import UTC as _UTC
+
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO purged_entities (namespace, entity_kind, entity_id,"
+                " mode, reason, purged_at) VALUES (?,?,?,?,?,?)",
+                (namespace, entity_kind, entity_id, mode, reason,
+                 (purged_at or datetime.now(_UTC)).isoformat()),
+            )
+            self._conn.commit()
+
+    def is_purged(
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod"
+    ) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM purged_entities WHERE namespace = ? AND entity_kind = ?"
+            " AND entity_id = ?",
+            (namespace, entity_kind, entity_id),
+        ).fetchone()
+        return row is not None
+
+    def purged_entities(self, *, namespace: str = "prod") -> list[dict[str, str]]:
+        rows = self._conn.execute(
+            "SELECT entity_kind, entity_id, mode, reason, purged_at FROM purged_entities"
+            " WHERE namespace = ? ORDER BY purged_at DESC",
+            (namespace,),
+        ).fetchall()
+        return [
+            {"entity_kind": r[0], "entity_id": r[1], "mode": r[2], "reason": r[3],
+             "purged_at": r[4]}
+            for r in rows
+        ]
+
+    def restore_entity(
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod"
+    ) -> bool:
+        """撤销墓碑（仅 tombstone 模式可恢复；hard 已删行无法恢复）。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM purged_entities WHERE namespace = ? AND entity_kind = ?"
+                " AND entity_id = ? AND mode = 'tombstone'",
+                (namespace, entity_kind, entity_id),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def delete_entity(
+        self, entity_kind: str, entity_id: str, *, namespace: str | None = None
+    ) -> int:
+        """硬删除实体的全部事实版本（含旧版本与冲突标记）。返回删除行数。
+
+        证据不跟着删：evidence 是全局表（无实体列），孤儿证据由调用方
+        （purge 協调层）在两个库都删完后统一清理。
+        """
+        sql = "DELETE FROM facts WHERE entity_kind = ? AND entity_id = ?"
+        args: list[str] = [entity_kind, entity_id]
+        if namespace is not None:
+            sql += " AND namespace = ?"
+            args.append(namespace)
+        with self._lock:
+            cur = self._conn.execute(sql, args)
+            self._conn.commit()
+        return cur.rowcount
+
+    def referenced_evidence_ids(self, *, namespace: str | None = None) -> set[str]:
+        """仍被事实引用的证据 id 集合（孤儿证据清理用）。"""
+        sql = "SELECT evidence_ids FROM facts"
+        args: list[str] = []
+        if namespace is not None:
+            sql += " WHERE namespace = ?"
+            args.append(namespace)
+        out: set[str] = set()
+        for (raw,) in self._conn.execute(sql, args).fetchall():
+            with contextlib.suppress(Exception):
+                out.update(str(x) for x in json.loads(raw))
+        return out
+
+    def delete_evidence(self, evidence_ids: list[str] | set[str]) -> int:
+        """删除指定证据行（孤儿清理）。"""
+        ids = sorted(set(evidence_ids))
+        if not ids:
+            return 0
+        with self._lock:
+            cur = self._conn.executemany(
+                "DELETE FROM evidence WHERE evidence_id = ?", [(i,) for i in ids]
+            )
+            self._conn.commit()
+        return cur.rowcount
+
+    def evidence_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0])
 
     def close(self) -> None:
         self._conn.close()

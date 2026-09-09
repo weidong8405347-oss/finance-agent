@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -230,6 +231,66 @@ class MetricStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+
+    # ---------------- 实体删除（用户发起；由 knowledge/purge.py 協调） ----------------
+
+    #: 带 entity_kind/entity_id 列的表（逐表计数删除，不静默漏表）
+    _ENTITY_TABLES: tuple[str, ...] = (
+        "metric_observations", "calculation_runs", "research_plans", "research_claims",
+        "research_artifacts", "dossier_snapshots", "conflict_resolutions",
+        "metric_revisions",
+    )
+
+    def delete_entity(
+        self, entity_kind: str, entity_id: str, *, namespace: str | None = None
+    ) -> dict[str, int]:
+        """硬删除实体在 typed 库的全部行（观测/计算/计划/论断/产物/快照/裁决/修订）。
+
+        返回逐表删除行数（可审计：删了什么、删了多少，不笼统报「已清理」）。
+        source_documents 是 provider 级文档目录，不随实体删（可能被其他实体引用）。
+        """
+        counts: dict[str, int] = {}
+        with self._lock:
+            for table in self._ENTITY_TABLES:
+                sql = f"DELETE FROM {table} WHERE entity_kind = ? AND entity_id = ?"
+                args: list[str] = [entity_kind, entity_id]
+                if namespace is not None:
+                    sql += " AND namespace = ?"
+                    args.append(namespace)
+                cur = self._conn.execute(sql, args)
+                if cur.rowcount:
+                    counts[table] = cur.rowcount
+            self._conn.commit()
+        return counts
+
+    def referenced_evidence_ids(self, *, namespace: str | None = None) -> set[str]:
+        """仍被观测/论断引用的证据 id（孤儿证据清理用）。"""
+        out: set[str] = set()
+        queries = [
+            ("SELECT payload_json FROM metric_observations", "evidence_refs"),
+            ("SELECT payload_json FROM research_claims", "support_refs"),
+            ("SELECT payload_json FROM research_claims", "counter_refs"),
+        ]
+        for sql, key in queries:
+            args: list[str] = []
+            if namespace is not None:
+                sql += " WHERE namespace = ?"
+                args.append(namespace)
+            for (raw,) in self._conn.execute(sql, args).fetchall():
+                with contextlib.suppress(Exception):
+                    payload = json.loads(raw)
+                # 逐层找 ev- 引用（嵌套结构也不漏）
+                stack: list[Any] = [payload]
+                while stack:
+                    node = stack.pop()
+                    if isinstance(node, dict):
+                        stack.extend(node.values())
+                    elif isinstance(node, list):
+                        stack.extend(node)
+                    elif isinstance(node, str) and node.startswith("ev-"):
+                        out.add(node)
+            del key
+        return out
 
     def close(self) -> None:
         self._conn.close()
