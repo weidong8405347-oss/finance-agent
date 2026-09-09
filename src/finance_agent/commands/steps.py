@@ -428,41 +428,59 @@ def _budget_summary(loop: ResearchLoop) -> str:
     return text
 
 
-def _prepare_research_plan(deps: StepDeps, ctx: StepContext) -> str | None:
+def _prepare_research_plan(
+    deps: StepDeps, ctx: StepContext, *,
+    focus_override: str | None = None,
+    mode_override: str | None = None,
+    objective_override: str | None = None,
+    entity_kind_override: str | None = None,
+    entity_id_override: str | None = None,
+) -> str | None:
     """创建并冻结 ResearchPlan（§7.1/§7.5）：配方识别 + 问题模板 + 缺口提级。
 
-    新存储未装配或开关关闭 → None（旧管线行为不变，§11.3 灰度）。"""
+    新存储未装配或开关关闭 → None（旧管线行为不变，§11.3 灰度）。
+
+    override 参数供 F1–F5 行业漏斗复用同一服务（audit §6 相邻风险：同一行业从
+    不同入口不得得到不同质量）：漏斗每步用自己的 focus/objective 建 targeted 计划，
+    而不是回到无计划、无 typed 工具的旧路径。
+    """
     if deps.metrics is None or not deps.research_plan_enabled:
         return None
     from ..research.plan import build_plan, load_recipe, select_recipe
 
+    entity_kind = entity_kind_override or ctx.entity_kind
+    entity_id = entity_id_override or ctx.ticker
+    focus = ctx.focus if focus_override is None else focus_override
     try:
-        gaps = GapAnalyzer(deps.kb).analyze(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
+        gaps = GapAnalyzer(deps.kb).analyze(entity_kind, entity_id, datetime.now(UTC))
         hints = ""
-        view = deps.kb.view(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
+        view = deps.kb.view(entity_kind, entity_id, datetime.now(UTC))
         for field in ("business_model", "moat", "peers", "value_chain"):
             rec = view.get(field)
             if rec is not None and isinstance(rec.value, str):
                 hints += " " + rec.value
         recipe_id, basis = select_recipe(
-            ctx.entity_kind, hint_text=hints[:2000],
+            entity_kind, hint_text=hints[:2000],
             explicit=(
-                ctx.focus
-                if ctx.focus in ("general", "industrial_equipment", "biotech", "industry")
+                focus
+                if focus in ("general", "industrial_equipment", "biotech", "industry")
                 else None
             ),
         )
         recipe = load_recipe(recipe_id)
         mode = ctx.depth if ctx.depth in ("standard", "deep", "refresh", "targeted") else "standard"
-        if ctx.focus and mode == "standard":
+        if focus and mode == "standard":
             mode = "targeted"  # 显式 focus 默认升级为 targeted（一个问题簇）
+        if mode_override in ("standard", "deep", "refresh", "targeted"):
+            mode = mode_override
+        objective = objective_override or ctx.objective or f"深度研究 {entity_id}"
         plan = build_plan(
-            entity_kind=ctx.entity_kind,
-            entity_id=ctx.ticker,
-            objective=ctx.objective or f"深度研究 {ctx.ticker}",
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            objective=objective,
             mode=mode,
             recipe=recipe,
-            focus=ctx.focus,
+            focus=focus,
             missing_fields=list(gaps.missing),
             stale_fields=list(gaps.stale),
             base_snapshot_id=ctx.base_snapshot or None,
@@ -1497,13 +1515,30 @@ def _objective_markets(objective: str) -> set[str]:
 def _industry_loop(
     deps: StepDeps, ctx: StepContext, playbook_name: str, *, max_rounds: int | None = None
 ) -> ResearchLoop:
-    """F1/F2 共用：行业实体的 ResearchLoop（gap 驱动 + 证据纪律不变）。"""
+    """F1/F2 共用：行业实体的 ResearchLoop（gap 驱动 + 证据纪律不变）。
+
+    audit §6 相邻风险整改：旧 `/industry` 入口不装配 plan/typed/synthesize，
+    同一行业从两个入口得到不同质量。这里改为复用同一研究服务：
+    - 为本步建 targeted 计划（focus = 本步 playbook 目标），于是问题驱动、预算闸、
+      充分度评估与 `/research` 完全同源；
+    - 装配 metrics/metric_writer/calculations → propose_metric/propose_claim/
+      answer_question/calculate_metric 可用，产出落同一个 typed 库，同一页面可读；
+    - 计划创建失败时降级为旧字段驱动路径（不阻断漏斗）。
+    """
     playbook, ver = load_playbook(playbook_name)
     deps.events.append(
         Event(run_id=ctx.child_run_id, type="research/playbook",
               payload={"name": playbook_name, "version": ver})
     )
     manifest = _open_child(deps, ctx, playbook_name)
+    step_objective = f"调研主题：{ctx.objective}"
+    plan_id = _prepare_research_plan(
+        deps, ctx,
+        focus_override=ctx.focus or playbook_name,
+        mode_override="targeted",
+        objective_override=step_objective,
+        entity_kind_override="industry",
+    )
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -1518,10 +1553,15 @@ def _industry_loop(
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
         worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
+        plan_id=plan_id,
+        metrics=deps.metrics,
+        metric_writer=deps.metric_writer,
+        calculations=deps.calculations,
+        max_record_chars=deps.max_record_chars,
     )
     loop.run(
         "industry", ctx.ticker,
-        f"调研主题：{ctx.objective}\n\n{playbook}",
+        f"{step_objective}\n\n{playbook}",
     )
     return loop
 
