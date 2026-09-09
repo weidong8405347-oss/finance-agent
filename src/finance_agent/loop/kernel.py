@@ -46,6 +46,8 @@ class AgentKernel:
         hooks: list[Hook] | None = None,
         max_steps: int = 8,
         budget: Any | None = None,
+        max_tool_chars: int | None = None,
+        keep_recent_tools: int | None = None,
     ):
         self._store = store
         self._llm = llm
@@ -56,6 +58,10 @@ class AgentKernel:
         #: RunBudget（audit §3.3）：在 LLM/工具入口真实扣减，耗尽即停本 turn。
         #: None = 不设限（旧行为兼容）。
         self._budget = budget
+        #: 上下文裁剪策略（audit §3.3 余项）：只裁投影，不动日志；
+        #: 两者都给才生效（None = 不裁，保持旧行为）
+        self._max_tool_chars = max_tool_chars
+        self._keep_recent_tools = keep_recent_tools
         self._turn = 0
         #: 预算终止原因（非 None = 本 turn 因预算提前结束，供上层归因）
         self.budget_stop: str | None = None
@@ -79,7 +85,11 @@ class AgentKernel:
         n_calls = 0
         for step in range(1, self._max_steps + 1):
             self._emit(STEP_START, turn=turn, step=step)
-            messages = self._store.derive_messages(run_id)
+            messages = self._store.derive_messages(
+                run_id,
+                max_tool_chars=self._max_tool_chars,
+                keep_recent_tools=self._keep_recent_tools,
+            )
             watermark = self._store.head_seq(run_id)
 
             # 预算准入（audit §3.3）：耗尽就不发请求——不发必然超时/超额的调用

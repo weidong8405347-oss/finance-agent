@@ -94,13 +94,13 @@
 4. **浏览器 E2E**：前端逻辑经 vitest 覆盖（路由/数值边界），三档视口的截图验收（§13.3 / audit §5 用例 7）未跑真实浏览器。
 5. **性能目标**（p95 <300/500ms、数万观测）：本地 27 实体规模下即时响应；设计要求的规模压测未做。
 6. ~~**wall-clock/检索调用硬预算**：以轮次×步数近似~~ → **已整改**（audit §3.3）：`research/budget.py` 的 RunBudget 在 LLM 与网关入口真实扣减墙钟/token/检索/工具/重试，慢组超时不再拖住整轮。
-7. **上下文压缩未做**（audit §3.3 余项）：检索去重、按需 evidence bundle（`read_chunk`）与长正文截断已落地，但 kernel 多步重送历史的摘要/压缩仍未实施——长轮次上下文成本仍会增长。
+7. ~~**上下文压缩未做**（audit §3.3 余项）~~ → **已整改**：除检索去重、按需 evidence bundle（`read_chunk`）与长正文截断外，`EventStore.derive_messages(max_tool_chars, keep_recent_tools)` 对较早的工具结果做投影级裁剪（只裁消费不动日志，裁剪处显式标记并告知如何取回全文，provenance/chunk_id 保留），研究循环默认 1200 字符 / 最近 6 条全文。仍未做的是**语义摘要**（用小模型把旧轮次压成要点），当前是确定性截断。
 8. **真实行业深研效果评估未跑**（audit §5 用例 8）：修复前后同目标/同证据截止/相近预算的对照运行（有效问题覆盖、关键数值错误率、来源可解析率、重复资料、有效产出时间与成本）需要一次真实付费运行，尚未执行。
 
 ## 验证入口
 
 ```bash
-uv run pytest tests                        # 632 passed, 9 skipped（含审计整改新增 92 例）
+uv run pytest tests                        # 672 passed, 9 skipped（含审计整改新增 176 例 + 会话/删除 19 例）
 cd frontend && npm test && npm run build   # 40 passed；tsc + vite 构建通过
 uv run python scripts/migrate_dossier.py --data-dir data inventory   # 迁移盘点（只读）
 uv run python scripts/revise_observations.py --data-dir data \

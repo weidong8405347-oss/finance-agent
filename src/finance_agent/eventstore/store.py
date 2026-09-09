@@ -71,6 +71,41 @@ PURGE_AUDIT_RUN = "system-purge"
 #: 子 run 命名约定的嵌套分隔符（`<会话>--<step>`，如 live-xxx--cmd-1-1-research）
 RUN_NESTING_SEP = "--"
 
+#: 上下文裁剪的默认策略（audit §3.3）：研究 worker 只保留最近 6 条工具结果全文，
+#: 更早的裁到 1200 字符——本次事故里工具响应累计约 196 万字符、kernel 每步重送历史，
+#: prompt tokens 占总量 97%（612 万/633 万）
+DEFAULT_MAX_TOOL_CHARS = 1200
+DEFAULT_KEEP_RECENT_TOOLS = 6
+
+
+def _trim_tool_results(
+    messages: list[dict[str, Any]], *, max_tool_chars: int, keep_recent: int,
+) -> list[dict[str, Any]]:
+    """裁剪较早的工具结果正文（只改投影副本，不动已落库事件）。"""
+    tool_idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    if len(tool_idx) <= keep_recent:
+        return messages
+    victims = tool_idx[:-keep_recent] if keep_recent > 0 else tool_idx
+    out = list(messages)
+    for i in victims:
+        msg = dict(out[i])
+        content = msg.get("content")
+        if not isinstance(content, str) or len(content) <= max_tool_chars:
+            continue
+        chunk_hint = ""
+        for token in content.split('"'):
+            if token.startswith("chk-"):
+                chunk_hint = f"；全文用 read_chunk(chunk_id={token})"
+                break
+        msg["content"] = (
+            content[:max_tool_chars]
+            + f"\n…[上下文裁剪：原 {len(content)} 字符，保留前 {max_tool_chars}"
+            + f"{chunk_hint}；证据仍可用已登记的 chunk_id 引用]"
+        )
+        msg["context_trimmed"] = True
+        out[i] = msg
+    return out
+
 
 class EventStore:
     def __init__(self, path: str | Path):
@@ -156,7 +191,10 @@ class EventStore:
 
     # ---------------- 投影 ----------------
 
-    def derive_messages(self, run_id: str, *, up_to_seq: int | None = None) -> list[dict[str, Any]]:
+    def derive_messages(
+        self, run_id: str, *, up_to_seq: int | None = None,
+        max_tool_chars: int | None = None, keep_recent_tools: int | None = None,
+    ) -> list[dict[str, Any]]:
         """把模型可见事件投影为 chat 风格消息列表。
 
         - user/message → {"role": "user", ...}
@@ -164,6 +202,13 @@ class EventStore:
         - tool/result → {"role": "tool", ...}（含 provenance，供 leakage-audit 审计）
         - context/inject → role 由 payload 指定（默认 user）
         其他事件类型不进入模型上下文。
+
+        上下文裁剪（audit §3.3 余项：存储全量、消费剪裁）：给 max_tool_chars +
+        keep_recent_tools 时，**除最近 N 条以外**的工具结果正文被裁到上限，并带上
+        可取回全文的指引。纪律：
+        - 只动投影，不动日志（真相源仍全量，replay/审计不受影响）；
+        - 裁剪在消息里显式可见（不静默丢语义），并告知如何取回；
+        - provenance 与 chunk_id 一律保留（证据链不能因裁剪而断）。
         """
         events = self.read(run_id, up_to_seq=up_to_seq)
         messages: list[dict[str, Any]] = []
@@ -180,6 +225,10 @@ class EventStore:
                 role = e.payload.get("role", "user")
                 rest = {k: v for k, v in e.payload.items() if k != "role"}
                 messages.append({"role": role, **rest})
+        if max_tool_chars and keep_recent_tools is not None:
+            messages = _trim_tool_results(
+                messages, max_tool_chars=max_tool_chars, keep_recent=keep_recent_tools
+            )
         return messages
 
     # ---------------- 内部 ----------------

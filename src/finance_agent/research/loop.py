@@ -30,7 +30,11 @@ from ..eventstore.events import (
     RUN_CREATED,
     Event,
 )
-from ..eventstore.store import EventStore
+from ..eventstore.store import (
+    DEFAULT_KEEP_RECENT_TOOLS,
+    DEFAULT_MAX_TOOL_CHARS,
+    EventStore,
+)
 from ..gateway.gateway import DataGateway
 from ..gateway.tools import make_gateway_tool
 from ..harness.manifest import RunManifest
@@ -120,6 +124,10 @@ class ResearchLoop:
         # ---- 真实预算闸（audit §3.3）----
         budget: object | None = None,  # RunBudget；None 且有计划 → 按模式预算表自建
         max_record_chars: int | None = None,  # 单条检索记录正文上限（超出走 read_chunk）
+        # ---- 上下文裁剪（audit §3.3 余项：存储全量、消费剪裁）----
+        #: 只保留最近 N 条工具结果全文，更早的裁到 max_tool_chars（只动投影不动日志）
+        max_tool_chars: int | None = DEFAULT_MAX_TOOL_CHARS,
+        keep_recent_tools: int | None = DEFAULT_KEEP_RECENT_TOOLS,
     ):
         self._store = store
         self._events = events
@@ -143,6 +151,8 @@ class ResearchLoop:
         self._calculations = calculations
         self._run_budget = budget
         self._max_record_chars = max_record_chars
+        self._max_tool_chars = max_tool_chars
+        self._keep_recent_tools = keep_recent_tools
         self.stop_reason: str | None = None
         #: 预算终止的具体维度（wall_clock/tokens/retrieval_calls/...）——可归因，不笼统
         self.budget_exhausted: list[str] = []
@@ -381,6 +391,8 @@ class ResearchLoop:
                     hooks=self._hooks,
                     max_steps=self._max_steps,
                     budget=run_budget,
+                    max_tool_chars=self._max_tool_chars,
+                    keep_recent_tools=self._keep_recent_tools,
                 )
                 kernel.run_turn(
                     build_round_brief(
@@ -627,6 +639,8 @@ class ResearchLoop:
                 hooks=self._hooks,
                 max_steps=12,  # 维度组独立步数预算（§4.2）
                 budget=self._run_budget,  # 全局墙钟/token/检索预算共享扣减（audit §3.3）
+                max_tool_chars=self._max_tool_chars,
+                keep_recent_tools=self._keep_recent_tools,
             )
             kernel.run_turn(brief)
             if kernel.budget_stop:

@@ -9,8 +9,9 @@
 
 审计的三条 P0（问题分发失配、数值主体/量纲错误、预算未生效）与四条 P1（目标未编译、
 证据表示误拒、行业模块与结构产物缺失、首屏与发布闭环不正确）都已有代码落点与回归用例；
-仍未闭合的是**需要真实付费运行才能验证的部分**：行业深研效果对照评估、三档视口的真实浏览器
-视觉验收、以及上下文压缩（kernel 多步重送历史）。
+§3.3 余项（上下文裁剪）、§4 交互闭环与 §6 相邻风险（`/industry` 旧入口统一）也已闭合。
+仍未闭合的只剩**需要真实付费运行/真实浏览器才能验证的部分**：行业深研效果对照评估
+（用例 8）与三档视口视觉验收（用例 7）。
 
 ## 1. 逐项对照
 
@@ -20,7 +21,7 @@
 | §3.2 P0 数值主体与量纲错误 | `knowledge/metric_spec.py`（MetricSpec 注册表：值类型/单位/币种/主体类别/频率/必备维度/值域/摘录语义锚点；`make_subject_gate` 跨主体授权）；`metrics.py` 观测增 `subject_entity_*`（进语义键）+ `locator` + `RawValue.span`；`normalization.py` `assert_value_context`（多数字必须给 span、金额必须有规模词或表头定位）；`metric_writer.py` 门禁串联 + `revise_observation`；`metric_store.py` `metric_revisions` 表与投影过滤；`gateway/text_quality.py` 乱码/扫描件判定 | 已落地 | `tests/unit/test_metric_semantics_gate.py`（20 例，四例事故样本全部不得再以 ok 入库；不同公司同期间收入不共用序列；修订保留审计链并回出待重审依赖） |
 | §3.2 修复方案 6 错误数据版本化修订 | `TypedMetricWriter.revise_observation`（invalidated/corrected/needs_review/superseded）+ `metric/revised` 事件 + `scripts/revise_observations.py`（干跑/落库、逐条列待重审依赖） | 已落地（脚本已本地冒烟：干跑 → 落库 → 投影隐藏 → 历史保留） | `test_metric_semantics_gate.py::TestRevision`（4 例） |
 | §3.3 P0 预算未生效、慢组拖住整轮 | `research/budget.py` `RunBudget`（墙钟含合成预留/token/检索/工具/重试；缺 usage 按上下文估算并标 `tokens_estimated`；单请求 timeout=min(上限, 剩余)；区分硬终止与能力维度）；`kernel.py` 入口扣减 + `research/budget` 事件；`llm/router.py` `set_request_timeout`/`set_retry_gate`（重试也吃预算）；`gateway/tools.py` 检索预算 + 同 run 去重 + 长正文按需截断；`loop.py` 按剩余墙钟等待、`shutdown(wait=False)`、慢组只影响所属问题 | 已落地 | `tests/unit/test_run_budget.py`（25 例，§5 用例 4：超时/慢组/取消/token 缺失/重试注入，断言实际停止、partial 保留、原因可见） |
-| §3.3 余项 上下文压缩 | 检索去重（`ChunkStore` + 请求级 cache）、按需 evidence bundle（`read_chunk` + span）、长正文截断已落地；**kernel 多步重送历史的摘要/压缩未实施** | 部分 | `test_run_budget.py::TestGatewayBudget`（去重/截断/bundle 指针） |
+| §3.3 余项 上下文增长控制 | 检索去重（`ChunkStore` + 请求级 cache）、按需 evidence bundle（`read_chunk` + span）、长正文截断；**上下文裁剪已落地**：`EventStore.derive_messages(max_tool_chars, keep_recent_tools)` 只裁投影不动日志（存储全量、消费剪裁），裁剪处显式标记并告知 `read_chunk(chunk_id)` 取回全文，provenance/chunk_id 一律保留；kernel 与 ResearchLoop 默认启用（1200 字符 / 最近 6 条全文） | 已落地 | `tests/unit/test_context_trimming.py`（12 例：旧结果被裁、最近 N 条保全、日志不受影响、无策略即全量、证据链不断、确定性）+ `test_run_budget.py::TestGatewayBudget` |
 | §3.4 P1 目标没编译为公司级交付 | `research/objective.py`（`wants_company_comparison` 判定 + 五维度问题模板：技术壁垒/商业兑现/可持续性/反证/可投资范围；「商业爆发」追加阶段与触发条件题，明令禁止造概率与总分）；`plan.py` standard/deep 先编目标题（排最前、截断时背景题让位）、acceptance 写明「背景题完成不能代替目标完成」、scope 记编译依据 | 已落地 | `tests/unit/test_objective_compilation.py`（17 例，含事故原句编译、standard 截断保目标题、targeted 不受影响） |
 | §3.5 P1 证据表示与 PDF 质量 | `evidence_desk.py` 台账存**规范正文** + locator + quality，比对前无害归一（JSON 转义还原/排版引号/全角标点/空白），稳定 span + `span_id` 登记，拒绝带 `code` + 可修复 `hint`；`gateway/tools.py` `canonical_record_text`（JSON 只负责传输）；`gateway/fetch.py` `fetch_document_checked`/`pdf_to_text_paged`（扫描件 → needs_ocr）；`Evidence` 增 `quality`/`locator`（含旧库列迁移） | 已落地 | `tests/unit/test_evidence_authenticity.py`（16 例，§5 用例 3：换行/引号/中文标点不误拒，改写与不在所选内容的数字仍拒） |
 | §3.6 P1 行业配方没有控制模块和组件 | `dossier/registry.py` 版本化模块注册表（module_id/title/renderer/applicability/metric_keys/legacy_fields/structures/question_modules/default_nav/payload_keys），随快照投影给前端；`projector.py` 模块清单/标题/适用性/指标与旧字段归位/claim 归位全走注册表，股票专属模块在行业标 `not_applicable` 且不占导航；KPI 别名归一 + 带 dimensions 不再被过滤 + KPI 只读本实体主体；财务模块补 H1/TTM；`service.py` 模块白名单由注册表决定 | 已落地 | `tests/unit/test_industry_modules_structures.py`（27 例，含 H1 不丢失、not_applicable 不当缺失、claim 三种形态归位） |
@@ -51,7 +52,7 @@
 ## 3. 本期新增/改动的验证入口
 
 ```bash
-uv run pytest tests                        # 632 passed, 9 skipped
+uv run pytest tests                        # 672 passed, 9 skipped
 uv run ruff check src tests scripts        # All checks passed
 cd frontend && npm test && npm run build   # 40 passed；tsc + vite 构建通过
 
@@ -60,10 +61,12 @@ uv run pytest tests/unit/test_research_scheduling.py \
                 tests/unit/test_metric_semantics_gate.py \
                 tests/unit/test_evidence_authenticity.py \
                 tests/unit/test_run_budget.py \
+                tests/unit/test_context_trimming.py \
                 tests/unit/test_industry_modules_structures.py \
                 tests/unit/test_objective_compilation.py \
                 tests/unit/test_report_dependency_closure.py \
-                tests/unit/test_partial_publish.py
+                tests/unit/test_partial_publish.py \
+                tests/unit/test_industry_entry_parity.py
 
 # 观测修订（错误数据版本化，不原位改冻结历史）
 uv run python scripts/revise_observations.py --data-dir data \
@@ -71,17 +74,27 @@ uv run python scripts/revise_observations.py --data-dir data \
     --reason "摘录是 \$73.7 million, or 37%：金额被作为 ratio 保存"     # 干跑
 ```
 
-新增用例合计 **136 例**（实测 collect）：scheduling 17 / metric semantics 20 /
-evidence authenticity 16 / run budget 25 / industry modules & structures 27 /
-objective compilation 17 / report dependency closure 8 / partial publish 6；
-另有 4 处旧断言按新口径修正（它们固化的正是审计指出的缺陷：问题组名与下发口径
+新增用例合计 **176 例**（实测逐个文件 collect）：scheduling 17 / metric semantics 20 /
+evidence authenticity 16 / run budget 25 / context trimming 12 /
+industry modules & structures 30 / objective compilation 17 /
+report dependency closure 8 / partial publish 6 / industry entry parity 6；
+另有会话与删除相关 19 例（`test_purge_and_session_status.py`，见
+[清理手册](session-and-knowledge-cleanup.md)）。
+还有 4 处旧断言按新口径修正（它们固化的正是审计指出的缺陷：问题组名与下发口径
 失配、行业模块借用股票标题、chunk 编号单调假设、fetch 分发桩）。
 
 ## 4. 下一步（按审计 §5 阶段划分）
 
-- **阶段 C 余项**：三档视口真实浏览器验收（用例 7）；`/industry` 旧入口与核心研究服务统一
-  （§6 相邻风险）；行业图节点与公司行联动高亮、点击缺口直接补研相应 `question_id`（§4 交互）。
-- **阶段 B 余项**：合成器的结构产物在真实运行中的产出质量（当前只有契约与校验，内容质量
-  需真实运行评估）；checkpoint 恢复（保存输入 hash + 依赖 + 执行位置后断点续跑）。
+- **阶段 C 余项**：三档视口真实浏览器验收（用例 7）——需要 puppeteer/真实浏览器环境。
+- **阶段 B 余项**：合成器的结构产物在真实运行中的产出质量（契约与校验已就绪，内容质量
+  需真实运行评估）；checkpoint 断点续跑（保存输入 hash + 依赖 + 执行位置后恢复）。
 - **评估**：用例 8 的修复前后对照运行（同目标、同证据截止、相近预算），统计有效问题覆盖、
   关键数值错误、来源可解析率、重复资料、有效产出时间与成本——内容更长、测试更多不能替代这些结果。
+
+## 5. 本轮追加闭合的三项（原列在「下一步」）
+
+| 条目 | 落点 | 验证 |
+| --- | --- | --- |
+| §4 交互闭环：点击缺口直接补研相应 `question_id` | `projector._open_questions_by_module()` 把未完成问题按 `_claim_module` 同一口径归位填进 `ModuleState.gap_refs`（answered/not_applicable 不算缺口）；前端 `ModuleReasons` 渲染「`<qid>` ↻补研」按钮 → `requestResearch()` 页面事件 → `ResearchPanel` 自动打开、深度切 targeted、预填 focus、重算幂等键 | `test_industry_modules_structures.py::TestGapRefs`（3 例） |
+| §4 交互闭环：行业图节点 ↔ 公司行联动高亮 | `IndustryChainModule` 点节点高亮其上下游边（其余淡出）、公司 chip 跳 `candidate_pool?highlight=<id>`、回程时包含该公司的节点标「已定位」；`CandidatePoolModule` highlight 行加底色+环、自动滚到可见、「在产业链中定位」回跳——两个方向都走 URL 参数，不丢快照上下文 | 前端 build + vitest 全绿（联动为纯视图行为，无服务端契约变化） |
+| §6 相邻风险：`/industry` 旧入口与核心研究服务统一 | `_prepare_research_plan` 增 5 个 override（不污染 ctx）；`_industry_loop`（F1/F2 共用）为本步冻结 targeted 计划 + 装配 metrics/metric_writer/calculations + 传 `max_record_chars`——问题驱动、预算闸、充分度评估、typed 产出与 `/research` 完全同源；未装配新存储时降级回旧字段驱动路径并留 `research/error` 事件 | `tests/unit/test_industry_entry_parity.py`（6 例） |
