@@ -314,3 +314,119 @@ class TestEntityDeletion:
         report = purge_entity(kb=kb, metrics=metrics, decisions=decisions, events=events,
                               entity_kind="industry", entity_id="bad-industry", reason="")
         assert any("未给删除原因" in w for w in report.as_payload()["warnings"])
+
+
+# ---------------- 4. 批量删除（用户诉求：一个个删太慢、每次多次点击） ----------------
+
+
+def seed_second_entity(kb) -> None:
+    kb.add_evidence(Evidence(
+        evidence_id="ev-3", source_id="demo", verbatim_quote="second entity 7 million",
+        retrieved_at=NOW, available_at=NOW, pit_grade=PitGrade.A,
+    ))
+    kb.assert_fact(Fact(
+        entity_kind="stock", entity_id="BAD2", field="revenue_fy",
+        value="第二个低质量档案", knowledge_time=NOW, evidence_ids=["ev-3"],
+    ))
+
+
+class TestBatchDelete:
+    def test_batch_sessions_one_confirm_deletes_many(self, env):
+        client, kb, metrics, events, decisions, tmp = env
+        for rid in ("live-a", "live-b", "live-c"):
+            seed_session(events, rid, outcome="completed")
+            events.append(Event(run_id=f"{rid}--cmd-1-1-research", type="run/created",
+                                payload={"parent_run_id": rid, "kind": "step_agent"}))
+        resp = client.post("/api/sessions/batch_delete", json={
+            "run_ids": ["live-a", "live-b", "live-c"],
+            "reason": "批量清理", "force": False,
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["deleted"] == 3 and body["failed"] == 0
+        assert body["total_events"] >= 6
+        ids = {s["run_id"] for s in client.get("/api/sessions").json()}
+        assert not ({"live-a", "live-b", "live-c"} & ids)
+        # 每个成功删除各自留审计
+        audit = [e for e in events.read("system-purge") if e.type == "session/deleted"]
+        assert len(audit) == 3
+
+    def test_batch_sessions_partial_failure_does_not_abort(self, env):
+        """一个在跑且未 force → 该项失败，其余照删。"""
+        client, kb, metrics, events, decisions, tmp = env
+        seed_session(events, "live-busy2", open_command=True)
+        seed_session(events, "live-ok2", outcome="completed")
+        resp = client.post("/api/sessions/batch_delete", json={
+            "run_ids": ["live-busy2", "live-ok2"], "reason": "批量", "force": False,
+        })
+        body = resp.json()
+        assert body["deleted"] == 1 and body["failed"] == 1
+        busy = next(r for r in body["results"] if r["run_id"] == "live-busy2")
+        assert busy["ok"] is False and "仍在运行" in busy["error"]
+        assert events.read("live-busy2"), "失败项不该被删"
+        assert events.read("live-ok2") == []
+
+    def test_batch_sessions_force_deletes_running(self, env):
+        client, kb, metrics, events, decisions, tmp = env
+        seed_session(events, "live-busy3", open_command=True)
+        resp = client.post("/api/sessions/batch_delete", json={
+            "run_ids": ["live-busy3"], "reason": "僵尸清理", "force": True,
+        })
+        assert resp.json()["deleted"] == 1
+        assert events.read("live-busy3") == []
+
+    def test_batch_entities_tombstone_and_per_item_reports(self, env):
+        client, kb, metrics, events, decisions, tmp = env
+        seed_second_entity(kb)
+        resp = client.post("/api/knowledge/batch_delete", json={
+            "entities": [{"kind": "industry", "id": "bad-industry"},
+                         {"kind": "stock", "id": "BAD2"},
+                         {"kind": "stock", "id": "GOOD"}],
+            "mode": "tombstone", "reason": "批量清理低质量",
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # 只删前两个？不——批量按给定列表删；GOOD 也被删（调用方负责选）
+        assert body["deleted"] == 3 and body["failed"] == 0
+        assert body["total_rows_deleted"] == 0  # 墓碑不删行
+        ids = {(e["kind"], e["id"]) for e in client.get("/api/knowledge/entities").json()}
+        assert ids == set(), "批量墓碑后列表应全空"
+        purged = client.get("/api/knowledge/purged").json()
+        assert {p["entity_id"] for p in purged} == {"bad-industry", "BAD2", "GOOD"}
+        # 每项回执可核对
+        assert all(r["report"]["restorable"] is True for r in body["results"])
+
+    def test_batch_entities_hard_cleans_orphans_across_items(self, env):
+        client, kb, metrics, events, decisions, tmp = env
+        seed_second_entity(kb)
+        before = kb.evidence_count()
+        resp = client.post("/api/knowledge/batch_delete", json={
+            "entities": [{"kind": "industry", "id": "bad-industry"},
+                         {"kind": "stock", "id": "BAD2"}],
+            "mode": "hard", "reason": "批量硬删",
+        })
+        body = resp.json()
+        assert body["deleted"] == 2
+        # ev-2 只服务 bad-industry、ev-3 只服务 BAD2 → 两条孤儿都被清；
+        # ev-1 被 GOOD 引用 → 保留
+        assert body["orphan_evidence_deleted"] == 2
+        assert kb.evidence_count() == before - 2
+        assert kb.get_evidence("ev-1").evidence_id == "ev-1"
+
+    def test_batch_rejects_invalid_entity_kind_per_item(self, env):
+        client, kb, metrics, events, decisions, tmp = env
+        resp = client.post("/api/knowledge/batch_delete", json={
+            "entities": [{"kind": "alien", "id": "X"},
+                         {"kind": "industry", "id": "bad-industry"}],
+            "mode": "tombstone", "reason": "x",
+        })
+        body = resp.json()
+        assert body["deleted"] == 1 and body["failed"] == 1
+        bad = next(r for r in body["results"] if not r["ok"])
+        assert "非法实体标识" in bad["error"]
+
+    def test_batch_requires_nonempty_list(self, env):
+        client, kb, metrics, events, decisions, tmp = env
+        assert client.post("/api/sessions/batch_delete", json={"run_ids": []}).status_code == 422
+        assert client.post("/api/knowledge/batch_delete",
+                           json={"entities": []}).status_code == 422

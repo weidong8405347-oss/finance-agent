@@ -69,6 +69,22 @@ class SteerRequest(BaseModel):
     command_id: str | None = Field(default=None, description="可选；缺省注入全部活跃 command")
 
 
+class BatchDeleteSessionsRequest(BaseModel):
+    """批量删会话：一次确认删多个，逐个回报（单个失败不中断其余）。"""
+
+    run_ids: list[str] = Field(min_length=1)
+    force: bool = False
+    reason: str = ""
+
+
+class BatchDeleteEntitiesRequest(BaseModel):
+    """批量删档案：tombstone（默认，可恢复）或 hard（不可恢复）。"""
+
+    entities: list[dict[str, str]] = Field(min_length=1)  # [{kind, id}]
+    mode: str = "tombstone"
+    reason: str = ""
+
+
 class ResolveConflictRequest(BaseModel):
     """详情页人工裁决请求：keep_fact_id = 「以此为准」的版本（详情页/版本链上的 fact_id）。"""
 
@@ -177,6 +193,36 @@ def create_app(
         except PurgeError as e:
             code = 409 if "仍在运行" in str(e) else 422
             raise HTTPException(status_code=code, detail=str(e)) from e
+
+    @app.post("/api/sessions/batch_delete")
+    def batch_delete_sessions(req: BatchDeleteSessionsRequest) -> dict[str, Any]:
+        """批量删除会话（含各自子 run 与报告目录）。
+
+        逐个执行、逐个回报：一个失败（如在跑且未 force）不影响其余；
+        每个成功的删除都各自落 `session/deleted` 审计事件。
+        """
+        from ..knowledge.purge import PurgeError, purge_session
+
+        results = []
+        for rid in req.run_ids:
+            try:
+                r = purge_session(
+                    events=events, run_id=rid, force=req.force, reason=req.reason,
+                    reports_dir=reports_path,
+                )
+                results.append({"run_id": rid, "ok": True,
+                                "total_events": r["total_events"],
+                                "deleted_runs": r["deleted_runs"],
+                                "files_removed": r["files_removed"]})
+            except PurgeError as e:
+                results.append({"run_id": rid, "ok": False, "error": str(e)})
+        ok = [r for r in results if r["ok"]]
+        return {
+            "results": results,
+            "deleted": len(ok),
+            "failed": len(results) - len(ok),
+            "total_events": sum(r.get("total_events", 0) for r in ok),
+        }
 
     # ---------------- Commands ----------------
 
@@ -289,6 +335,42 @@ def create_app(
             status_code=409,
             detail=f"{kind}:{entity_id} 无法恢复（不是 tombstone 删除，或未曾删除）",
         )
+
+    @app.post("/api/knowledge/batch_delete")
+    def batch_delete_entities(req: BatchDeleteEntitiesRequest) -> dict[str, Any]:
+        """批量删除档案（默认墓碑可恢复；hard 不可恢复）。
+
+        逐个执行、逐个回报；每个成功项各自落 `knowledge/purged` 审计事件。
+        返回里带每项回执（删了多少行/孤儿证据/文件），便于前端一次性展示。
+        """
+        from ..knowledge.purge import PurgeError, purge_entity
+
+        results = []
+        for item in req.entities:
+            kind, eid = str(item.get("kind") or ""), str(item.get("id") or "")
+            if kind not in ("stock", "industry") or not eid:
+                results.append({"entity": f"{kind}:{eid}", "ok": False,
+                                "error": f"非法实体标识 kind={kind!r} id={eid!r}"})
+                continue
+            try:
+                report = purge_entity(
+                    kb=kb, metrics=metrics, decisions=decisions, events=events,
+                    entity_kind=kind, entity_id=eid, mode=req.mode,
+                    reason=req.reason, reports_dir=reports_path,
+                    knowledge_dir=knowledge_path,
+                )
+                results.append({"entity": f"{kind}:{eid}", "ok": True,
+                                "report": report.as_payload()})
+            except PurgeError as e:
+                results.append({"entity": f"{kind}:{eid}", "ok": False, "error": str(e)})
+        ok = [r for r in results if r["ok"]]
+        return {
+            "results": results,
+            "deleted": len(ok),
+            "failed": len(results) - len(ok),
+            "total_rows_deleted": sum(r["report"]["total_rows_deleted"] for r in ok),
+            "orphan_evidence_deleted": sum(r["report"]["orphan_evidence_deleted"] for r in ok),
+        }
 
     @app.get("/api/knowledge/{kind}/{entity_id}")
     def entity_profile(

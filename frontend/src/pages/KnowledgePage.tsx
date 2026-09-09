@@ -77,6 +77,56 @@ export default function KnowledgePage() {
     });
   }, [rows, kindFilter, issueFilter]);
 
+  // 批量选择（用户诉求：一个个删太慢、每次多次点击）
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const keyOf = (r: EntityRowV2) => `${r.kind}:${r.id}`;
+  const toggleCheck = (k: string) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  const quickSelect = (pred: (r: EntityRowV2) => boolean) =>
+    setChecked(new Set(filtered.filter(pred).map(keyOf)));
+
+  const onDeleteBatch = async (mode: "tombstone" | "hard") => {
+    const keys = [...checked];
+    if (!keys.length) return;
+    const targets = keys.map((k) => {
+      const [kind, ...rest] = k.split(":");
+      return { kind, id: rest.join(":") };
+    });
+    const label = mode === "hard" ? "彻底删除（不可恢复）" : "删除（墓碑，可恢复）";
+    const reason = window.prompt(
+      `${label} ${targets.length} 个档案？\n` +
+      targets.slice(0, 12).map((t) => `  - ${t.kind}:${t.id}`).join("\n") +
+      (targets.length > 12 ? `\n  …另 ${targets.length - 12} 个` : "") + "\n" +
+      (mode === "hard"
+        ? "⚠ 将真删行 + 清孤儿证据 + 删磁盘存档，不可恢复。\n"
+        : "墓碑模式：列表与档案页立即不再出现，可在「已删除」恢复。\n") +
+      "删除原因（进审计记录）：",
+      "批量清理低质量历史",
+    );
+    if (reason === null) return;
+    if (mode === "hard" &&
+        !window.confirm(`再次确认：彻底删除 ${targets.length} 个档案不可恢复。继续？`)) return;
+    try {
+      const res = await api.batchDeleteEntities(targets, { mode, reason });
+      const failed = res.results.filter((x) => !x.ok);
+      setPurgeMsg(
+        `${mode === "hard" ? "已彻底删除" : "已删除（墓碑）"} ${res.deleted} 个档案` +
+        `（删 ${res.total_rows_deleted} 行、孤儿证据 ${res.orphan_evidence_deleted} 条）` +
+        (failed.length
+          ? `；${failed.length} 个失败：${failed.map((f) => `${f.entity}（${f.error}）`).join("；")}`
+          : ""),
+      );
+      setChecked(new Set());
+      setTick((t) => t + 1);
+    } catch (e) {
+      setPurgeMsg(`批量删除失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const openDossier = (r: EntityRowV2) =>
     navigate({ page: "knowledge", kind: r.kind as "stock" | "industry", id: r.id, params: {} });
 
@@ -156,6 +206,40 @@ export default function KnowledgePage() {
               {v === "table" ? "紧凑表格" : "阅读列表"}
             </button>
           ))}
+          {checked.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1 rounded border border-neutral-200 bg-neutral-50/70 px-2 py-1.5">
+              <span className="text-[11px] text-neutral-600">已选 {checked.size} 个：</span>
+              <button onClick={() => void onDeleteBatch("tombstone")}
+                      className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 hover:bg-red-100">
+                删除所选（墓碑，可恢复）
+              </button>
+              <button onClick={() => void onDeleteBatch("hard")}
+                      title="真删行 + 孤儿证据 + 磁盘存档；不可恢复"
+                      className="rounded border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800 hover:bg-red-200">
+                彻底删除所选
+              </button>
+              <button onClick={() => setChecked(new Set())}
+                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-100">
+                清空选择
+              </button>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1">
+            <button onClick={() => quickSelect((r) => r.quality_status === "draft" && r.observation_count === 0)}
+                    title="选中所有「待验收且无 typed 观测」的档案（只有旧文本字段）"
+                    className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-amber-300 hover:text-amber-700">
+              选无 typed 观测
+            </button>
+            <button onClick={() => quickSelect((r) => r.quality_score < 0.6)}
+                    title="选中当前过滤结果里质量分 < 0.6 的档案"
+                    className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-red-300 hover:text-red-700">
+              选质量分&lt;0.6
+            </button>
+            <button onClick={() => setChecked(new Set(filtered.map(keyOf)))}
+                    className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400">
+              全选当前过滤
+            </button>
+          </div>
         </div>
       </div>
 
@@ -229,6 +313,14 @@ export default function KnowledgePage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[11px] text-neutral-500">
+                  <th className="w-8 px-2 py-2">
+                    <input type="checkbox"
+                           checked={filtered.length > 0 && checked.size === filtered.length}
+                           onChange={(e) => setChecked(e.target.checked
+                             ? new Set(filtered.map(keyOf)) : new Set())}
+                           title="全选/取消当前过滤结果"
+                           className="h-3.5 w-3.5 accent-red-600" />
+                  </th>
                   <th className="px-3 py-2">公司/行业</th>
                   <th className="px-3 py-2">研究摘要</th>
                   <th className="px-3 py-2">研究覆盖</th>
@@ -241,7 +333,15 @@ export default function KnowledgePage() {
               <tbody>
                 {filtered.map((r) => (
                   <tr key={`${r.kind}:${r.id}`} onClick={() => openDossier(r)}
-                      className="cursor-pointer border-b border-neutral-100 hover:bg-neutral-50">
+                      className={`cursor-pointer border-b border-neutral-100 hover:bg-neutral-50 ${
+                        checked.has(keyOf(r)) ? "bg-red-50/40" : ""
+                      }`}>
+                    <td className="w-8 px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={checked.has(keyOf(r))}
+                             onChange={() => toggleCheck(keyOf(r))}
+                             title="勾选后批量删除"
+                             className="h-3.5 w-3.5 accent-red-600" />
+                    </td>
                     <td className="px-3 py-2">
                       <div className="font-mono text-xs font-semibold text-neutral-800">{r.id}</div>
                       <div className="text-[10px] text-neutral-400">

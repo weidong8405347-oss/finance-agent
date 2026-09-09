@@ -82,6 +82,51 @@ export default function SessionsPage() {
 
   // 删除会话（含子 run 与报告目录）：二次确认 + 运行中先停再删，失败原因不吞
   const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
+  // 批量选择（用户诉求：一个个删太慢、每次多次点击）
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const toggleCheck = (rid: string) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(rid)) next.delete(rid); else next.add(rid);
+      return next;
+    });
+  const quickSelect = (pred: (s: SessionRow) => boolean) =>
+    setChecked(new Set(sessions.filter(pred).map((s) => s.run_id)));
+
+  const onDeleteBatch = async () => {
+    const ids = [...checked];
+    if (!ids.length) return;
+    const targets = sessions.filter((s) => checked.has(s.run_id));
+    const running = targets.filter((s) => s.status === "running");
+    const reason = window.prompt(
+      `删除 ${ids.length} 个会话？\n` +
+      (running.length ? `⚠ 其中 ${running.length} 个显示运行中（会先停止再删）：\n` +
+        running.map((s) => `  - ${s.title || s.run_id}`).join("\n") + "\n" : "") +
+      "删除原因（进审计记录）：",
+      "批量清理低质量历史",
+    );
+    if (reason === null) return;
+    try {
+      if (running.length) {
+        for (const s of running) await api.stopSession(s.run_id).catch(() => {});
+      }
+      const res = await api.batchDeleteSessions(ids, {
+        force: running.length > 0, reason,
+      });
+      const failed = res.results.filter((r) => !r.ok);
+      setDeleteMsg(
+        `已删 ${res.deleted} 个会话（共 ${res.total_events} 条事件）` +
+        (failed.length
+          ? `；${failed.length} 个失败：${failed.map((f) => `${f.run_id}（${f.error}）`).join("；")}`
+          : ""),
+      );
+      setChecked(new Set());
+      if (selected && checked.has(selected)) { setSelected(null); setEvents([]); }
+      refreshSessions();
+    } catch (e) {
+      setDeleteMsg(`批量删除失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
   const onDeleteSession = async (s: SessionRow) => {
     const running = s.status === "running";
     const ok = window.confirm(
@@ -110,11 +155,44 @@ export default function SessionsPage() {
       {sidebarOpen && (
         <aside className="w-60 flex-none overflow-y-auto border-r border-neutral-200 bg-white p-2">
           <div className="mb-2 flex items-center justify-between px-1">
-            <span className="text-[11px] font-semibold tracking-wide text-neutral-400">会话</span>
+            <span className="text-[11px] font-semibold tracking-wide text-neutral-400">
+              会话{checked.size > 0 && `（已选 ${checked.size}）`}
+            </span>
             <button onClick={() => setSelected(null)}
               className="rounded border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-600 hover:bg-neutral-50">
               + 新会话
             </button>
+          </div>
+          {/* 批量操作条：一次确认删多个，不用逐行点 */}
+          <div className="mb-2 space-y-1 rounded border border-neutral-200 bg-neutral-50/60 p-1.5">
+            <div className="flex flex-wrap gap-1">
+              <button onClick={() => quickSelect((s) => s.status === "running" && s.possibly_stale)}
+                      title="选中所有「运行中但可能已中断」的僵尸会话"
+                      className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-amber-300 hover:text-amber-700">
+                选僵尸
+              </button>
+              <button onClick={() => quickSelect((s) => s.status === "blocked" || s.status === "error")}
+                      title="选中所有已拦停/失败的会话"
+                      className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-red-300 hover:text-red-700">
+                选拦停/失败
+              </button>
+              <button onClick={() => setChecked(new Set(sessions.map((s) => s.run_id)))}
+                      className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400">
+                全选
+              </button>
+              {checked.size > 0 && (
+                <button onClick={() => setChecked(new Set())}
+                        className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-100">
+                  清空
+                </button>
+              )}
+            </div>
+            {checked.size > 0 && (
+              <button onClick={() => void onDeleteBatch()}
+                      className="w-full rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100">
+                删除所选 {checked.size} 个会话
+              </button>
+            )}
           </div>
           <ul className="space-y-0.5">
             {sessions.map((s) => {
@@ -131,7 +209,17 @@ export default function SessionsPage() {
                     onKeyDown={(e) => { if (e.key === "Enter") setSelected(s.run_id); }}
                     className="cursor-pointer px-2.5 py-2 pr-7"
                   >
-                    <div className="truncate text-[13px]">{s.title || s.run_id}</div>
+                    <div className="flex items-start gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={checked.has(s.run_id)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => toggleCheck(s.run_id)}
+                        title="勾选后批量删除"
+                        className="mt-0.5 h-3 w-3 flex-none accent-red-600"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13px]">{s.title || s.run_id}</span>
+                    </div>
                     <div className="mt-1 flex items-center justify-between gap-1">
                       <span className={`rounded px-1.5 py-0.5 text-[10px] ${st.cls}`}>
                         {st.text}

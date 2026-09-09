@@ -88,9 +88,18 @@
 - Knowledge 列表每行「删除」（墓碑）/「彻底删」（hard，二次确认 + 原因输入）；
   顶部「已删除」抽屉列出墓碑（模式/时间/原因）并给「恢复」按钮。
 
-**HTTP**
+**HTTP（含批量：一次确认删多个，逐个回报）**
 
 ```bash
+# 批量删会话（单个失败不中断其余；force 用于僵尸会话）
+curl -X POST localhost:8000/api/sessions/batch_delete \
+  -H 'Content-Type: application/json' \
+  -d '{"run_ids":["live-b1aa25c9","live-97322d15","live-bd05c145"],"force":true,"reason":"僵尸会话"}'
+# 批量删档案（tombstone 可恢复 / hard 不可恢复）
+curl -X POST localhost:8000/api/knowledge/batch_delete \
+  -H 'Content-Type: application/json' \
+  -d '{"entities":[{"kind":"stock","id":"LODE"},{"kind":"stock","id":"SES"}],"mode":"tombstone","reason":"低质量"}'
+
 curl -X DELETE "localhost:8000/api/sessions/live-xxxx?reason=低质量历史"
 curl -X DELETE "localhost:8000/api/knowledge/industry/ai-for-science-美股港股?reason=旧口径重复档案"
 curl -X DELETE "localhost:8000/api/knowledge/stock/LODE?mode=hard&reason=垃圾内容"
@@ -107,12 +116,24 @@ curl "localhost:8000/api/knowledge/entities?include_purged=true"
 ```bash
 uv run python scripts/purge.py --data-dir data list-sessions            # 标注 session/child/system-ghost
 uv run python scripts/purge.py --data-dir data list-entities --sort-by rows
-uv run python scripts/purge.py --data-dir data session --run-id live-b1aa25c9            # 干跑
-uv run python scripts/purge.py --data-dir data session --run-id live-b1aa25c9 --apply
-uv run python scripts/purge.py --data-dir data entity --entity stock:LODE --reason "低质量" --apply
-uv run python scripts/purge.py --data-dir data entity --batch purge-list.txt --mode hard --reason "批量清理" --apply
+# 会话：可重复 --run-id 批量；--zombies 一键选全部僵尸（自动 force）；--status 按状态选
+uv run python scripts/purge.py --data-dir data session --zombies                 # 干跑
+uv run python scripts/purge.py --data-dir data session --zombies --apply
+uv run python scripts/purge.py --data-dir data session --status blocked,error --apply
+uv run python scripts/purge.py --data-dir data session --run-id a --run-id b --apply
+
+# 档案：--entity 可重复 + --batch 文件 + --quality-below/--require-no-typed 自动选
+uv run python scripts/purge.py --data-dir data entity --quality-below 0.6 --require-no-typed
+uv run python scripts/purge.py --data-dir data entity --quality-below 0.6 \
+    --require-no-typed --reason "只有旧文本字段、质量分低" --apply
+uv run python scripts/purge.py --data-dir data entity --batch purge-list.txt --mode hard --apply
 uv run python scripts/purge.py --data-dir data restore --entity stock:LODE --apply
 ```
+
+**页面批量**：Sessions 侧栏每行复选框 + 「选僵尸 / 选拦停失败 / 全选」+「删除所选 N 个会话」
+（一次确认，运行中的先停再删）；Knowledge 列表每行复选框 + 表头全选 +
+「选无 typed 观测 / 选质量分<0.6 / 全选当前过滤」+「删除所选（墓碑）/ 彻底删除所选」
+（hard 多一次确认）。批量回执会显示删了几个、失败几个及各自原因。
 
 ## 4. 当前库的清理候选（2026-09-09 只读盘点，未改任何数据）
 

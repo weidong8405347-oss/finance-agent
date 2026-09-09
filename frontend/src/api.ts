@@ -91,6 +91,18 @@ export interface SessionDeleteResult {
   forced: boolean;
 }
 
+/** 批量删除回执：逐个回报，单个失败不中断其余 */
+export interface BatchDeleteResult {
+  results: { entity?: string; run_id?: string; ok: boolean; error?: string;
+             total_events?: number; deleted_runs?: string[];
+             files_removed?: string[]; report?: PurgeReport }[];
+  deleted: number;
+  failed: number;
+  total_events?: number;
+  total_rows_deleted?: number;
+  orphan_evidence_deleted?: number;
+}
+
 export interface ArchiveRow {
   name: string;
   mtime: string;
@@ -262,6 +274,11 @@ export const api = {
     send<SessionDeleteResult>(
       `/api/sessions/${encodeURIComponent(runId)}?force=${opts?.force ? "true" : "false"}`
       + `&reason=${encodeURIComponent(opts?.reason ?? "")}`, "DELETE"),
+  /** 批量删会话：一次确认删多个，逐个回报 */
+  batchDeleteSessions: (runIds: string[], opts?: { force?: boolean; reason?: string }) =>
+    post<BatchDeleteResult>("/api/sessions/batch_delete", {
+      run_ids: runIds, force: opts?.force ?? false, reason: opts?.reason ?? "",
+    }),
   entities: (includePurged = false) =>
     get<EntityRow[]>(`/api/knowledge/entities?include_purged=${includePurged}`),
   purgedEntities: () =>
@@ -273,6 +290,12 @@ export const api = {
     send<PurgeReport>(
       `/api/knowledge/${kind}/${encodeURIComponent(id)}?mode=${opts?.mode ?? "tombstone"}`
       + `&reason=${encodeURIComponent(opts?.reason ?? "")}`, "DELETE"),
+  /** 批量删档案：一次确认删多个；mode=tombstone 可恢复 / hard 不可恢复 */
+  batchDeleteEntities: (entities: { kind: string; id: string }[],
+                        opts?: { mode?: "tombstone" | "hard"; reason?: string }) =>
+    post<BatchDeleteResult>("/api/knowledge/batch_delete", {
+      entities, mode: opts?.mode ?? "tombstone", reason: opts?.reason ?? "",
+    }),
   restoreEntity: (kind: string, id: string, reason = "") =>
     send<{ restored: boolean; entity: string }>(
       `/api/knowledge/${kind}/${encodeURIComponent(id)}/restore?reason=${encodeURIComponent(reason)}`,

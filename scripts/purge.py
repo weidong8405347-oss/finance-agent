@@ -132,34 +132,64 @@ def cmd_list_entities(args) -> int:
     return 0
 
 
+def _select_sessions(events, args) -> list[str]:
+    """批量选择：--run-id 可重复 + --zombies + --status（一次确认删多个）。"""
+    from finance_agent.api.app import _session_summary
+
+    ids = list(args.run_id)
+    kids = events.child_run_ids()
+    rows = [r for r in events.list_runs()
+            if r["run_id"] not in kids and events.is_session_run(r["run_id"])]
+    if args.zombies:
+        for r in rows:
+            s = _session_summary(events, r["run_id"], r["started_at"], r["last_active"])
+            if s["status"] == "running" and s["possibly_stale"]:
+                ids.append(r["run_id"])
+    if args.status:
+        wanted = {x.strip() for x in args.status.split(",") if x.strip()}
+        for r in rows:
+            s = _session_summary(events, r["run_id"], r["started_at"], r["last_active"])
+            if s["status"] in wanted:
+                ids.append(r["run_id"])
+    # 去重且保持顺序
+    return list(dict.fromkeys(ids))
+
+
 def cmd_session(args) -> int:
     from finance_agent.knowledge.purge import PurgeError, purge_session
 
     _, _, events, _ = _load(Path(args.data_dir))
     reports_dir = Path(args.data_dir) / "reports"
-    try:
-        if args.apply:
-            result = purge_session(events=events, run_id=args.run_id, force=args.force,
-                                   reason=args.reason, reports_dir=reports_dir)
-            print(f"[purge] 已删除会话 {args.run_id}：{result['total_events']} 条事件，"
-                  f"{len(result['deleted_runs'])} 个 run"
-                  f"（含子 run），文件 {len(result['files_removed'])} 个目录")
-            print("        审计事件已落 system-purge（session/deleted）")
-        else:
-            active = events.is_active(args.run_id)
-            children = sorted(r["run_id"] for r in events.list_runs()
-                              if r["run_id"].startswith(f"{args.run_id}--"))
-            n = sum(r["event_count"] for r in events.list_runs()
-                    if r["run_id"] == args.run_id or r["run_id"] in children)
-            print(f"[purge] DRY-RUN 会话 {args.run_id}：将删 {n} 条事件，"
-                  f"{len(children)} 个子 run，报告目录 {reports_dir / args.run_id}")
-            if active:
-                print("        ⚠ 该会话仍在运行：需要 --force 或先 stop")
-            print("        加 --apply 落库")
-    except PurgeError as e:
-        print(f"[purge] ✗ {e}", file=sys.stderr)
+    targets = _select_sessions(events, args)
+    if not targets:
+        print("[purge] 没有选中会话（--run-id / --zombies / --status）", file=sys.stderr)
         return 2
-    return 0
+    force = args.force or args.zombies  # 僵尸会话的 command 永远不会有 done，需 force
+    failed = 0
+    for run_id in targets:
+        try:
+            if args.apply:
+                result = purge_session(events=events, run_id=run_id, force=force,
+                                       reason=args.reason, reports_dir=reports_dir)
+                print(f"[purge] ✓ 已删除会话 {run_id}：{result['total_events']} 条事件，"
+                      f"{len(result['deleted_runs'])} 个 run"
+                      f"（含子 run），文件 {len(result['files_removed'])} 个目录")
+            else:
+                active = events.is_active(run_id)
+                children = sorted(r["run_id"] for r in events.list_runs()
+                                  if r["run_id"].startswith(f"{run_id}--"))
+                n = sum(r["event_count"] for r in events.list_runs()
+                        if r["run_id"] == run_id or r["run_id"] in children)
+                print(f"[purge] DRY-RUN 会话 {run_id}：将删 {n} 条事件，"
+                      f"{len(children)} 个子 run，报告目录 {reports_dir / run_id}")
+                if active and not force:
+                    print("        ⚠ 该会话仍在运行：需要 --force（--zombies 自动带 force）或先 stop")
+        except PurgeError as e:
+            print(f"[purge] ✗ {run_id}: {e}", file=sys.stderr)
+            failed += 1
+    if not args.apply:
+        print(f"[purge] DRY-RUN：{len(targets)} 个会话待删（加 --apply 落库）")
+    return 1 if failed else 0
 
 
 def cmd_entity(args) -> int:
@@ -174,8 +204,34 @@ def cmd_entity(args) -> int:
                 targets.append(_split_entity(line))
     for raw in args.entity:
         targets.append(_split_entity(raw))
+    if args.quality_below is not None:
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from finance_agent.knowledge.verify import verify_entity
+
+        now = _dt.now(UTC)
+        rows = kb._conn.execute(  # noqa: SLF001 - 只读盘点
+            "SELECT entity_kind, entity_id FROM facts WHERE namespace = ?"
+            " GROUP BY 1, 2", (args.namespace,),
+        ).fetchall()
+        for kind, eid in rows:
+            q = verify_entity(kb, kind, eid, now, namespace=args.namespace)
+            if q.quality_score >= args.quality_below:
+                continue
+            if args.require_no_typed:
+                n_obs = metrics._conn.execute(  # noqa: SLF001
+                    "SELECT COUNT(*) FROM metric_observations WHERE entity_kind=? AND entity_id=?",
+                    (kind, eid)).fetchone()[0]
+                n_cl = metrics._conn.execute(  # noqa: SLF001
+                    "SELECT COUNT(*) FROM research_claims WHERE entity_kind=? AND entity_id=?",
+                    (kind, eid)).fetchone()[0]
+                if n_obs or n_cl:
+                    continue
+            if (kind, eid) not in targets:
+                targets.append((kind, eid))
     if not targets:
-        print("[purge] 没有目标（--entity 或 --batch）", file=sys.stderr)
+        print("[purge] 没有目标（--entity / --batch / --quality-below）", file=sys.stderr)
         return 2
 
     failed = 0
@@ -240,16 +296,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sort-by", default="facts", choices=("facts", "rows", "entity"))
     p.set_defaults(fn=cmd_list_entities)
 
-    p = sub.add_parser("session", help="删除一个会话（级联子 run + 报告目录）")
-    p.add_argument("--run-id", required=True)
+    p = sub.add_parser("session", help="删除会话（可批量；级联子 run + 报告目录）")
+    p.add_argument("--run-id", action="append", default=[], help="可重复，批量删除")
+    p.add_argument("--zombies", action="store_true",
+                   help="选中所有「running 但可能已中断」的僵尸会话（自动 force）")
+    p.add_argument("--status", default="", help="按状态选：blocked,error（逗号分隔）")
     p.add_argument("--force", action="store_true", help="正在跑也删（默认拒绝）")
     p.add_argument("--reason", default="")
     p.add_argument("--apply", action="store_true")
     p.set_defaults(fn=cmd_session)
 
     p = sub.add_parser("entity", help="删除知识实体（默认墓碑，可 hard）")
-    p.add_argument("--entity", action="append", default=[], help="kind:id，可重复")
+    p.add_argument("--entity", action="append", default=[], help="kind:id，可重复（批量）")
     p.add_argument("--batch", default=None, help="每行一个 kind:id 的文本文件")
+    p.add_argument("--quality-below", type=float, default=None,
+                   help="自动选中质量分低于该值的实体（与 --entity/--batch 叠加）")
+    p.add_argument("--require-no-typed", action="store_true",
+                   help="与 --quality-below 联用：只选无 typed 观测/论断的实体")
     p.add_argument("--mode", default="tombstone", choices=("tombstone", "hard"))
     p.add_argument("--reason", default="")
     p.add_argument("--apply", action="store_true")
