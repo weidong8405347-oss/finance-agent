@@ -528,6 +528,10 @@ class DossierProjector:
             for o in sorted(pool.values(), key=lambda x: x.knowledge_time, reverse=True):
                 if len(out) >= 6:
                     break
+                # 同一事实被双键登记（discovery_preclinical_cost 与
+                # drug_discovery_preclinical_cost 同值）→ 首屏不重复展示
+                if any(m.value == o.value and m.unit == o.unit for m in out if m.status == "ok"):
+                    continue
                 dim_note = "；".join(f"{k}={v}" for k, v in sorted(o.dimensions.items()))
                 out.append(KeyMetric(
                     metric_key=o.metric_key, label=o.metric_key.replace("_", " "),

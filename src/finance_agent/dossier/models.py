@@ -18,7 +18,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "1.0"
-PROJECTOR_VERSION = "1"
+#: 投影器版本（进 data_hash：投影逻辑变更 → 新快照身份，旧快照仍可回溯）
+# v2：首屏回退填充去重（同值同单位双键登记不重复展示）+ tear-sheet/layer_labels/
+#     raw_text/comparison_numerics 投影
+PROJECTOR_VERSION = "2"
 
 DossierMode = Literal["live", "historical", "rebuilt"]
 ModuleStatus = Literal[
