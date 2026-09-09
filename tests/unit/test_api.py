@@ -109,16 +109,17 @@ def conflict_seeded(tmp_path):
 def test_sessions_list_and_events(tmp_path):
     client = make_client(tmp_path)
     runs = client.get("/api/sessions").json()
-    assert runs == [
-        {
-            "run_id": "run-1",
-            "title": None,
-            "started_at": runs[0]["started_at"],
-            "last_active": runs[0]["last_active"],
-            "status": "running",
-            "status_detail": None,
-        }
-    ]
+    assert len(runs) == 1
+    r0 = runs[0]
+    assert r0["run_id"] == "run-1"
+    assert r0["title"] is None
+    assert r0["status"] == "running" and r0["status_detail"] is None
+    # 新契约（audit 整改）：活动状态与上一条命令结果分开，并带可疑停滞标记
+    assert r0["open_turns"] == 1
+    assert r0["running_commands"] == []
+    assert r0["last_outcome"] is None
+    assert r0["possibly_stale"] is False
+    assert {"started_at", "last_active", "last_blocked", "last_error"} <= set(r0)
 
     timeline = client.get("/api/sessions/run-1/events").json()
     assert [e["type"] for e in timeline] == ["turn/start", "user/message", "fact/asserted"]

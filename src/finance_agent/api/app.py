@@ -113,16 +113,12 @@ def create_app(
 
     @app.get("/api/sessions")
     def list_sessions() -> list[dict[str, Any]]:
-        rows = events._conn.execute(  # noqa: SLF001 - 投影层只读聚合
-            "SELECT run_id, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY run_id"
-            " ORDER BY MAX(ts) DESC"
-        ).fetchall()
-        child_ids = _child_run_ids(events)
+        # 会话识别下沉到 EventStore（单一口径）：排除子 run、系统/脚本 run
+        # （kb-* 维护审计、migration-* 影子迁移、dossier 快照发布），以及只有投影
+        # 副作用事件、点开什么都没有的空壳 run（migration-shadow 即此形态）
         return [
-            _session_summary(events, r[0], r[2], r[3])
-            for r in rows
-            # kb-* 是知识维护审计 run（人工裁决等），不是会话
-            if r[0] not in child_ids and not r[0].startswith("kb-")
+            _session_summary(events, r["run_id"], r["started_at"], r["last_active"])
+            for r in events.session_runs()
         ]
 
     @app.get("/api/sessions/{run_id}/events")
@@ -741,51 +737,108 @@ def _child_status(events: EventStore, run_id: str) -> str:
 
 
 def _session_summary(events: EventStore, run_id: str, started_at: str, last_active: str) -> dict[str, Any]:
-    """会话状态投影：error > running > cancelled > done/idle；错误原因直接带出。"""
+    """会话状态投影：**运行中 > 错误 > 拦停 > 取消 > 完成 > 空闲**。
+
+    两个口径分开（旧实现把 error 做成 sticky，导致「还在跑却显示失败」）：
+    - `status`：当前活动状态——有未闭合的 command/turn 就是 running，与上一条命令结果无关；
+    - `last_outcome` / `status_detail`：上一条命令的结果与原因；blocked 是「研究停滞、
+      管道拦停」，不是系统故障，单独表达（不并入 error）。
+    """
     evs = events.read(run_id)
     title = next(
         (e.payload.get("title") for e in evs if e.type == SESSION_TITLE),
         None,
     )
-    status, detail = "idle", None
+    outcome: str | None = None       # 最后一条 command/done 的 outcome
+    detail: str | None = None
+    hard_error: str | None = None    # 真错误（outcome=error 或 */error 事件）
+    blocked_detail: str | None = None
+    cancelled = False
     open_turns = 0
     open_commands: set[str] = set()
     saw_done = False
+    last_open_seq = 0                # 最后一个 command/run 或 turn/start 的 seq
+    last_error_seq = 0               # 最后一条硬错误事件的 seq
     for e in evs:
         if e.type == TURN_START:
             open_turns += 1
+            last_open_seq = max(last_open_seq, e.seq)
         elif e.type == TURN_END:
             open_turns = max(0, open_turns - 1)
         elif e.type == COMMAND_RUN:
             open_commands.add(e.payload.get("command_id", ""))
+            last_open_seq = max(last_open_seq, e.seq)
         elif e.type == COMMAND_DONE:
             open_commands.discard(e.payload.get("command_id", ""))
             oc = e.payload.get("outcome")
+            outcome = oc
             if oc == "completed":
                 saw_done = True
-            elif oc in ("error", "blocked"):
-                status, detail = "error", e.payload.get("summary")
+                detail = e.payload.get("summary")
+            elif oc == "error":
+                hard_error = e.payload.get("summary")
+                last_error_seq = max(last_error_seq, e.seq)
+            elif oc == "blocked":
+                blocked_detail = e.payload.get("summary")
             elif oc in ("cancelled", "rejected"):
-                status = "cancelled"  # 用户拒绝/主动停：可见但不算错误
+                cancelled = True
         elif e.type in ("research/error", "decision/error", "turn/error"):
-            status, detail = "error", e.payload.get("reason")
+            hard_error = e.payload.get("reason")
+            last_error_seq = max(last_error_seq, e.seq)
         elif e.type in ("research/completed", "decision/completed"):
             saw_done = True
         elif e.type == "research/cancelled":
-            status = "cancelled"
-    if status != "error":
-        if open_turns > 0 or open_commands:
-            status = "running"
-        elif saw_done:
-            status = "done"
+            cancelled = True
+    in_flight = open_turns > 0 or bool(open_commands)
+    # 错误归属于本次未完成的活动（error 在最后一个 open 标记之后）= 这次跑挂了，
+    # 不能因为「turn 没收到 turn/end」而永远显示运行中
+    dead_in_flight = in_flight and bool(hard_error) and last_error_seq > last_open_seq
+    if in_flight and not dead_in_flight:
+        status = "running"
+    elif hard_error:
+        status = "error"
+    elif blocked_detail:
+        status = "blocked"
+    elif cancelled:
+        status = "cancelled"
+    elif saw_done:
+        status = "done"
+    else:
+        status = "idle"
+    status_detail = (
+        hard_error if status == "error"
+        else blocked_detail if status == "blocked"
+        else detail
+    )
     return {
         "run_id": run_id,
         "title": title,
         "started_at": started_at,
         "last_active": last_active,
         "status": status,
-        "status_detail": detail,
+        "status_detail": status_detail,
+        "last_outcome": outcome,
+        "running_commands": sorted(open_commands),
+        "open_turns": open_turns,
+        "last_blocked": blocked_detail,
+        "last_error": hard_error,
+        # 进程被杀时不会有 command/done：超过阈值仍「运行中」要诚实标可能已中断
+        "possibly_stale": status == "running" and _is_stale(last_active),
     }
+
+
+#: 「运行中但很久没动静」的阈值（分钟）：超过则标 possibly_stale
+STALE_RUNNING_MINUTES = 30
+
+
+def _is_stale(last_active: str) -> bool:
+    try:
+        last = datetime.fromisoformat(last_active)
+    except Exception:  # noqa: BLE001 - 时间不可解析时不乱标
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - last).total_seconds() > STALE_RUNNING_MINUTES * 60
 
 
 def _evidence_json(kb: BitemporalStore, evidence_id: str) -> dict[str, Any]:
