@@ -11,7 +11,8 @@
 证据表示误拒、行业模块与结构产物缺失、首屏与发布闭环不正确）都已有代码落点与回归用例；
 §3.3 余项（上下文裁剪）、§4 交互闭环与 §6 相邻风险（`/industry` 旧入口统一）也已闭合。
 仍未闭合的只剩**需要真实付费运行/真实浏览器才能验证的部分**：行业深研效果对照评估
-（用例 8）与三档视口视觉验收（用例 7）。
+（用例 8）；用例 7 已用真实 Chrome 无头渲染做了 1440/390 两档核验（截图 + DOM 断言），
+1024 档与来源抽屉返回/表格内滚动的自动化断言仍未做。
 
 ## 1. 逐项对照
 
@@ -30,7 +31,7 @@
 | §3.9 P1 部分发布/合成/实时进度 | `loop.py` 每轮进展落 `research/partial_published` 检查点（含 input_hash）；`steps.py` `_publish_partial_artifact()` 在 cancelled/budget/stalled 路径确定性冻结 partial 产物（draft/partial + 未完成题目 gap_notice + partial-report.md 同源 + 报告卡标 partial + 发布快照）；`_report_dependencies`/`_verified_claim_ids` 只纳入实际引用且经校验的依赖，未通过的 claim block 剔除 + 缺口区留痕 + 重新校验；`calculation_ids`/`snapshot_refs` 真实回填；`submit_report_document` 提交即校验（结构非法/硬错当轮返回可修原因）；`_synthesize_brief` 直接带目标/完整计划/评估/计算 id/写作纪律；新增 `query_calculations`；前端钉住快照时每 20s 检查新版本，只提示 changed_modules 并给「整体切换」按钮 | 已落地 | `tests/unit/test_report_dependency_closure.py`（8 例）+ `tests/unit/test_partial_publish.py`（6 例） |
 | §2 事实基线「执行结束 ≠ 成果可用」 | `steps.py` `_budget_summary()`：研究摘要补预算行（耗时/模型调用/检索/重复命中/tokens/慢组/停止维度），并在充分度非 sufficient 时明写「命令执行已结束，但成果仍为部分可用」 | 已落地 | `test_run_budget.py`（快照字段）+ 摘要文案由 `_budget_summary` 单点产出 |
 | §6 相邻风险：`/industry` 旧入口未装配 plan/typed/synthesize | 未统一（本期未改 F1–F5 旧路径） | 未做 | — |
-| §5 用例 7 视觉验收（1440/1024/390） | 未跑真实浏览器 | 未做 | — |
+| §5 用例 7 视觉验收（1440/1024/390） | 真实 Chrome 无头渲染（数据一致性副本，不碰在飞运行）：1440/390 截图 + DOM 断言——正文区 0 处裸 JSON、长文折叠与展开按钮在位、注册表导航/可信度四项/缺口补研按钮渲染正确；首屏长文折叠见 `LongText`（摘要完整句保留、正文可展开） | 部分（1024 档、来源抽屉返回、表格内滚动未自动化断言） | 截图与 DOM 核验记录在本节；`LongText` 见 components.tsx |
 | §5 用例 8 研究效果评估（修复前后对照运行） | 未跑（需真实付费运行） | 未做 | — |
 | §5 性能体验目标（启动即显示目标/30s 活性更新/2–3 分钟首份经校验局部成果/deep 40 分钟含合成预留） | 机制侧已具备：预算含合成预留、部分成果检查点与 partial 产物、`research/schedule`+`question_stall`+`budget` 事件可供 UI 显示等待原因；**未做真实运行的时延校准** | 部分 | `test_partial_publish.py`、`test_run_budget.py` |
 
@@ -85,7 +86,9 @@ report dependency closure 8 / partial publish 6 / industry entry parity 6；
 
 ## 4. 下一步（按审计 §5 阶段划分）
 
-- **阶段 C 余项**：三档视口真实浏览器验收（用例 7）——需要 puppeteer/真实浏览器环境。
+- **阶段 C 余项**：用例 7 已用真实 Chrome 无头渲染核验 1440/390 两档（截图 + DOM 断言）；
+  仍缺 1024 档截图、来源抽屉「一次点击可回源并返回」与表格内部滚动的自动化断言
+  （需要 puppeteer 级别的交互驱动，当前只有静态渲染核验）。
 - **阶段 B 余项**：合成器的结构产物在真实运行中的产出质量（契约与校验已就绪，内容质量
   需真实运行评估）；checkpoint 断点续跑（保存输入 hash + 依赖 + 执行位置后恢复）。
 - **评估**：用例 8 的修复前后对照运行（同目标、同证据截止、相近预算），统计有效问题覆盖、
