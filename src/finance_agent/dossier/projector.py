@@ -236,6 +236,7 @@ class DossierProjector:
         snapshot.modules = self._build_modules(
             entity_kind, entity_id, facts, observations, claims, artifacts,
             recipe, t, open_conflict_sems, ns, mode=context.mode, structures=structures,
+            plan=plan,
         )
         snapshot.research = self._build_research_coverage(plan, claims, artifacts, t, ns)
         # 来源目录含 claim 引用（review #22）：仅由论断引用的证据不再被抽屉接口 404
@@ -515,8 +516,11 @@ class DossierProjector:
         namespace: str,
         mode: str = "live",
         structures: dict[str, Any] | None = None,
+        plan: dict[str, Any] | None = None,
     ) -> dict[str, ModuleState]:
         structures = structures or {}
+        #: 模块 → 未完成问题 id（audit §4：点击缺口可直接补研相应 question_id）
+        open_questions_by_module = _open_questions_by_module(entity_kind, plan)
         now = datetime.now(UTC)
         has_current_data = None
         if mode == "historical":
@@ -671,6 +675,8 @@ class DossierProjector:
                 status=status, title=title, reasons=reasons,
                 last_knowledge_time=latest_kt,
                 data_ref=data_ref,
+                # 缺口可点击补研：只给未完成（非 answered/not_applicable）的问题 id
+                gap_refs=list(open_questions_by_module.get(mod, [])),
             )
         return modules
 
@@ -864,6 +870,26 @@ def _structure_has_content(structures: dict[str, Any]) -> bool:
             if payload.get(key):
                 return True
     return False
+
+
+def _open_questions_by_module(entity_kind: str, plan: dict[str, Any] | None) -> dict[str, list[str]]:
+    """冻结计划里未完成的问题 → 所属模块（audit §4：缺口可点击直接补研）。
+
+    归属口径与 claim 一致（`_claim_module`）：模块名/配方问题 id/目标编译题都能归位；
+    归不到模块的问题不硬塞（宁可不显示，也不错放）。
+    """
+    out: dict[str, list[str]] = {}
+    for q in (plan or {}).get("questions", []) or []:
+        if q.get("status") in ("answered", "not_applicable"):
+            continue
+        qid = str(q.get("question_id") or "")
+        if not qid:
+            continue
+        mod = _claim_module(entity_kind, {"question_id": str(q.get("module") or qid)}, None) \
+            or _claim_module(entity_kind, {"question_id": qid}, None)
+        if mod:
+            out.setdefault(mod, []).append(qid)
+    return out
 
 
 def _claim_module(entity_kind: str, claim: dict[str, Any], recipe: Recipe) -> str | None:

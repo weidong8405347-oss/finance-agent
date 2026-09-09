@@ -189,6 +189,67 @@ class TestModuleRegistry:
         assert h1["series"][0]["points"][0]["value"] == "700000000"
 
 
+class TestGapRefs:
+    """audit §4：点击缺口可直接补研相应 question_id——模块必须带未完成问题 id。"""
+
+    def test_open_questions_land_on_their_module(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        metrics.save_plan(plan_id="plan-gap", namespace="prod", payload={
+            "plan_id": "plan-gap", "entity_kind": "industry",
+            "entity_id": "ai-for-science", "objective": OBJECTIVE, "mode": "deep",
+            "recipe_id": "industry", "recipe_version": "1",
+            "created_at": T0.isoformat(), "status": "active",
+            "questions": [
+                {"question_id": "value-chain", "text": "?", "priority": "high",
+                 "status": "unanswered", "module": "industry_chain"},
+                {"question_id": "candidate-pool", "text": "?", "priority": "high",
+                 "status": "unanswered", "module": "candidate_pool"},
+                {"question_id": "objective-technology_moat-abc123", "text": "?",
+                 "priority": "high", "status": "gathering", "module": "candidate_pool"},
+                {"question_id": "demand-supply", "text": "?", "priority": "high",
+                 "status": "answered", "module": "key_kpi"},
+                {"question_id": "policy", "text": "?", "priority": "medium",
+                 "status": "not_applicable", "module": "catalysts_risks"},
+            ],
+            "budgets": {}, "scope": {},
+        })
+        snap, _ = service.open("industry", "ai-for-science")
+        mods = snap["modules"]
+        assert mods["industry_chain"]["gap_refs"] == ["value-chain"]
+        # 同一模块的两道未完成题（配方题 + 目标编译题）都带上
+        assert set(mods["candidate_pool"]["gap_refs"]) == {
+            "candidate-pool", "objective-technology_moat-abc123"}
+        # answered / not_applicable 不算缺口（不该让用户去补已完成的题）
+        assert mods["key_kpi"]["gap_refs"] == []
+        assert mods["catalysts_risks"]["gap_refs"] == []
+
+    def test_no_plan_means_no_gap_refs(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        snap, _ = service.open("industry", "ai-for-science")
+        assert all(m["gap_refs"] == [] for m in snap["modules"].values())
+
+    def test_stock_objective_questions_route_to_stock_modules(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        metrics.save_plan(plan_id="plan-s", namespace="prod", payload={
+            "plan_id": "plan-s", "entity_kind": "stock", "entity_id": "BE",
+            "objective": "护城河有多深", "mode": "deep", "recipe_id": "general",
+            "recipe_version": "1", "created_at": T0.isoformat(), "status": "active",
+            "questions": [
+                {"question_id": "objective-technology_moat-xyz", "text": "?",
+                 "priority": "high", "status": "unanswered", "module": "business_engine"},
+                {"question_id": "objective-counter_evidence-xyz", "text": "?",
+                 "priority": "high", "status": "unanswered", "module": "risks"},
+            ],
+            "budgets": {}, "scope": {},
+        })
+        snap, _ = service.open("stock", "BE")
+        assert snap["modules"]["business_engine"]["gap_refs"] == ["objective-technology_moat-xyz"]
+        assert snap["modules"]["catalysts_risks"]["gap_refs"] == ["objective-counter_evidence-xyz"]
+
+
 class TestClaimModuleRouting:
     def test_module_name_misused_as_question_id_still_routes(self):
         """audit §3.6：三条 claim 误用模块名 key_kpi 当 question_id。"""

@@ -34,13 +34,44 @@ export function ModuleStateBadge({ status, reasons }: { status: ModuleStatus; re
   );
 }
 
-export function ModuleReasons({ reasons }: { reasons: string[] }) {
-  if (!reasons.length) return null;
+export function ModuleReasons({ reasons, gapRefs }: {
+  reasons: string[];
+  /** 未完成的问题 id（audit §4）：点击缺口直接补研相应 question_id */
+  gapRefs?: string[];
+}) {
+  if (!reasons.length && !gapRefs?.length) return null;
   return (
-    <ul className="mt-1 space-y-0.5 text-[11px] text-neutral-500">
-      {reasons.map((r, i) => <li key={i}>· {r}</li>)}
-    </ul>
+    <div className="mt-1">
+      {reasons.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-neutral-500">
+          {reasons.map((r, i) => <li key={i}>· {r}</li>)}
+        </ul>
+      )}
+      {(gapRefs?.length ?? 0) > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          <span className="text-[11px] text-neutral-400">未完成问题：</span>
+          {gapRefs!.map((qid) => (
+            <button
+              key={qid}
+              onClick={() => requestResearch(qid)}
+              title={`以 targeted 深度补研该问题（focus=${qid}）`}
+              className="rounded-full border border-neutral-200 bg-white px-1.5 py-0.5 font-mono text-[10px] text-neutral-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+            >
+              {qid} ↻补研
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+/** 缺口 → 补研（audit §4 交互闭环）：页面级事件，ResearchPanel 监听并预填 focus。
+ *  用事件而不是逐层传 props：缺口出现在任意模块的任意深度，不该把回调钻透十层。 */
+export function requestResearch(questionId: string, objective?: string) {
+  window.dispatchEvent(new CustomEvent("dossier:research", {
+    detail: { focus: questionId, objective: objective ?? "" },
+  }));
 }
 
 // ---------------- 结论面板（首屏 10 秒层，§3.1/§4.3） ----------------
@@ -394,7 +425,23 @@ export function ResearchPanel({ snap, onStarted }: {
   const [focus, setFocus] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [idem] = useState(() => `ui-${snap.entity.id}-${Date.now()}`);
+  const [idem, setIdem] = useState(() => `ui-${snap.entity.id}-${Date.now()}`);
+
+  // 缺口点击补研（audit §4）：任意模块发出 dossier:research → 打开面板并预填 focus，
+  // 深度自动选 targeted（只补这一题，不重跑全量研究）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ focus?: string; objective?: string }>).detail ?? {};
+      if (detail.focus) setFocus(detail.focus);
+      if (detail.objective) setObjective(detail.objective);
+      setDepth("targeted");
+      setIdem(`ui-${snap.entity.id}-${detail.focus ?? ""}-${Date.now()}`);
+      setError(null);
+      setOpen(true);
+    };
+    window.addEventListener("dossier:research", handler);
+    return () => window.removeEventListener("dossier:research", handler);
+  }, [snap.entity.id]);
 
   const submit = async () => {
     setBusy(true); setError(null);

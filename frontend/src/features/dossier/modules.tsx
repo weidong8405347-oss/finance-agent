@@ -21,6 +21,10 @@ export interface ModuleProps {
   onEvidenceClick: (evidenceId: string) => void;
   onOpenArtifact: (artifactId: string) => void;
   onResolved?: () => void;
+  /** 路由参数（audit §4 联动高亮：highlight=<entity_id>） */
+  params?: Record<string, string>;
+  /** 跳到另一章节（可带参数）：产业链节点 ↔ 公司行联动用 */
+  onNavigateSection?: (section: string, params?: Record<string, string | null>) => void;
 }
 
 // ---------------- 通用件 ----------------
@@ -668,7 +672,7 @@ function EvidenceChips({ refs, onEvidenceClick }: {
   );
 }
 
-function IndustryChainModule({ payload, onEvidenceClick }: ModuleProps) {
+function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSection }: ModuleProps) {
   const graph = (payload.payload.graph ?? EMPTY_GRAPH) as BusinessGraph;
   const nodes = (payload.payload.nodes ?? graph.nodes ?? []) as IndustryMapNode[];
   const edges = (payload.payload.edges ?? graph.edges ?? []) as IndustryMapEdge[];
@@ -677,6 +681,16 @@ function IndustryChainModule({ payload, onEvidenceClick }: ModuleProps) {
   const bottlenecks = (payload.payload.bottlenecks ?? graph.bottlenecks ?? []) as string[];
   const notes = (payload.payload.notes ?? []) as string[];
   const limitations = (payload.payload.limitations ?? []) as string[];
+  // 联动高亮（audit §4）：从公司行跳回来时 highlight=<entity_id> → 高亮包含该公司的节点；
+  // 点节点则高亮它的上下游边（本地状态，不污染路由）
+  const highlightCompany = params?.highlight ?? "";
+  const [activeNode, setActiveNode] = useState<string | null>(null);
+  const companyNodes = new Set(
+    nodes.filter((n) => (n.company_refs ?? []).some((c) => c.toUpperCase() === highlightCompany.toUpperCase()))
+          .map((n) => n.node_id),
+  );
+  const edgeLit = (e: IndustryMapEdge) =>
+    !activeNode || e.source === activeNode || e.target === activeNode;
   // 分层渲染：有 layers 按其顺序，否则按节点出现顺序（不猜层级）
   const ordered = layers.length
     ? layers
@@ -703,20 +717,42 @@ function IndustryChainModule({ payload, onEvidenceClick }: ModuleProps) {
                 <div className="space-y-1.5">
                   {(byLayer.get(layer) ?? []).map((n) => (
                     <div key={n.node_id}
-                         className={`rounded border px-2 py-1.5 text-xs ${
-                           n.bottleneck ? "border-red-200 bg-red-50/60" : "border-neutral-200 bg-white"
-                         }`}>
+                         onClick={() => setActiveNode(activeNode === n.node_id ? null : n.node_id)}
+                         role="button"
+                         tabIndex={0}
+                         onKeyDown={(e) => { if (e.key === "Enter") setActiveNode(n.node_id); }}
+                         title={activeNode === n.node_id ? "再点一次取消高亮关联边"
+                           : "点击高亮该节点的上下游关系"}
+                         className={`cursor-pointer rounded border px-2 py-1.5 text-xs ${
+                           companyNodes.has(n.node_id)
+                             ? "border-blue-400 bg-blue-50 ring-1 ring-blue-300"
+                             : n.bottleneck ? "border-red-200 bg-red-50/60" : "border-neutral-200 bg-white"
+                         } ${activeNode === n.node_id ? "ring-2 ring-neutral-800" : ""}`}>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-medium text-neutral-800">{n.label}</span>
                         {n.bottleneck && (
                           <span className="rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-700">瓶颈</span>
+                        )}
+                        {companyNodes.has(n.node_id) && (
+                          <span className="rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-700">已定位</span>
                         )}
                       </div>
                       {n.note && <div className="mt-0.5 text-[11px] text-neutral-500">{n.note}</div>}
                       {(n.company_refs ?? []).length > 0 && (
                         <div className="mt-1 flex flex-wrap gap-1">
                           {n.company_refs.map((c) => (
-                            <span key={c} className="rounded border border-neutral-200 px-1 py-0.5 font-mono text-[10px] text-neutral-600">{c}</span>
+                            <button
+                              key={c}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                // 公司芯片 → 候选矩阵同一行（联动高亮，不丢快照上下文）
+                                onNavigateSection?.("candidate_pool", { highlight: c });
+                              }}
+                              title="在「公司与护城河」里定位这一行"
+                              className="rounded border border-neutral-200 px-1 py-0.5 font-mono text-[10px] text-neutral-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              {c}
+                            </button>
                           ))}
                         </div>
                       )}
@@ -730,7 +766,9 @@ function IndustryChainModule({ payload, onEvidenceClick }: ModuleProps) {
           {edges.length > 0 && (
             <ul className="mt-3 space-y-1 border-t border-neutral-100 pt-2 text-[11px] text-neutral-600">
               {edges.map((e, i) => (
-                <li key={i} className="flex flex-wrap items-center gap-1.5">
+                <li key={i} className={`flex flex-wrap items-center gap-1.5 ${
+                  edgeLit(e) ? "" : "opacity-30"
+                }`}>
                   <span className="font-mono">{label(e.source)} → {label(e.target)}</span>
                   <span className="rounded bg-neutral-100 px-1 py-0.5 text-[10px] text-neutral-600">
                     {RELATION_LABELS[e.relation] ?? e.relation}
@@ -805,7 +843,7 @@ const TIER_CLS: Record<string, string> = {
   needs_review: "bg-amber-50 text-amber-700 border-amber-200",
 };
 
-function CandidatePoolModule({ payload, onEvidenceClick }: ModuleProps) {
+function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSection }: ModuleProps) {
   const candidates = (payload.payload.candidates ?? []) as CandidateItem[];
   const criteria = (payload.payload.criteria ?? []) as string[];
   const objective = (payload.payload.objective ?? "") as string;
@@ -815,6 +853,14 @@ function CandidatePoolModule({ payload, onEvidenceClick }: ModuleProps) {
   const limitations = (payload.payload.limitations ?? []) as string[];
   const notes = (payload.payload.notes ?? []) as string[];
   const [tier, setTier] = useState<string>("all");
+  // 从产业链节点跳过来时 highlight=<entity_id>：该行高亮 + 自动滚到可见
+  const highlight = (params?.highlight ?? "").toUpperCase();
+  const rowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (highlight && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [highlight]);
   const tiers = Array.from(new Set(candidates.map((c) => c.tier)));
   const shown = tier === "all" ? candidates : candidates.filter((c) => c.tier === tier);
   const rows = (comparison.rows ?? []) as Record<string, any>[];
@@ -858,7 +904,11 @@ function CandidatePoolModule({ payload, onEvidenceClick }: ModuleProps) {
               </thead>
               <tbody>
                 {shown.map((c) => (
-                  <tr key={c.entity_id} className="border-b border-neutral-100 align-top last:border-0">
+                  <tr key={c.entity_id}
+                      ref={c.entity_id.toUpperCase() === highlight ? rowRef : undefined}
+                      className={`border-b border-neutral-100 align-top last:border-0 ${
+                        c.entity_id.toUpperCase() === highlight ? "bg-blue-50/70 ring-1 ring-inset ring-blue-200" : ""
+                      }`}>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-medium text-neutral-800">{c.name || c.entity_id}</span>
@@ -867,6 +917,15 @@ function CandidatePoolModule({ payload, onEvidenceClick }: ModuleProps) {
                         </span>
                       </div>
                       <div className="mt-0.5 font-mono text-[10px] text-neutral-400">{c.entity_id}</div>
+                      {onNavigateSection && (
+                        <button
+                          onClick={() => onNavigateSection("industry_chain", { highlight: c.entity_id })}
+                          title="在产业链图里高亮包含该公司的环节"
+                          className="mt-1 rounded border border-neutral-200 px-1 py-0.5 text-[10px] text-neutral-500 hover:border-blue-300 hover:text-blue-700"
+                        >
+                          在产业链中定位
+                        </button>
+                      )}
                       <div className="mt-1"><EvidenceChips refs={c.evidence_refs} onEvidenceClick={onEvidenceClick} /></div>
                     </td>
                     <td className="px-3 py-2 text-neutral-600">

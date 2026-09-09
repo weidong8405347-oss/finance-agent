@@ -318,7 +318,9 @@ export default function StockDossierPage({ kind, id, params }: Props) {
               </h3>
               {moduleState && <ModuleStateBadge status={moduleState.status} reasons={moduleState.reasons} />}
             </div>
-            {moduleState && <ModuleReasons reasons={moduleState.reasons} />}
+            {moduleState && (
+              <ModuleReasons reasons={moduleState.reasons} gapRefs={moduleState.gap_refs} />
+            )}
             {snap.decision_refs.length > 0 && section === "investment_snapshot" && (
               <div className="mb-2 rounded border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-[11px] text-neutral-500">
                 关联决策：{snap.decision_refs.join("、")}（买卖评级/仓位归 Decisions 页，研究更新不改写旧卡）
@@ -352,6 +354,9 @@ export default function StockDossierPage({ kind, id, params }: Props) {
                   payload={payload}
                   onEvidenceClick={onEvidenceClick}
                   onOpenArtifact={onOpenArtifact}
+                  params={params}
+                  onNavigateSection={(next, extra) =>
+                    navigate(withParams(routeOf(), { section: next, evidence: null, ...(extra ?? {}) }))}
                   onResolved={() => {
                     // 裁决后丢弃冻结模块缓存并重开档案（新快照反映裁决结果）
                     setModuleCache({});
