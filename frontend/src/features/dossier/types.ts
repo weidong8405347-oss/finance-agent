@@ -39,6 +39,8 @@ export interface KeyMetric {
   metric_key: string;
   label: string;
   value: string | null;
+  /** 披露原文锚点（raw.value_text，如 "85%" "100x" "80-90%"）：ratio 显示优先用原文 */
+  raw_text?: string;
   unit: string;
   currency: string | null;
   period_label: string;
@@ -66,6 +68,13 @@ export interface DossierSummary {
   limitations?: string[];
   question_progress?: string;
   credibility?: Record<string, string>;
+  // tear-sheet 首屏（升级方案 §5/§26）：来自 ExecutiveSummary/IndustryMap 结构产物，
+  // 有则分块渲染，无则不显示（不编造）
+  stage?: string;
+  why_now?: string[];
+  value_capture?: string;
+  thesis_breakers?: string[];
+  bottlenecks?: string[];
 }
 
 export interface ResearchCoverage {
@@ -103,6 +112,8 @@ export interface MetricPoint {
   period_end: string;
   period_start: string | null;
   value: string | null;
+  /** 披露原文锚点（raw.value_text）：tooltip/数据表逐字展示，不从十进制反猜格式 */
+  raw_text?: string;
   nature: ValueNature | string;
   basis: string;
   unit: string;
@@ -160,7 +171,11 @@ export interface BusinessGraph {
   narrative: string;
   narrative_refs: string[];
   layers?: string[];
+  /** 规范 layer key → 展示名（归一层从显示名捕获，列头优先用） */
+  layer_labels?: Record<string, string>;
   routes?: Record<string, string>[];
+  /** 价值流/利润池说明（带引用） */
+  value_flow_note?: string;
   bottlenecks?: string[];
 }
 

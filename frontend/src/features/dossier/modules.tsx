@@ -6,9 +6,13 @@ import { useEffect, useRef, useState } from "react";
 
 import { navigate } from "../../app/route";
 import { dossierApi } from "./api";
-import { MetricChart, NATURE_STYLE, SeriesTable, formatMetricValue } from "./charts";
+import { MetricChart, MetricSmallMultiples, NATURE_STYLE, SeriesTable, formatMetricValue } from "./charts";
 import { ClaimCard } from "./components";
 import { ConflictResolver, FactValue } from "./legacy";
+import {
+  LAYER_LABELS, RankedBars, RELATION_LABELS, StageLadder, TierStrip, TimelineStrip,
+  ValueChainGraph, rankedBarColumns, type NumericCell,
+} from "./viz";
 import type {
   BusinessGraph, CandidateItem, ClaimItem, DossierSnapshot, EvidenceItem,
   IndustryMapEdge, IndustryMapNode, LegacyFactItem, MetricSeries, MetricSeriesSet,
@@ -266,7 +270,7 @@ function RevenueSegmentsModule({ payload }: ModuleProps) {
         ? <MetricChart series={total.series} title="总收入：增长来自哪一块？" />
         : <div className="text-xs text-neutral-400">（无总收入 typed 观测）</div>}
       {segments.length > 0 && (
-        <MetricChart series={segments} title="分部收入（同口径；合计与总额差异见未分配/抵销说明）" />
+        <MetricSmallMultiples series={segments} title="分部收入（同口径；合计与总额差异见未分配/抵销说明）" />
       )}
       <Notes notes={notes} />
     </div>
@@ -279,7 +283,7 @@ function KeyKpiModule({ payload }: ModuleProps) {
   return (
     <div className="space-y-3">
       {set?.series.length
-        ? <MetricChart series={set.series} title="什么领先指标决定未来？" />
+        ? <MetricSmallMultiples series={set.series} title="什么领先指标决定未来？（按单位分面）" />
         : <div className="text-xs text-neutral-400">（无 KPI typed 观测——未披露项保留缺口，不从文本猜数）</div>}
       <Notes notes={set?.notes} />
       {defs.length > 0 && (
@@ -332,7 +336,7 @@ function FinancialQualityModule({ snap, payload, onResolved }: ModuleProps) {
         </div>
       </div>
       {set?.series.length
-        ? <MetricChart series={set.series} title={freq === "fy" ? "年度：收入 / 利润 / 现金流" : "季度序列（缺期保留断点）"} />
+        ? <MetricSmallMultiples series={set.series} title={freq === "fy" ? "年度：收入 / 利润 / 现金流（按单位分面）" : "季度序列（缺期保留断点）"} />
         : <div className="text-xs text-neutral-400">（无标准化报表观测——旧字段见下方审计区，缺期不补零）</div>}
       <Notes notes={notes} />
       {calcs.length > 0 && (
@@ -644,16 +648,8 @@ function PeersModule({ snap, payload, onResolved }: ModuleProps) {
 }
 
 // ---------------- 行业模块（audit §3.6/§3.7） ----------------
-
-const LAYER_LABELS: Record<string, string> = {
-  upstream: "上游", midstream: "中游", downstream: "下游",
-  platform: "平台", application: "应用", infrastructure: "基础设施",
-};
-
-const RELATION_LABELS: Record<string, string> = {
-  supplies: "供给", competes: "竞争", substitutes: "替代",
-  depends_on: "依赖", enables: "支撑",
-};
+// 层级/关系标签已迁至 viz.tsx（LAYER_LABELS 含 demand，RELATION_LABELS 含 value_flow；
+// 未知关系保留原文显示，不硬译）
 
 function EvidenceChips({ refs, onEvidenceClick }: {
   refs?: string[]; onEvidenceClick: (id: string) => void;
@@ -677,6 +673,8 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
   const nodes = (payload.payload.nodes ?? graph.nodes ?? []) as IndustryMapNode[];
   const edges = (payload.payload.edges ?? graph.edges ?? []) as IndustryMapEdge[];
   const layers = (payload.payload.layers ?? graph.layers ?? []) as string[];
+  const layerLabels = (payload.payload.layer_labels ?? graph.layer_labels ?? {}) as Record<string, string>;
+  const valueFlowNote = (payload.payload.value_flow_note ?? graph.value_flow_note ?? "") as string;
   const routes = (payload.payload.routes ?? graph.routes ?? []) as Record<string, string>[];
   const bottlenecks = (payload.payload.bottlenecks ?? graph.bottlenecks ?? []) as string[];
   const notes = (payload.payload.notes ?? []) as string[];
@@ -706,9 +704,24 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
       {nodes.length > 0 ? (
         <div className="rounded-lg border border-neutral-200 bg-white p-3">
           <div className="mb-2 text-xs font-semibold text-neutral-500">
-            产业链分层图（节点带证据；无流量数据时边等宽，不编造 Sankey 宽度）
+            产业链分层流图（升级方案 §27：从文字变成图；节点带证据，边带关系标签）
           </div>
-          <div className="flex flex-col gap-2 md:flex-row md:items-stretch md:gap-3">
+          <ValueChainGraph
+            nodes={nodes} edges={edges} layers={ordered} layerLabels={layerLabels}
+            activeNode={activeNode}
+            onNodeClick={(id) => setActiveNode(id || null)}
+            onCompanyClick={(c) => onNavigateSection?.("candidate_pool", { highlight: c })}
+            onEvidenceClick={onEvidenceClick}
+            highlightCompany={highlightCompany}
+          />
+          {bottlenecks.length > 0 && (
+            <div className="mt-2 text-[11px] text-red-700">瓶颈环节：{bottlenecks.map(label).join("、")}</div>
+          )}
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] font-semibold text-neutral-500">
+              节点与关系数据表（流图的键盘可达等价物，含全部公司/证据芯片）
+            </summary>
+          <div className="mt-2 flex flex-col gap-2 md:flex-row md:items-stretch md:gap-3">
             {(ordered.length ? ordered : Array.from(byLayer.keys())).map((layer) => (
               <div key={layer} className="min-w-0 flex-1 rounded border border-neutral-100 bg-neutral-50/60 p-2">
                 <div className="mb-1.5 text-[11px] font-semibold text-neutral-500">
@@ -784,13 +797,16 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
               ))}
             </ul>
           )}
-          {bottlenecks.length > 0 && (
-            <div className="mt-2 text-[11px] text-red-700">瓶颈环节：{bottlenecks.map(label).join("、")}</div>
-          )}
+          </details>
         </div>
       ) : (
         <div className="rounded-lg border border-dashed border-neutral-300 bg-white p-4 text-xs text-neutral-500">
           尚无结构化产业链图（nodes/edges）——不拿旧字段文本冒充关系图。
+        </div>
+      )}
+      {valueFlowNote && (
+        <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs leading-relaxed text-violet-900">
+          <span className="mr-1 font-semibold">价值流/利润池：</span>{valueFlowNote}
         </div>
       )}
       {routes.length > 0 && (
@@ -849,12 +865,17 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
   const objective = (payload.payload.objective ?? "") as string;
   const stageDefs = (payload.payload.stage_definitions ?? {}) as Record<string, string>;
   const comparison = (payload.payload.comparison ?? {}) as Record<string, any>;
+  const numerics = (payload.payload.comparison_numerics ?? []) as {
+    label: string; cells: Record<string, NumericCell>;
+  }[];
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const limitations = (payload.payload.limitations ?? []) as string[];
   const notes = (payload.payload.notes ?? []) as string[];
   const [tier, setTier] = useState<string>("all");
-  // 从产业链节点跳过来时 highlight=<entity_id>：该行高亮 + 自动滚到可见
-  const highlight = (params?.highlight ?? "").toUpperCase();
+  // 阶段阶梯芯片点击 → 本模块内定位（不污染路由）；从产业链节点跳过来时
+  // highlight=<entity_id> 优先：该行高亮 + 自动滚到可见
+  const [locate, setLocate] = useState("");
+  const highlight = ((params?.highlight ?? "") || locate).toUpperCase();
   const rowRef = useRef<HTMLTableRowElement | null>(null);
   useEffect(() => {
     if (highlight && rowRef.current) {
@@ -875,6 +896,15 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
           )}
         </div>
       )}
+      {candidates.length > 0 && (
+        <div className="rounded-lg border border-neutral-200 bg-white p-3">
+          <div className="mb-1.5 text-xs font-semibold text-neutral-500">
+            候选分层（条宽 = 数量占比；点击过滤下表）
+          </div>
+          <TierStrip candidates={candidates} active={tier} onSelect={setTier} />
+        </div>
+      )}
+      <StageLadder candidates={candidates} onLocate={setLocate} />
       {candidates.length > 0 ? (
         <div className="rounded-lg border border-neutral-200 bg-white">
           {tiers.length > 1 && (
@@ -984,6 +1014,14 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
           尚无结构化候选评估（CandidateAssessment）——下方旧字段不能当作筛选结果（入选/淘汰/待核实原因缺失）。
         </div>
       )}
+      {rows.length > 0 && cols.length > 0 && (() => {
+        // 排序条形（§9 Peer Comparison → Ranked Bar）：数值来自服务端解析的冻结观测，
+        // 同列同单位同币种才出图（混币种/不可比 → 只给表，不硬画）
+        const barCols = rankedBarColumns(cols, rows, numerics, comparison.chartable === true);
+        return barCols.length
+          ? <RankedBars cols={barCols} formatValue={formatMetricValue} />
+          : null;
+      })()}
       {rows.length > 0 && cols.length > 0 && (
         <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white p-3">
           <div className="mb-1.5 text-xs font-semibold text-neutral-500">
@@ -1062,7 +1100,8 @@ function ValidationTimeline({ items, onEvidenceClick }: {
       <div className="mb-2 text-xs font-semibold text-neutral-500">
         验证时间线（展示条件，不给无依据的概率）
       </div>
-      <ol className="space-y-2 border-l border-neutral-200 pl-3">
+      <TimelineStrip items={items} />
+      <ol className="mt-2 space-y-2 border-l border-neutral-200 pl-3">
         {items.map((it, i) => (
           <li key={i} className="relative">
             <span className="absolute -left-[17px] top-1.5 h-2 w-2 rounded-full bg-neutral-300" />

@@ -105,3 +105,60 @@ describe("buildOption 时间轴对齐", () => {
     expect(dropped.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------- ratio 口径修复（profile 内容质量升级 §3） ----------------
+// 事故：unit=ratio 的存量值是百分点（"85%"→85、"136.4%"→136.4），旧逻辑一律
+// ×100 → 首屏显示 8500.0%/13640.0%。新纪律：披露原文锚点逐字优先；无锚点时
+// |v|≤1 按分数、>1 按百分点——不从十进制反猜口径。
+import { formatMetricValue as fmt, formatRatioDisplay, groupByUnit } from "../charts";
+// MetricSeries 已在上方导入（同文件复用，不重复声明）
+
+describe("ratio 显示口径", () => {
+  it("披露原文锚点逐字优先（含区间与倍数）", () => {
+    expect(fmt("80", "ratio", null, "80-90%")).toBe("80-90%");
+    expect(fmt("100", "ratio", null, "100x")).toBe("100x");
+    expect(fmt("85", "ratio", null, "85%")).toBe("85%");
+  });
+
+  it("无锚点：|v|≤1 按分数 ×100，>1 按百分点原样（不再 8500%）", () => {
+    expect(fmt("0.125", "ratio")).toBe("12.5%");
+    expect(fmt("85", "ratio")).toBe("85%");
+    expect(fmt("136.4", "ratio")).toBe("136.4%");
+    expect(fmt("-23.9", "ratio")).toBe("-23.9%");
+    expect(fmt("1", "ratio")).toBe("100.0%");
+  });
+
+  it("formatRatioDisplay 与 formatMetricValue 同一口径（KPI 卡与 tooltip 不分叉）", () => {
+    expect(formatRatioDisplay(85)).toBe("85%");
+    expect(formatRatioDisplay(0.85)).toBe("85.0%");
+    expect(formatRatioDisplay(85, "85%")).toBe("85%");
+  });
+
+  it("金额格式不受影响", () => {
+    expect(fmt("159100000000", "USD", "USD")).toBe("159.10B USD");
+    expect(fmt("6000000", "USD", "USD")).toBe("6.0M USD");
+  });
+});
+
+describe("groupByUnit（KPI small multiples，方案 §9）", () => {
+  const series = (key: string, unit: string, currency: string | null): MetricSeries => ({
+    metric_key: key, label: key, unit, currency, frequency: "FY", dimensions: {},
+    basis: "GAAP", nature: "reported", points: [], status: "ready", issues: [],
+  });
+
+  it("按 unit+currency 分组；真实数据形态（金额/比率/月数）不再同轴", () => {
+    const groups = groupByUnit([
+      series("rd_spend", "USD", "USD"),
+      series("revenue", "CNY", "CNY"),
+      series("phase1_rate", "ratio", null),
+      series("milestone", "USD", "USD"),
+    ]);
+    expect(groups.map((g) => g.key)).toEqual(["USD|USD", "CNY|CNY", "ratio|"]);
+    expect(groups[0].series.map((s) => s.metric_key)).toEqual(["rd_spend", "milestone"]);
+    expect(groups[2].label).toBe("比例/倍数");
+  });
+
+  it("单一分组保持一组（调用方退回单图）", () => {
+    expect(groupByUnit([series("a", "USD", "USD"), series("b", "USD", "USD")])).toHaveLength(1);
+  });
+});

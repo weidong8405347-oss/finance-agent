@@ -37,15 +37,31 @@ export const NATURE_STYLE: Record<string, { color: string; dash?: boolean; label
   model_estimate: { color: "#9ca3af", dash: true, label: "模型估计" },
 };
 
-/** 展示格式化：大数缩写 + 单位/币种（全站一致的金额/比例格式，§13.3）。 */
+/** 展示格式化：大数缩写 + 单位/币种（全站一致的金额/比例格式，§13.3）。
+ *
+ *  ratio 口径纪律：百分数/分数/倍数在存量数据里混用（"85%"→85、"100x"→100、
+ *  0.125→分数），不从十进制反猜——有披露原文锚点（raw_text）时逐字优先；
+ *  无锚点时 |v|≤1 按分数 ×100，否则按百分点原样显示（修 85 → "8500.0%" 事故）。 */
+export function trimRatioNumber(n: number): string {
+  return String(parseFloat(n.toFixed(2)));
+}
+
+/** ratio 显示口径（KeyMetricBar 与图表 tooltip 共用同一实现，不分叉）：
+ *  披露原文锚点（"85%" "100x" "80-90%"）逐字优先；无锚点时 |v|≤1 按分数 ×100，
+ *  否则按百分点原样——不从十进制反猜口径。 */
+export function formatRatioDisplay(n: number, rawText?: string): string {
+  if (rawText && /[%x×]/.test(rawText)) return rawText;
+  return Math.abs(n) <= 1 ? `${(n * 100).toFixed(1)}%` : `${trimRatioNumber(n)}%`;
+}
+
 export function formatMetricValue(
-  value: string | null, unit: string, currency?: string | null,
+  value: string | null, unit: string, currency?: string | null, rawText?: string,
 ): string {
   const n = toChartNumber(value);
   if (n === null) return value === null ? "—" : `${value}（不可绘图）`;
   const abs = Math.abs(n);
   let text: string;
-  if (unit === "ratio") text = `${(n * 100).toFixed(1)}%`;
+  if (unit === "ratio") text = formatRatioDisplay(n, rawText);
   else if (abs >= 1e12) text = `${(n / 1e12).toFixed(2)}T`;
   else if (abs >= 1e9) text = `${(n / 1e9).toFixed(2)}B`;
   else if (abs >= 1e6) text = `${(n / 1e6).toFixed(1)}M`;
@@ -195,6 +211,9 @@ export function buildOption(
     echartsSeries.push({
       name: s.label,
       type: s.frequency === "Q" || s.frequency === "FY" ? "line" : "bar",
+      // 单期间（instant）序列画 bar 时不限宽会填满整个绘图区（黑色巨块事故）——
+      // 限宽后单点序列也是可读的细柱
+      barMaxWidth: 32,
       data: points,
       connectNulls: false, // 缺期保留断点（不补零、不插值）
       symbolSize: 7,
@@ -222,9 +241,10 @@ export function buildOption(
           if (!s || !p) continue;
           const style = NATURE_STYLE[p.nature] ?? NATURE_STYLE.reported;
           lines.push(
-            `${item.marker} ${s.label}: <b>${formatMetricValue(p.value, p.unit ?? s.unit, p.currency ?? s.currency)}</b>`
+            `${item.marker} ${s.label}: <b>${formatMetricValue(p.value, p.unit ?? s.unit, p.currency ?? s.currency, p.raw_text)}</b>`
             + `<br/><span style="color:#a1a1aa;font-size:10px">`
             + `${style.label} · ${p.basis}${p.conflict ? " · ⚠冲突" : ""} · 可知 ${p.knowledge_time.slice(0, 10)}`
+            + `${p.raw_text ? ` · 原文「${p.raw_text}」` : ""}`
             + `</span>`,
           );
         }
@@ -290,7 +310,7 @@ export function SeriesTable({ series }: { series: MetricSeries[] }) {
                 return (
                   <td key={s.metric_key} className="px-2 py-1 font-mono tabular-nums">
                     {p ? (
-                      <span title={`${NATURE_STYLE[p.nature]?.label ?? p.nature} · ${p.basis} · 可知 ${p.knowledge_time.slice(0, 10)} · ${p.observation_id}`}>
+                      <span title={`${NATURE_STYLE[p.nature]?.label ?? p.nature} · ${p.basis} · 可知 ${p.knowledge_time.slice(0, 10)} · ${p.observation_id}${p.raw_text ? ` · 原文「${p.raw_text}」` : ""}`}>
                         {p.value ?? "—"}
                         {p.conflict && <span className="ml-1 text-amber-600">⚠</span>}
                       </span>
@@ -310,4 +330,48 @@ function allLabels(series: MetricSeries[]): string[] {
   const set = new Set<string>();
   for (const s of series) for (const p of s.points) set.add(p.period_label);
   return [...set].sort();
+}
+
+// ---------------- Small Multiples（升级方案 §9：KPI → 按单位分面） ----------------
+
+/** 按 (unit, currency) 分组：不同单位不同轴——比例/金额/月数混在一个 y 轴上
+ *  会把 ratio 序列压成零线（真实数据：159.1B USD vs 136.4 ratio 同轴）。 */
+export function groupByUnit(series: MetricSeries[]): {
+  key: string; label: string; series: MetricSeries[];
+}[] {
+  const groups = new Map<string, MetricSeries[]>();
+  for (const s of series) {
+    const key = `${s.unit || "?"}|${s.currency ?? ""}`;
+    groups.set(key, [...(groups.get(key) ?? []), s]);
+  }
+  return [...groups.entries()].map(([key, list]) => {
+    const [unit, currency] = key.split("|");
+    const label = unit === "ratio" ? "比例/倍数"
+      : unit === "months" ? "月数"
+      : currency && currency !== unit ? `${unit} · ${currency}`
+      : currency || unit;  // unit==currency 时不重复（"CNY · CNY" 事故）
+    return { key, label, series: list };
+  });
+}
+
+/** 多单位序列 → 每单位一张小图；单一分组时保持原单图行为。 */
+export function MetricSmallMultiples({ series, height = 210, onPointClick, title }: ChartProps) {
+  const groups = groupByUnit(series);
+  if (groups.length <= 1) {
+    return <MetricChart series={series} height={height} onPointClick={onPointClick} title={title} />;
+  }
+  return (
+    <div>
+      {title && <div className="mb-1.5 text-xs font-semibold text-neutral-700">{title}</div>}
+      <div className="grid gap-2 md:grid-cols-2">
+        {groups.map((g) => (
+          <MetricChart key={g.key} series={g.series} height={height}
+                       onPointClick={onPointClick} title={g.label} />
+        ))}
+      </div>
+      <div className="mt-1 text-[10px] text-neutral-400">
+        按单位分组的小倍数图（不同单位不同轴，避免比例被金额压平）；点数据点看来源。
+      </div>
+    </div>
+  );
 }

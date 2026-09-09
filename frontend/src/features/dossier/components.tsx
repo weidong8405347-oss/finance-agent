@@ -6,8 +6,9 @@
 import { useEffect, useRef, useState } from "react";
 
 import { dossierApi } from "./api";
+import { formatRatioDisplay } from "./charts";
 import type {
-  ClaimItem, DossierSnapshot, EvidenceDetail, KeyMetric, ModuleStatus,
+  ClaimItem, DossierSnapshot, EvidenceDetail, KeyMetric, ModuleStatus, ValidationItem,
 } from "./types";
 
 // ---------------- 模块状态徽标（§4.6：运行/模块/产物三轴分离） ----------------
@@ -134,11 +135,24 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
     || (snap.research.required
       ? `关键问题 ${snap.research.answered}/${snap.research.required} 已回答`
       : "");
+  // tear-sheet（升级方案 §5/§26）：下一步验证从冻结结构产物确定性推导（最近 expected 两项）
+  const nextValidations = ((snap.structures?.validation_timeline?.items ?? []) as ValidationItem[])
+    .filter((i) => i.status === "expected" && (i.window_start || i.window_end))
+    .sort((a, b) => (a.window_start || a.window_end).localeCompare(b.window_start || b.window_end))
+    .slice(0, 2);
+  const hasTearSheet = Boolean(s.stage || s.why_now?.length || s.value_capture
+    || s.bottlenecks?.length || s.thesis_breakers?.length || nextValidations.length);
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-4">
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <span className="text-xs font-semibold text-neutral-500">研究结论</span>
         <span className={`rounded-full border px-2 py-0.5 text-[10px] ${kindMeta.cls}`}>{kindMeta.label}</span>
+        {s.stage && (
+          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700"
+                title="行业/公司所处阶段（离散描述，不是评分）">
+            阶段 · {s.stage}
+          </span>
+        )}
         {progress && (
           <span className="rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600">
             {progress}
@@ -160,6 +174,54 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
           ? <LongText text={s.thesis} maxPx={96} />
           : "尚无研究结论——点击右上「补研」发起问题驱动研究。"}
       </div>
+      {hasTearSheet && (
+        <div className="mt-3 grid gap-2 border-t border-neutral-100 pt-3 md:grid-cols-2 xl:grid-cols-3">
+          {(s.why_now?.length ?? 0) > 0 && (
+            <TearBlock title="WHY NOW · 为什么是现在">
+              <ol className="space-y-1 text-xs text-neutral-700">
+                {s.why_now!.map((w, i) => (
+                  <li key={i}><span className="mr-1 text-neutral-400">{i + 1}.</span><LongText text={w} maxPx={54} /></li>
+                ))}
+              </ol>
+            </TearBlock>
+          )}
+          {(s.bottlenecks?.length ?? 0) > 0 && (
+            <TearBlock title="KEY BOTTLENECK · 关键瓶颈">
+              <ul className="flex flex-wrap gap-1">
+                {s.bottlenecks!.map((b, i) => (
+                  <li key={i} className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            </TearBlock>
+          )}
+          {s.value_capture && (
+            <TearBlock title="VALUE CAPTURE · 价值捕获">
+              <div className="text-xs text-neutral-700"><LongText text={s.value_capture} maxPx={54} /></div>
+            </TearBlock>
+          )}
+          {nextValidations.length > 0 && (
+            <TearBlock title="NEXT VALIDATION · 下一步验证">
+              <ul className="space-y-1 text-xs text-neutral-700">
+                {nextValidations.map((v, i) => (
+                  <li key={i}>
+                    <span className="mr-1 font-mono text-[10px] text-blue-700">{v.window_start}{v.window_end ? `→${v.window_end}` : ""}</span>
+                    {v.event}
+                  </li>
+                ))}
+              </ul>
+            </TearBlock>
+          )}
+          {(s.thesis_breakers?.length ?? 0) > 0 && (
+            <TearBlock title="THESIS BREAKERS · 什么情况推翻结论" tone="danger">
+              <ul className="space-y-1 text-xs text-red-900">
+                {s.thesis_breakers!.map((t, i) => <li key={i}>· <LongText text={t} maxPx={54} /></li>)}
+              </ul>
+            </TearBlock>
+          )}
+        </div>
+      )}
       {tiers.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {tiers.map(([tier, names]) => (
@@ -255,7 +317,7 @@ export function KeyMetricBar({ snap, onMetricClick }: {
           className={`rounded-lg border bg-white px-3 py-2 text-left ${
             m.status === "conflicted" ? "border-red-200" : m.status === "stale" ? "border-orange-200" : "border-neutral-200"
           } ${m.observation_id ? "hover:border-neutral-400" : ""}`}
-          title={`${m.period_label} · ${m.nature || "—"}${m.as_of_note ? ` · ${m.as_of_note}` : ""}（点击查看来源）`}
+          title={`${m.period_label} · ${m.nature || "—"}${m.raw_text ? ` · 披露原文「${m.raw_text}」` : ""}${m.as_of_note ? ` · ${m.as_of_note}` : ""}（点击查看来源）`}
         >
           <div className="text-[10px] text-neutral-500">
             {m.label}
@@ -263,7 +325,7 @@ export function KeyMetricBar({ snap, onMetricClick }: {
             {m.status === "conflicted" && <span className="ml-1 text-red-600">⚠冲突</span>}
           </div>
           <div className="font-mono text-base font-semibold tabular-nums text-neutral-900">
-            <MetricValue value={m.value} unit={m.unit} currency={m.currency} />
+            <MetricValue value={m.value} unit={m.unit} currency={m.currency} rawText={m.raw_text} />
           </div>
           <div className="font-mono text-[10px] text-neutral-400">{m.period_label}</div>
         </button>
@@ -277,18 +339,41 @@ export function KeyMetricBar({ snap, onMetricClick }: {
   );
 }
 
-export function MetricValue({ value, unit, currency }: { value: string | null; unit: string; currency?: string | null }) {
+export function MetricValue({ value, unit, currency, rawText }: {
+  value: string | null; unit: string; currency?: string | null; rawText?: string;
+}) {
   if (value === null || value === undefined) return <span className="text-neutral-300">—</span>;
   const n = Number(value);
   let text = value;
   if (Number.isFinite(n)) {
     const abs = Math.abs(n);
-    if (unit === "ratio") text = `${(n * 100).toFixed(1)}%`;
-    else if (abs >= 1e9) text = `${(n / 1e9).toFixed(2)}B`;
+    if (unit === "ratio") {
+      // 与图表 tooltip 同一实现（formatRatioDisplay）：原文锚点优先，
+      // 无锚点 |v|≤1 按分数、否则按百分点（修 85 → "8500.0%" 事故）
+      text = formatRatioDisplay(n, rawText);
+    } else if (abs >= 1e9) text = `${(n / 1e9).toFixed(2)}B`;
     else if (abs >= 1e6) text = `${(n / 1e6).toFixed(1)}M`;
     else text = n.toLocaleString("en-US", { maximumFractionDigits: 2 });
   }
   return <>{text}{currency && unit !== "ratio" ? <span className="ml-0.5 text-[10px] font-normal text-neutral-400">{currency}</span> : null}</>;
+}
+
+/** tear-sheet 小块（方案 §26）：有数据才渲染，标题用投资语义而非字段名。 */
+function TearBlock({ title, tone = "default", children }: {
+  title: string; tone?: "default" | "danger"; children: React.ReactNode;
+}) {
+  return (
+    <div className={`rounded-lg border p-2.5 ${
+      tone === "danger" ? "border-red-200 bg-red-50/40" : "border-neutral-200 bg-neutral-50/50"
+    }`}>
+      <div className={`mb-1 text-[10px] font-semibold tracking-wide ${
+        tone === "danger" ? "text-red-700" : "text-neutral-500"
+      }`}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
 }
 
 // ---------------- 来源抽屉（§4.6：一次点击到原文；键盘可达；小屏全屏） ----------------
