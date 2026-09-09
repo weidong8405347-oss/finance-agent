@@ -723,25 +723,25 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
                     "provenance": []}
 
         def submit_structures(args: dict[str, Any]) -> dict[str, Any]:
-            """结构化产物提交即校验（audit §3.7）：图/矩阵/时间线不许到发布才发现非法。
+            """结构化产物提交即校验 + 按 kind 部分接受（audit §3.7 + 归一层）。
 
-            服务端只做确定性验证（引用可解析/图完整/可比口径）；通过的结构进冻结
-            产物，projector 按注册表投影到对应模块。
+            服务端先做确定性形状归一（同义词映射/描述搬移/单元素包装，逐条留痕），
+            再逐 kind 解析与验证：合法 kind 立即冻结（跨调用累计合并），非法 kind 单独
+            返回字段级原因——一个 kind 的形状漂移不再拖死整批（事故：5-kind 提交因
+            bottleneck 字符串 6 连拒，12 步预算烧光，产物冻结 structures=[]）。
             """
             nonlocal submitted_structures
             from ..dossier.structures import (
-                StructureError,
-                parse_structures,
+                parse_structures_partial,
                 structures_payload,
                 validate_structures,
             )
             from ..research.artifacts import ref_resolvable
 
-            try:
-                parsed = parse_structures(args.get("structures") or {})
-            except StructureError as e:
+            raw = args.get("structures")
+            if not isinstance(raw, dict) or not raw:
                 return {"content": json.dumps({
-                    "accepted": False, "code": "invalid_structure", "error": str(e)[:800],
+                    "accepted": [], "rejected": {"_": "structures 必须是非空对象（kind → 结构体）"},
                 }, ensure_ascii=False), "provenance": []}
 
             def _resolvable(ref: str) -> bool:
@@ -750,18 +750,31 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
                     entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
                 )
 
-            issues = validate_structures(parsed, resolvable=_resolvable)
-            if issues:
-                return {"content": json.dumps({
-                    "accepted": False, "code": "structure_validation",
-                    "issues": issues[:20],
-                    "hint": "修正后重提：引用必须可解析，淘汰/不可比必须给原因，"
-                            "flow_known=False 不得给 flow_value",
-                }, ensure_ascii=False), "provenance": []}
-            submitted_structures = structures_payload(parsed)
-            return {"content": json.dumps({
-                "accepted": True, "structures": sorted(submitted_structures),
-            }, ensure_ascii=False), "provenance": []}
+            parsed, failures, repairs = parse_structures_partial(raw)
+            # 语义验证按 kind 归组（issue 前缀即 kind）：有问题的 kind 整体拒绝，其余照常接受
+            for issue in validate_structures(parsed, resolvable=_resolvable):
+                kind = issue.split(":", 1)[0].strip()
+                failures.setdefault(kind, "")
+                failures[kind] = (failures[kind] + "；" + issue if failures[kind] else issue)[:800]
+                parsed.pop(kind, None)
+            accepted_now = structures_payload(parsed)
+            submitted_structures.update(accepted_now)  # 累计合并：重提只需修非法 kind
+            resp: dict[str, Any] = {
+                "accepted": sorted(submitted_structures),
+                "accepted_now": sorted(accepted_now),
+                "rejected": failures,
+            }
+            if repairs:
+                resp["repairs"] = repairs[:20]  # 归一留痕：哪些形状被确定性修复
+            if failures:
+                resp["hint"] = (
+                    "只修被拒 kind 后重提（已接受的 kind 已冻结，不必重交）：引用必须可解析，"
+                    "淘汰/不可比必须给原因，flow_known=False 不得给 flow_value；"
+                    "bottleneck 用布尔（描述写 note），relation 用 supplies/competes/substitutes/"
+                    "depends_on/enables/value_flow，status 用 occurred/expected/unknown，"
+                    "layers 用与 node.layer 相同的 key（显示名放 layer_labels）"
+                )
+            return {"content": json.dumps(resp, ensure_ascii=False), "provenance": []}
 
         tools.update({
             "query_observations": query_observations,
@@ -783,7 +796,9 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
         llm=deps.llm_for("research"),
         manifest=manifest,
         tools=tools,
-        max_steps=12 if deps.metrics is not None else 8,
+        # 16 步（原 12）：结构提交改按 kind 部分接受后重试压力已降，但仍需余量：
+        # 读证据 + 提交结构（可修重提）+ 提交报告文档三条链各占几步（事故：12 步烧光在 6 连拒）
+        max_steps=16 if deps.metrics is not None else 8,
     )
     report_md = kernel.run_turn(_synthesize_brief(deps, ctx, view, now))
 
@@ -830,19 +845,31 @@ SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
     "submit_structures": {
         "name": "submit_structures",
         "description": (
-            "提交结构化产物（服务端验证后冻结，projector 确定性投影到对应模块）。"
-            "structures 的键限定：industry_map{nodes[{node_id,label,layer,company_refs,"
-            "bottleneck,evidence_refs}],edges[{source,target,relation,flow_known,flow_value,"
-            "evidence_refs}],layers,routes,bottlenecks} / candidate_assessment{objective,"
-            "criteria,candidates[{entity_id,name,listing_status,market,security_relation,tier,"
-            "technology_stage,commercial_stage,moat_evidence,commercial_evidence,"
-            "sustainability_evidence,counter_evidence,reason,next_validation,evidence_refs,"
-            "investable}],stage_definitions} / comparison_matrix{title,columns[{id,label,"
-            "period,unit}],rows[{label,cells,observation_ids,comparable,incomparable_reason}],"
-            "chartable} / validation_timeline{items[{event,window_start,window_end,status,"
+            "提交结构化产物（服务端确定性归一 + 按 kind 校验：合法 kind 立即冻结并累计合并，"
+            "非法 kind 单独返回字段级原因，只需修被拒 kind 重提）。"
+            "structures 的键限定五类："
+            "industry_map{nodes[{node_id,label,layer,company_refs,bottleneck(布尔，瓶颈描述写 note),"
+            "note,evidence_refs}],edges[{source,target,relation(supplies/competes/substitutes/"
+            "depends_on/enables/value_flow),flow_known,flow_value,note,evidence_refs}],"
+            "layers(与 node.layer 同一组 key：upstream/midstream/downstream/platform/application/"
+            "infrastructure/demand),layer_labels(key→显示名),routes[{route,maturity,companies}],"
+            "bottlenecks,value_flow_note} / "
+            "candidate_assessment{objective,criteria,candidates[{entity_id,name,listing_status(listed/"
+            "private/subsidiary/unknown),market,security_relation,tier(included/watchlist/excluded/"
+            "needs_review),technology_stage,commercial_stage,moat_evidence,commercial_evidence,"
+            "sustainability_evidence,counter_evidence,reason,next_validation,evidence_refs,investable}],"
+            "stage_definitions} / "
+            "comparison_matrix{title,columns[{id,label,period,unit}],rows[{label,cells(以列 id 为键的 "
+            "dict，不是数组),observation_ids(同样以列 id 为键),comparable,incomparable_reason}],"
+            "chartable(全部行可比才 true)} / "
+            "validation_timeline{items[{event,window_start,window_end,status(occurred/expected/unknown),"
             "trigger_condition,affected_judgment,company_refs,evidence_refs}]} / "
-            "executive_summary{objective,answer,tiers,main_basis,biggest_disagreement,"
-            "limitations,question_progress,refs,credibility}。"
+            "executive_summary{objective,answer,stage(行业阶段一句话),why_now(为什么现在，列表),"
+            "value_capture(价值捕获在哪),thesis_breakers(证伪条件，列表),tiers(分层→公司名列表),"
+            "main_basis(列表),biggest_disagreement,limitations,question_progress,refs,"
+            "credibility(分层→说明的 dict)}。"
+            "常见中文同义词会被归一（支撑→enables、pending→expected、入选→included、上游→upstream 等）"
+            "并在响应 repairs 里留痕，但请尽量直接给规范值。"
             "硬纪律：引用必须可解析；淘汰与不可比必须给原因；无流量数据时 "
             "flow_known=false 且不填 flow_value；无可校准依据时不给概率百分比或总分。"
         ),
@@ -998,9 +1025,11 @@ def _synthesize_brief(
         "④ 未完成的题目用 gap_notice 显式标出，不得用推测补齐；"
         "⑤ 无可校准数据时用证据支持的阶段与条件表达，不自行制造百分比或总分；"
         "⑥ 先调 submit_structures 提交结构化产物（行业实体至少交 industry_map + "
-        "candidate_assessment + executive_summary；有验证节点时交 "
+        "candidate_assessment + executive_summary，executive_summary 尽量给 tear-sheet 字段 "
+        "stage/why_now/value_capture/thesis_breakers；有验证节点时交 "
         "validation_timeline；同口径数据齐时交 comparison_matrix）——页面靠这些"
-        "结构渲染关系图与公司矩阵，不靠长文本；提交即校验，引用不可解析会被退回；"
+        "结构渲染关系图与公司矩阵，不靠长文本；按 kind 提交即校验：合法 kind 立即冻结，"
+        "非法 kind 按返回原因只修该 kind 重提；"
         "⑦ 最后调 submit_report_document（提交即校验，硬错会当轮返回可修原因）。"
     )
     del view

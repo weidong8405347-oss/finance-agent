@@ -253,8 +253,10 @@ class DossierService:
                 payload["nodes"] = imap.get("nodes") or []
                 payload["edges"] = imap.get("edges") or []
                 payload["layers"] = imap.get("layers") or []
+                payload["layer_labels"] = imap.get("layer_labels") or {}
                 payload["routes"] = imap.get("routes") or []
                 payload["bottlenecks"] = imap.get("bottlenecks") or []
+                payload["value_flow_note"] = imap.get("value_flow_note") or ""
                 payload["limitations"] = imap.get("limitations") or []
                 if not payload["nodes"]:
                     payload["notes"].append(
@@ -285,6 +287,9 @@ class DossierService:
                 "objective": assessment.get("objective") or "",
                 "stage_definitions": assessment.get("stage_definitions") or {},
                 "comparison": matrix,
+                # 对照矩阵的可绘图数值（升级方案 §9 Ranked Bar）：服务端从冻结观测
+                # 按 observation_ids 解析十进制值——前端不从展示字符串（"106,303" "+287.2%"）猜数
+                "comparison_numerics": _comparison_numerics(matrix, view["observations"]),
                 "legacy": legacy,
                 "peer_series": peer_obs,
                 "limitations": assessment.get("limitations") or [],
@@ -315,21 +320,34 @@ class DossierService:
             }
         if module == "key_kpi":
             from ..research.plan import load_recipe
+            from .projector import route_observation
 
             recipe_id = snap.get("recipe", {}).get("id", "general")
             try:
                 recipe = load_recipe(recipe_id)
             except FileNotFoundError:
                 recipe = load_recipe("general")
+            # 与模块状态同口径（route_observation）：配方 KPI 键 ∪ 路由到本模块的观测键。
+            # 事故：行业观测键（rd_spend/临床成功率…）不在配方键里 → 状态 ready 但
+            # payload 永远空图（升级方案 §12：KPI 由行业实际登记的指标驱动）。
+            routed = [o for o in observations
+                      if route_observation(entity_kind, o, recipe) == "key_kpi"]
             keys = [k.key for k in recipe.kpis]
+            keys += list(dict.fromkeys(
+                o.metric_key for o in routed if o.metric_key not in set(keys)
+            ))
             labels = {k.key: k.label for k in recipe.kpis}
-            # 主图只画合并口径的披露/计算值；指引/预期/分部各自归对应模块（review #15）
-            consolidated = [o for o in observations if not o.dimensions]
-            s = series_set(consolidated, keys, labels, frequency=frequency,
+            for k in keys:
+                labels.setdefault(k, k.replace("_", " "))
+            # 主图只画披露/计算值；指引/预期归预期差模块（review #15）；带维度观测
+            # （scope/segment）不丢——series_set 按语义键拆序列并在标签标注维度
+            s = series_set(routed, keys, labels, frequency=frequency,
                            conflicted_sems=conflicted, natures=("reported", "calculated"))
-            missing = [k for k in keys if k not in {x.metric_key for x in s.series}]
+            missing = [k for k in recipe.kpis if k.key not in {x.metric_key for x in s.series}]
             for m in missing:
-                s.notes.append(f"KPI 缺口: {labels.get(m, m)}（未披露项保留缺口，不猜数）")
+                s.notes.append(f"KPI 缺口: {m.label}（未披露项保留缺口，不猜数）")
+            if len(keys) > len(recipe.kpis):
+                s.notes.append("含配方外已登记指标（标签=指标键；点数据点看来源与口径）")
             s.notes.extend(frozen_note)
             return {"series_set": s.model_dump(mode="json"),
                     "kpi_definitions": [k.model_dump() for k in recipe.kpis]}
@@ -713,6 +731,34 @@ def re_split_peers(text: str) -> list[str]:
     import re
 
     return [p for p in re.split(r"[,，;；、\s]+", text) if p and len(p) <= 12]
+
+
+def _comparison_numerics(matrix: dict[str, Any], observations: list[Any]) -> list[dict[str, Any]]:
+    """对照矩阵行 → 可绘图数值（与 rows 同序的平行数组）。
+
+    数值只来自行内 observation_ids 引用的冻结 typed 观测（十进制字符串 + 单位/币种），
+    不从展示字符串（"106,303" "+287.2%"）解析——前端绘图用本字段，表格仍用 cells 原文。
+    前端护栏：同一列内 unit+currency 一致且 ≥2 个可绘图值才出图（混币种不硬比）。
+    """
+    by_id = {o.observation_id: o for o in observations}
+    out: list[dict[str, Any]] = []
+    for row in matrix.get("rows") or []:
+        if not isinstance(row, dict):
+            out.append({"label": "", "cells": {}})
+            continue
+        cells: dict[str, Any] = {}
+        for col_id, oid in (row.get("observation_ids") or {}).items():
+            o = by_id.get(str(oid))
+            if o is None or o.value is None or o.status != "ok":
+                continue
+            raw = getattr(o, "raw", None)
+            cells[str(col_id)] = {
+                "value": o.value, "unit": o.unit, "currency": o.currency,
+                "observation_id": o.observation_id,
+                "raw_text": str(getattr(raw, "value_text", "") or ""),
+            }
+        out.append({"label": str(row.get("label") or ""), "cells": cells})
+    return out
 
 
 def _claim_item(c: dict[str, Any]) -> dict[str, Any]:

@@ -365,6 +365,14 @@ class DossierProjector:
                 label = str(item.get("name") or item.get("entity_id") or "")
                 summary.tiers.setdefault(tier, []).append(label)
         summary.biggest_disagreement = str(exec_sum.get("biggest_disagreement") or "")
+        # tear-sheet 字段（升级方案 §5/§26）：来自 ExecutiveSummary 结构产物；
+        # 瓶颈补充自 industry_map（无则不显示，不编造）
+        summary.stage = str(exec_sum.get("stage") or "")
+        summary.why_now = [str(x) for x in (exec_sum.get("why_now") or [])][:6]
+        summary.value_capture = str(exec_sum.get("value_capture") or "")
+        summary.thesis_breakers = [str(x) for x in (exec_sum.get("thesis_breakers") or [])][:6]
+        imap_sum = structures.get("industry_map") or {}
+        summary.bottlenecks = [str(x) for x in (imap_sum.get("bottlenecks") or [])][:4]
         # 最近变化（audit §3.8）：不再拿「最后三条 claim 各截 120 字」冒充 diff——
         # 改为本次研究的可分辨进展（问题结论/新验证论断），保留完整句
         changes: list[str] = []
@@ -488,6 +496,7 @@ class DossierProjector:
             dim_note = "；".join(f"{k}={v}" for k, v in sorted(best.dimensions.items()))
             out.append(KeyMetric(
                 metric_key=best.metric_key, label=spec.label, value=best.value,
+                raw_text=_raw_text_of(best),
                 unit=best.unit, currency=best.currency,
                 period_label=best.period.fiscal_label or best.period.end.isoformat(),
                 nature=best.nature, observation_id=best.observation_id,
@@ -498,6 +507,41 @@ class DossierProjector:
                     + (f" · {dim_note}" if dim_note else "")
                 ),
             ))
+        # 配方外回退填充（升级方案 §26 KEY INDUSTRY KPI）：配方 KPI 全缺但实体有
+        # typed 观测时，首屏不得显示空指标条——按最近可知挑选已登记指标补齐到 6 张卡。
+        # 纪律：只读本主体 status=ok 观测；行业实体跳过无范围标注的公司级财务键
+        # （公司收入不得冒充行业 KPI）；标签用原始 metric_key（不美化、可回溯）。
+        filled = sum(1 for m in out if m.status != "missing")
+        if filled < 3 and entity_id:
+            seen = {m.metric_key for m in out}
+            pool: dict[str, Any] = {}
+            for o in observations:
+                if o.subject_id != entity_id or o.status != "ok" or o.value is None:
+                    continue
+                if o.metric_key in seen:
+                    continue
+                if entity_kind == "industry" and _is_company_financial(o):
+                    continue
+                cur = pool.get(o.metric_key)
+                if cur is None or (o.period.end, o.knowledge_time) > (cur.period.end, cur.knowledge_time):
+                    pool[o.metric_key] = o
+            for o in sorted(pool.values(), key=lambda x: x.knowledge_time, reverse=True):
+                if len(out) >= 6:
+                    break
+                dim_note = "；".join(f"{k}={v}" for k, v in sorted(o.dimensions.items()))
+                out.append(KeyMetric(
+                    metric_key=o.metric_key, label=o.metric_key.replace("_", " "),
+                    value=o.value, raw_text=_raw_text_of(o), unit=o.unit, currency=o.currency,
+                    period_label=o.period.fiscal_label or o.period.end.isoformat(),
+                    nature=o.nature, observation_id=o.observation_id,
+                    evidence_refs=list(o.evidence_refs), status="ok",
+                    as_of_note=(
+                        f"配方外已登记指标 · {o.period.frequency} · 可知 "
+                        f"{o.knowledge_time.date().isoformat()}"
+                        + (f" · {dim_note}" if dim_note else "")
+                    ),
+                ))
+                seen.add(o.metric_key)
         return out
 
     # ---------------- 模块状态 ----------------
@@ -534,11 +578,9 @@ class DossierProjector:
         obs_by_module: dict[str, list[MetricObservation]] = {}
         for o in observations:
             # 注册表优先（audit §3.6：行业指标不得被配方口径塞进股票 financial 组），
-            # 配方口径兜底；带 segment 维度的收入归分部模块
-            mod = module_registry.module_of_metric(entity_kind, o.metric_key) \
-                or _module_of_metric(o.metric_key, recipe)
-            if o.dimensions.get("segment") and o.metric_key == "revenue":
-                mod = "revenue_segments" if entity_kind == "stock" else "key_kpi"
+            # 配方口径兜底；带 segment 维度的收入归分部模块（route_observation 统一口径，
+            # service 模块 payload 同源复用——状态 ready 而 payload 空图不得再现）
+            mod = route_observation(entity_kind, o, recipe)
             obs_by_module.setdefault(mod, []).append(o)
         legacy_by_module: dict[str, list[Any]] = {}
         for field, rec in facts.items():
@@ -770,6 +812,47 @@ _KPI_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "firm_backlog": ("backlog", "orders"),
     },
 }
+
+
+#: 公司级财务键（行业实体回退填充时跳过：无范围标注的公司收入不得冒充行业 KPI）
+_COMPANY_FINANCIAL_KEYS = frozenset({
+    "revenue", "net_income", "gross_profit", "gross_margin", "operating_income",
+    "operating_margin", "net_margin", "ebitda", "cfo", "capex", "fcf", "cash",
+    "net_debt", "total_debt", "r_and_d", "r_and_d_expense", "rd_expense",
+    "software_acv", "market_cap", "enterprise_value", "share_price",
+})
+
+#: 公司名前缀（登记键里内嵌主体的观测，如 sdgr_total_revenue）：同样不进行业首屏回退
+_COMPANY_PREFIX_KEYS = re.compile(
+    r"^(sdgr|xtalpi|insilico|metis|recursion|absci|relay|nvda|tsm|be)_", re.IGNORECASE
+)
+
+
+def _is_company_financial(o: Any) -> bool:
+    """行业实体下疑似公司级观测：通用财务键无范围标注，或键名内嵌公司前缀。"""
+    if _COMPANY_PREFIX_KEYS.match(o.metric_key or ""):
+        return True
+    return o.metric_key in _COMPANY_FINANCIAL_KEYS and not o.dimensions.get("scope")
+
+
+def _raw_text_of(o: Any) -> str:
+    """观测的披露原文锚点（raw.value_text）：展示层优先用原文，不从十进制反猜格式。"""
+    raw = getattr(o, "raw", None)
+    return str(getattr(raw, "value_text", "") or "")
+
+
+def route_observation(entity_kind: str, o: MetricObservation, recipe: Recipe) -> str:
+    """观测 → 所属模块（状态计算与模块 payload 同一口径，audit §3.6）。
+
+    事故形态：行业 key_kpi 模块状态用注册表路由判 ready，payload 却只查配方键
+    （market_size/growth_rate/capacity_supply），实际观测键（rd_spend/revenue…）
+    全被丢掉——页面永远空图。两处必须共用本函数。
+    """
+    mod = module_registry.module_of_metric(entity_kind, o.metric_key) \
+        or _module_of_metric(o.metric_key, recipe)
+    if o.dimensions.get("segment") and o.metric_key == "revenue":
+        mod = "revenue_segments" if entity_kind == "stock" else "key_kpi"
+    return mod
 
 
 def _module_of_metric(metric_key: str, recipe: Recipe) -> str:
@@ -1047,8 +1130,8 @@ def series_set(
                     period_label=o.period.fiscal_label or o.period.end.isoformat(),
                     period_end=o.period.end.isoformat(),
                     period_start=o.period.start.isoformat() if o.period.start else None,
-                    value=o.value, nature=o.nature, basis=o.basis, unit=o.unit,
-                    currency=o.currency, observation_id=o.observation_id,
+                    value=o.value, raw_text=_raw_text_of(o), nature=o.nature, basis=o.basis,
+                    unit=o.unit, currency=o.currency, observation_id=o.observation_id,
                     status=o.status, knowledge_time=o.knowledge_time.isoformat(),
                     conflict=o.semantic_hash() in conflicted,
                 )
@@ -1099,7 +1182,9 @@ def business_graph(
             evidence_refs=[str(x) for x in (edge.get("evidence_refs") or [])],
         ))
     graph.layers = [str(x) for x in (imap.get("layers") or [])]
+    graph.layer_labels = {str(k): str(v) for k, v in (imap.get("layer_labels") or {}).items()}
     graph.routes = [dict(x) for x in (imap.get("routes") or []) if isinstance(x, dict)]
+    graph.value_flow_note = str(imap.get("value_flow_note") or "")
     graph.bottlenecks = [str(x) for x in (imap.get("bottlenecks") or [])]
 
     narrative_fields = (

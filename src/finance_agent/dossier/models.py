@@ -90,6 +90,9 @@ class KeyMetric(BaseModel):
     metric_key: str
     label: str
     value: str | None = None  # 十进制字符串；None = 缺口（不用零或旧估计补位）
+    #: 披露原文锚点（raw.value_text，如 "85%" "100x" "80-90%"）：展示优先用原文，
+    #: 避免 unit=ratio 的百分数/倍数被前端按分数 ×100 误显示（85 → 8500%）
+    raw_text: str = ""
     unit: str = ""
     currency: str | None = None
     period_label: str = ""
@@ -124,6 +127,18 @@ class DossierSummary(BaseModel):
     question_progress: str = ""
     #: 可信度分层：引用可解析 / 事实已核对 / 分析已复核 / 研究充分度
     credibility: dict[str, str] = Field(default_factory=dict)
+    # ---- tear-sheet 首屏（升级方案 §4/§5/§26）：来自 ExecutiveSummary 结构产物，
+    # 有则按投资语义分块渲染，无则不显示（不编造） ----
+    #: 行业/公司所处阶段（离散描述，不是评分）
+    stage: str = ""
+    #: 为什么现在值得关注
+    why_now: list[str] = Field(default_factory=list)
+    #: 价值捕获在哪里
+    value_capture: str = ""
+    #: 证伪条件（kill criteria）：什么事情发生会推翻本结论
+    thesis_breakers: list[str] = Field(default_factory=list)
+    #: 关键瓶颈环节（来自 industry_map.bottlenecks）
+    bottlenecks: list[str] = Field(default_factory=list)
 
 
 class SnapshotInputs(BaseModel):
@@ -220,6 +235,8 @@ class MetricPoint(BaseModel):
     period_end: str
     period_start: str | None = None
     value: str | None  # 十进制字符串（前端只在绘图边界转 number）
+    #: 披露原文锚点（raw.value_text）：tooltip/数据表优先展示原文，不从十进制反猜显示格式
+    raw_text: str = ""
     nature: str
     basis: str = "GAAP"
     unit: str = ""
@@ -294,7 +311,11 @@ class BusinessGraph(BaseModel):
     narrative_refs: list[str] = Field(default_factory=list)
     #: 分层顺序与技术路线（行业图布局用）
     layers: list[str] = Field(default_factory=list)
+    #: 规范 layer key → 展示名（归一层从显示名捕获，前端列头优先用）
+    layer_labels: dict[str, str] = Field(default_factory=dict)
     routes: list[dict[str, str]] = Field(default_factory=list)
+    #: 价值流/利润池说明（带引用）
+    value_flow_note: str = ""
     bottlenecks: list[str] = Field(default_factory=list)
 
 
