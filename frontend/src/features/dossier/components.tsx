@@ -34,6 +34,32 @@ export function ModuleStateBadge({ status, reasons }: { status: ModuleStatus; re
   );
 }
 
+/** 长文本默认折叠（audit §3.8：摘要保留完整句，正文可展开）。
+ *  不截断数据——只控制默认展示高度，全文一键展开，避免首屏被段落级 claim 堆成文字墙。
+ *  用 max-height + overflow 而不是 line-clamp：inline span 上的 -webkit-line-clamp
+ *  在部分渲染路径下不生效（实测 1440/390 首屏 thesis 未被夹住）。 */
+export function LongText({ text, maxPx = 76, className = "" }: {
+  text: string; maxPx?: number; className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 160 || text.split("\n").length > 3;
+  if (!long) return <span className={className}>{text}</span>;
+  return (
+    <span className={`block ${className}`} data-longtext={open ? "open" : "clamped"}>
+      <div
+        className="whitespace-pre-wrap"
+        style={open ? undefined : { maxHeight: `${maxPx}px`, overflow: "hidden" }}
+      >
+        {text}
+      </div>
+      <button onClick={() => setOpen((v) => !v)}
+              className="mt-0.5 whitespace-nowrap text-[10px] text-blue-700 hover:underline">
+        {open ? "收起" : `展开（${text.length} 字）`}
+      </button>
+    </span>
+  );
+}
+
 export function ModuleReasons({ reasons, gapRefs }: {
   reasons: string[];
   /** 未完成的问题 id（audit §4）：点击缺口直接补研相应 question_id */
@@ -129,9 +155,11 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
           <span className="font-semibold">研究目标：</span>{s.objective}
         </div>
       )}
-      <p className="text-[15px] leading-relaxed text-neutral-800">
-        {s.thesis ?? "尚无研究结论——点击右上「补研」发起问题驱动研究。"}
-      </p>
+      <div className="text-[15px] leading-relaxed text-neutral-800">
+        {s.thesis
+          ? <LongText text={s.thesis} maxPx={96} />
+          : "尚无研究结论——点击右上「补研」发起问题驱动研究。"}
+      </div>
       {tiers.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {tiers.map(([tier, names]) => (
@@ -153,7 +181,10 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
           {s.key_changes.length ? (
             <ol className="space-y-1 text-xs text-neutral-700">
               {s.key_changes.map((c, i) => (
-                <li key={i}><span className="mr-1 text-neutral-400">{["①", "②", "③", "④", "⑤"][i] ?? `${i + 1}.`}</span>{c}</li>
+                <li key={i}>
+                  <span className="mr-1 text-neutral-400">{["①", "②", "③", "④", "⑤"][i] ?? `${i + 1}.`}</span>
+                  <LongText text={c} />
+                </li>
               ))}
             </ol>
           ) : <div className="text-xs text-neutral-400">（本轮无可分辨进展）</div>}
@@ -162,14 +193,18 @@ export function ThesisPanel({ snap }: { snap: DossierSnapshot }) {
           <div className="mb-1 text-[11px] font-semibold text-neutral-500">关键依据</div>
           {s.drivers.length ? (
             <ul className="space-y-1 text-xs text-neutral-700">
-              {s.drivers.map((d, i) => <li key={i}>→ {d}</li>)}
+              {s.drivers.map((d, i) => <li key={i}>→ <LongText text={d} /></li>)}
             </ul>
           ) : <div className="text-xs text-neutral-400">（待研究建立依据链）</div>}
         </div>
         <div>
           <div className="mb-1 text-[11px] font-semibold text-neutral-500">最大反证</div>
           {s.counter_evidence
-            ? <div className="rounded border border-red-100 bg-red-50/50 p-2 text-xs text-red-900">{s.counter_evidence}</div>
+            ? (
+              <div className="rounded border border-red-100 bg-red-50/50 p-2 text-xs text-red-900">
+                <LongText text={s.counter_evidence} />
+              </div>
+            )
             : <div className="text-xs text-neutral-400">（反证义务：研究中必须主动寻找）</div>}
         </div>
       </div>
