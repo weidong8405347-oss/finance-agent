@@ -1831,6 +1831,13 @@ def step_committee(deps: StepDeps, ctx: StepContext) -> StepResult:
 
         # CIO 综合（强模型 A）
         cio_run = f"{ctx.child_run_id}--{ticker}-cio"
+        # 子 run 必须落 run/created（带 parent_run_id）：否则会话列表认不出它是子 run，
+        # 会在 Sessions 里冒出一个「空闲、点开什么都没有」的幽灵会话（实测 6 个）
+        deps.events.append(
+            Event(run_id=cio_run, type=RUN_CREATED,
+                  payload={"parent_run_id": ctx.child_run_id, "kind": "committee",
+                           "ticker": ticker, "role": "cio"})
+        )
         cio_brief = (
             f"你是 CIO。综合 {ticker} 的投资委员会各视角（赛道：{ctx.objective}）。\n\n"
             + "\n\n".join(f"### {k}\n{v}" for k, v in notes.items())

@@ -97,6 +97,10 @@ def cmd_list_sessions(args) -> int:
         if kind == "session":
             s = _session_summary(events, rid, r["started_at"], r["last_active"])
             extra = f" status={s['status']}"
+            if s.get("possibly_stale"):
+                extra += "（可能已中断）"
+            if s.get("last_outcome") and s["status"] == "running":
+                extra += f" 上一条={s['last_outcome']}"
             if s.get("title"):
                 extra += f" title={str(s['title'])[:28]!r}"
         print(f"  {kind:<12} {rid:<58} events={r['event_count']:<6} "

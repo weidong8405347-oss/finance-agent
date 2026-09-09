@@ -68,6 +68,9 @@ SYSTEM_RUN_PREFIXES: tuple[str, ...] = (
 #: 删除审计记录落的 run（不属于任何会话，也不进列表）
 PURGE_AUDIT_RUN = "system-purge"
 
+#: 子 run 命名约定的嵌套分隔符（`<会话>--<step>`，如 live-xxx--cmd-1-1-research）
+RUN_NESTING_SEP = "--"
+
 
 class EventStore:
     def __init__(self, path: str | Path):
@@ -209,13 +212,24 @@ class EventStore:
         ]
 
     def child_run_ids(self) -> set[str]:
-        """子 run 集合（run/created 带 parent_run_id）：不单独进会话列表。"""
+        """子 run 集合：不单独进会话列表。
+
+        两条识别路径（任一命中即算子 run）：
+        1. `run/created` 带 parent_run_id（正规路径）；
+        2. run_id 含嵌套分隔符 `--`（命名约定 `<会话>--<step>`）——兼容历史上
+           漏落 run/created 的子 run（实测：委员会 CIO 综合 run 就是这样
+           变成幽灵会话的）。
+        """
         rows = self._conn.execute(
             "SELECT DISTINCT run_id FROM events WHERE type = ?"
             " AND json_extract(payload, '$.parent_run_id') IS NOT NULL",
             (RUN_CREATED,),
         ).fetchall()
-        return {r[0] for r in rows}
+        linked = {r[0] for r in rows}
+        nested = {
+            r["run_id"] for r in self.list_runs() if RUN_NESTING_SEP in r["run_id"]
+        }
+        return linked | nested
 
     def is_session_run(self, run_id: str) -> bool:
         """是否是真正的会话（而不是投影/迁移/维护副作用 run）。
@@ -270,7 +284,8 @@ class EventStore:
         targets = [run_id]
         if cascade:
             targets += sorted(
-                r["run_id"] for r in self.list_runs() if r["run_id"].startswith(f"{run_id}--")
+                r["run_id"] for r in self.list_runs()
+                if r["run_id"].startswith(f"{run_id}{RUN_NESTING_SEP}")
             )
         deleted: dict[str, int] = {}
         ranges: dict[str, list[str]] = {}
