@@ -383,7 +383,9 @@ def assert_value_context(
     if len(distinct) >= 2 and not span:
         raise NormalizationError(
             f"摘录含多个数字 {distinct}，必须显式给出 value_span（cell/span 定位）——"
-            "不允许从如 '$73.7 million, or 37%' 这样的句子里猜要哪个数"
+            "不允许从如 '$73.7 million, or 37%' 这样的句子里猜要哪个数。"
+            "修法：重提同一观测并附 value_span=只含目标数字的逐字原文片段"
+            "（如 value_span=\"$81,615\" 或 \"Revenue is expected to be $78.0 billion\"）"
         )
 
     if value_kind in _MONEY_KINDS:

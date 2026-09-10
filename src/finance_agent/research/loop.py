@@ -951,6 +951,9 @@ def _worker_discipline(*, question_driven: bool, has_document_reader: str | bool
             " propose_metric/propose_claim → 完成一题立即 answer_question；"
             "禁止连续登记超过 3 条证据而不产出观测/论断/答案；"
             "查不到就标 unavailable 并记录 attempts，不烧预算空转。"
+            "answer_question 只需 conclusion + 已登记证据 refs：能答就先交答案，"
+            "结构化观测可随后补；propose_metric 被拒时按拒绝提示的修法示例重试一次，"
+            "仍失败就先交答案再补观测，不要放弃提交。"
             "旧字段（propose_fact）只在回答问题的顺带产出时写，不为刷字段完整度消耗预算。"
         )
     # legacy 补字段模式（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）

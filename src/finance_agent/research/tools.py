@@ -398,7 +398,15 @@ def make_research_tools(
                 })
             except Exception as e:
                 tracker.rejected.append({"metric": metric_key, "reason": f"period 非法: {e}"})
-                return {"content": f"rejected: period 非法: {e}", "provenance": []}
+                return {
+                    "content": (
+                        f"rejected: period 非法: {e}。"
+                        "修法示例：{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                        "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}"
+                        "（Q/FY/H1/TTM 必须给 start，只有 instant 可省）"
+                    ),
+                    "provenance": [],
+                }
             try:
                 extra_steps = [
                     NormalizationStep.model_validate(s)
@@ -468,7 +476,21 @@ def make_research_tools(
                     }
             except Exception as e:
                 tracker.rejected.append({"metric": metric_key, "reason": f"模型校验失败: {e}"})
-                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+                hint = f"rejected: {type(e).__name__}: {e}"
+                if nature == "guidance":
+                    hint += (
+                        "。修法：guidance 必须形如 {\"issuer\":\"公司名\","
+                        "\"published_at\":\"2026-02-25\",\"target_period\":"
+                        "{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                        "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}}"
+                        "（target_period 是对象，不接受字符串标签）"
+                    )
+                elif nature == "consensus":
+                    hint += (
+                        "。修法：consensus 必须形如 {\"vendor\":\"供应商名\","
+                        "\"snapshot_at\":\"2026-08-01T00:00:00Z\"}"
+                    )
+                return {"content": hint, "provenance": []}
             try:
                 observation_id, created = metric_writer.write_observation(
                     obs, run=manifest, namespace=namespace
@@ -886,6 +908,11 @@ def make_research_tools(
                 payload["query_note"] = query_note
             if pit_note:
                 payload["pit_note"] = pit_note
+            if doc.reuses > 0:
+                payload["reused_note"] = (
+                    f"文档已存档过（{doc.document_id}），本次未重新抓取；已有窗口/chunk 可直接引用，"
+                    "继续精读用 read_document/search_document，勿对同一文档反复 fetch"
+                )
             return {
                 "content": json.dumps(payload, ensure_ascii=False) + _quality_note(doc),
                 "provenance": _doc_provenance(doc),
@@ -1039,12 +1066,17 @@ def make_research_tools(
                 windows = [_page_payload(doc, p) for p in doc.parsed_pages[:2]]
             out = [{"chunk_id": w["chunk_id"], "text": w["text"],
                     "quality": doc.quality, "page": w.get("page")} for w in windows]
+            body: dict[str, Any] = {
+                "windows": out, "quality": doc.quality,
+                "document_id": doc.document_id,
+                "completeness": doc.completeness_payload(),
+            }
+            if doc.reuses > 0:
+                body["reused_note"] = (
+                    "文档已存档过，未重新抓取；继续精读用 read_document/search_document"
+                )
             return {
-                "content": json.dumps({
-                    "windows": out, "quality": doc.quality,
-                    "document_id": doc.document_id,
-                    "completeness": doc.completeness_payload(),
-                }, ensure_ascii=False) + _quality_note(doc),
+                "content": json.dumps(body, ensure_ascii=False) + _quality_note(doc),
                 "provenance": _doc_provenance(doc),
             }
 
@@ -1296,8 +1328,11 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 },
                 "period": {
                     "type": "object",
+                    "description": "业务期间；Q/FY/H1/TTM 必须给 start（只有 instant 可省）。"
+                                   "示例：{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                                   "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}",
                     "properties": {
-                        "start": {"type": "string", "description": "YYYY-MM-DD（instant 可省）"},
+                        "start": {"type": "string", "description": "YYYY-MM-DD（仅 instant 可省）"},
                         "end": {"type": "string", "description": "YYYY-MM-DD"},
                         "frequency": {"type": "string", "enum": ["FY", "Q", "H1", "TTM", "instant"]},
                         "fiscal_label": {"type": "string", "description": "如 FY2025/2025Q3"},
@@ -1320,8 +1355,39 @@ TOOL_SCHEMAS: dict[str, dict] = {
                         "required": ["formula_id"],
                     },
                 },
-                "guidance": {"type": "object"},
-                "consensus": {"type": "object"},
+                "guidance": {
+                    "type": "object",
+                    "description": "nature=guidance 必填：发行人、指引发布时刻、目标期间（对象，"
+                                   "不是字符串标签）",
+                    "properties": {
+                        "issuer": {"type": "string", "description": "发布者（公司名/管理层角色）"},
+                        "published_at": {"type": "string",
+                                         "description": "指引发布日 YYYY-MM-DD 或 ISO 时刻"},
+                        "target_period": {
+                            "type": "object",
+                            "description": "指引覆盖的未来期间（与 period 同构）：如 "
+                                           "{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                                           "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}",
+                            "properties": {
+                                "start": {"type": "string"}, "end": {"type": "string"},
+                                "frequency": {"type": "string",
+                                              "enum": ["FY", "Q", "H1", "TTM", "instant"]},
+                                "fiscal_label": {"type": "string"},
+                            },
+                            "required": ["end", "frequency"],
+                        },
+                    },
+                    "required": ["issuer", "published_at", "target_period"],
+                },
+                "consensus": {
+                    "type": "object",
+                    "description": "nature=consensus 必填：供应商与快照时点（缺快照不可回填）",
+                    "properties": {
+                        "vendor": {"type": "string"},
+                        "snapshot_at": {"type": "string", "description": "ISO 时刻"},
+                    },
+                    "required": ["vendor", "snapshot_at"],
+                },
                 "document_refs": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["metric_key", "value_text", "period", "evidence_ids"],
