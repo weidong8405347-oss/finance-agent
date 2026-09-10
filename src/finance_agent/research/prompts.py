@@ -106,6 +106,8 @@ PLAN_MODE_CONTRACT = """\
 3. 反证：主动找削弱结论的证据；找不到反证要在 limitations 里写明「未检索到反证」。
 4. 提交：每题完成立即 answer_question(question_id, status, conclusion, support_refs)；
    查不到就标 unavailable 并记 attempts，不许留空拖到下一轮。
+   数值类结论交题前先 list_conflicts 查开放冲突：有则先 adjudicate_conflict 裁决
+   （给 rationale）或在 unresolved 里显式注明冲突未决——不得留着竞争值交无条件答案。
 旧档案字段（propose_fact）只在回答问题的顺带产出时写；不要为了刷字段完整度而
 消耗本轮预算——字段 100% 不等于研究充分。
 """

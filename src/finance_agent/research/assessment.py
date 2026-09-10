@@ -140,6 +140,9 @@ class ResearchAssessment(BaseModel):
     evidence_quality: dict[str, Any] = Field(default_factory=dict)
     analytical_depth: dict[str, Any] = Field(default_factory=dict)
     model_reproducibility: dict[str, Any] = Field(default_factory=dict)
+    #: 量表一致性扫描（基线发现 F10）：同语义组 ~1000/10^6 倍离群对与
+    #: 同值不同维度（语义键漂移候选）；披露不拦门（写侧硬闸在 metric_writer 2c）
+    numeric_consistency: dict[str, Any] = Field(default_factory=dict)
     gaps: list[str] = Field(default_factory=list)
     stop_reason: str = ""  # converged/budget/stalled/cancelled/coverage_met/integrity_failed
     verdict: str = "partial"  # sufficient / partial / blocked
@@ -174,6 +177,67 @@ def coverage_of(plan: ResearchPlan) -> CoverageStats:
         key_coverage=(len(key_answered) / len(key)) if key else 0.0,
         violations=violations,
     )
+
+
+def numeric_consistency_scan(observations: list[Any]) -> dict[str, Any]:
+    """量表离群与同值异键扫描（基线发现 F10，确定性规则，披露不拦门）。
+
+    同语义组 = 同 metric_key + 期间末 + 频率 + 币种 + 口径 + 性质（维度任意）：
+    - scale_suspect_pairs：值比 ≈ 10^3 / 10^6 —— 千元原样 vs 归一至元、
+      million 漏乘类事故的存库信号（dims 漂移使语义键分开、冲突闸拦不住）；
+    - same_value_different_dims：同值不同维度 —— 语义键漂移的重复登记候选。
+    """
+    from collections import defaultdict
+    from decimal import Decimal, InvalidOperation
+
+    groups: dict[tuple, list[Any]] = defaultdict(list)
+    for o in observations:
+        value = getattr(o, "value", None)
+        if value is None:
+            continue
+        period = getattr(o, "period", None)
+        groups[(
+            getattr(o, "metric_key", ""),
+            period.end.isoformat() if period is not None else "",
+            period.frequency if period is not None else "",
+            getattr(o, "currency", None) or "",
+            getattr(o, "basis", ""),
+            getattr(o, "nature", ""),
+        )].append(o)
+
+    def _brief(o: Any) -> dict[str, Any]:
+        return {
+            "observation_id": getattr(o, "observation_id", ""),
+            "value": getattr(o, "value", None),
+            "unit": getattr(o, "unit", ""),
+            "dimensions": dict(getattr(o, "dimensions", {}) or {}),
+            "unit_text": (getattr(o, "raw", None) or None) and o.raw.unit_text or "",
+        }
+
+    scale_suspects: list[dict[str, Any]] = []
+    same_value: list[dict[str, Any]] = []
+    for (metric_key, period_end, *_rest), items in groups.items():
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                a, b = items[i], items[j]
+                try:
+                    va, vb = abs(Decimal(str(a.value))), abs(Decimal(str(b.value)))
+                except InvalidOperation:
+                    continue
+                if va == 0 or vb == 0:
+                    continue
+                ratio = float(va / vb) if va >= vb else float(vb / va)
+                pair = {"metric_key": metric_key, "period_end": period_end,
+                        "ratio": round(ratio, 3), "a": _brief(a), "b": _brief(b)}
+                if 10 ** 2.7 <= ratio <= 10 ** 3.3 or 10 ** 5.7 <= ratio <= 10 ** 6.3:
+                    scale_suspects.append(pair)
+                elif va == vb and dict(a.dimensions or {}) != dict(b.dimensions or {}):
+                    same_value.append(pair)
+    return {
+        "scale_suspect_pairs": scale_suspects[:10],
+        "scale_suspect_total": len(scale_suspects),
+        "same_value_different_dims": same_value[:10],
+    }
 
 
 def assess(
@@ -320,6 +384,12 @@ def assess(
     # verdict（§7.6：覆盖不足但有有效成果 → partial，不叫「充分完成」）
     gaps: list[str] = []
     notes: list[str] = []
+    numeric_consistency = numeric_consistency_scan(list(observations))
+    if numeric_consistency["scale_suspect_pairs"]:
+        notes.append(
+            f"{numeric_consistency['scale_suspect_total']} 对观测存在 ~10^3/10^6 倍量表离群"
+            "（同指标同期间）——量表归一/维度漂移待人工复核，不得直接取均值或混用"
+        )
     target = plan.budgets.question_coverage_target
     if not hard_gate_passed:
         verdict = "blocked"
@@ -366,6 +436,7 @@ def assess(
         evidence_quality=evidence_quality,
         analytical_depth=analytical_depth,
         model_reproducibility=model_reproducibility,
+        numeric_consistency=numeric_consistency,
         gaps=gaps,
         stop_reason=stop_reason,
         verdict=verdict,

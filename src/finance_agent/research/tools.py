@@ -68,6 +68,26 @@ class _Tracker:
         self.claims: list[str] = []
         self.calculations: list[str] = []
         self.questions_advanced: list[str] = []
+        #: 高价值精读计数（基线发现 F11）：文档工具/read_chunk 真实读到内容才计；
+        #: 停滞判定时作为「可验证探索」信号（有界），不把必要探索误判为空转
+        self.close_reads: list[str] = []
+
+    #: 提交类拒绝的键（F11）：模型真实尝试过交付但被门禁拦下 = 修复回环中；
+    #: 证据登记拒绝（evidence）不算——只囤证据不提交仍是空转形态
+    _SUBMISSION_KEYS = ("metric", "claim", "question", "field", "formula", "conflict")
+
+    @property
+    def submission_rejections(self) -> list[dict]:
+        """被门禁拦下的提交尝试（propose_metric/claim/fact、answer、calc、裁决）。
+
+        排除组级基础设施失败（field=group:* 的 LLM 异常/预算终止）——
+        那不是模型在修复回环里，给探索轮次只会反复锤死掉的 provider。
+        """
+        return [
+            r for r in self.rejected
+            if any(k in r for k in self._SUBMISSION_KEYS)
+            and not str(r.get("field", "")).startswith("group:")
+        ]
 
     @property
     def any_progress(self) -> bool:
@@ -172,6 +192,7 @@ def make_research_tools(
         chunk = chunk_store.get(cid)
         if chunk is None:
             return {"content": f"error: 未知 chunk_id {cid}", "provenance": []}
+        tracker.close_reads.append(cid)  # F11：按需回读全文 = 可验证精读
         query = str(args.get("query") or "").strip()
         idxs = list(range(len(chunk.spans)))
         if query:
@@ -499,11 +520,35 @@ def make_research_tools(
                 tracker.rejected.append({"metric": metric_key, "reason": str(e)})
                 return {"content": f"rejected: {e}", "provenance": []}
             tracker.observations.append(metric_key)
+            # F10 量表离群预警（不拦截落库；响应可见，提示模型自查量表/维度）：
+            # 同 metric_key+期间+币种+口径下与已有观测存在 ~10^3/10^6 倍差异 → 列出双方
+            scale_warning: list[dict] = []
+            try:
+                from .assessment import numeric_consistency_scan
+
+                existing = metrics.observations_as_of(
+                    entity_kind, entity_id, datetime.now(UTC), namespace=namespace,
+                    metric_key=metric_key,
+                )
+                scan = numeric_consistency_scan(list(existing))
+                scale_warning = [
+                    p for p in scan["scale_suspect_pairs"]
+                    if observation_id in (p["a"]["observation_id"], p["b"]["observation_id"])
+                ]
+            except Exception as e:  # noqa: BLE001 - 预警失败不影响已落库主路径，但留痕可见
+                scale_warning = [{"warning_scan_error": f"{type(e).__name__}: {e}"}]
+            out_payload: dict[str, Any] = {
+                "observation_id": observation_id, "metric_key": metric_key,
+                "value": value, "created": created,
+            }
+            if scale_warning:
+                out_payload["scale_warning"] = scale_warning
+                out_payload["scale_hint"] = (
+                    "同指标同期间存在 ~1000/10^6 倍量表离群：核对两边的 unit_text/换算链/"
+                    "维度语义（千元原样 vs 归一至元？分部 vs 合并？）；确认错登记就用修订入口纠正"
+                )
             return {
-                "content": json.dumps({
-                    "observation_id": observation_id, "metric_key": metric_key,
-                    "value": value, "created": created,
-                }, ensure_ascii=False),
+                "content": json.dumps(out_payload, ensure_ascii=False),
                 "provenance": [
                     {"source_id": e.source_id,
                      "available_at": e.available_at.isoformat() if e.available_at else None,
@@ -922,6 +967,7 @@ def make_research_tools(
                 payload["query_note"] = query_note
             if pit_note:
                 payload["pit_note"] = pit_note
+            tracker.close_reads.append(f"{doc.document_id}#fetch")  # F11 精读信号
             if doc.reuses > 0:
                 payload["reused_note"] = (
                     f"文档已存档过（{doc.document_id}），本次未重新抓取；已有窗口/chunk 可直接引用，"
@@ -986,6 +1032,8 @@ def make_research_tools(
                 body["out_of_range_pages"] = out_of_range
             if page_range:
                 body["page_range_note"] = page_range_note
+            if body.get("windows") or body.get("pages"):
+                tracker.close_reads.append(f"{doc.document_id}#read")  # F11 精读信号
             payload = {
                 "document_id": doc.document_id, **body,
                 "completeness": doc.completeness_payload(),
@@ -1037,6 +1085,8 @@ def make_research_tools(
                 )
                 if excerpts:
                     excerpts[-1]["hit_count"] = count
+            if excerpts:
+                tracker.close_reads.append(f"{doc.document_id}#search")  # F11 精读信号
             payload = {
                 "document_id": doc.document_id, "query": query, "mode": mode,
                 "hits": excerpts,
@@ -1080,6 +1130,7 @@ def make_research_tools(
                 windows = [_page_payload(doc, p) for p in doc.parsed_pages[:2]]
             out = [{"chunk_id": w["chunk_id"], "text": w["text"],
                     "quality": doc.quality, "page": w.get("page")} for w in windows]
+            tracker.close_reads.append(f"{doc.document_id}#filing")  # F11 精读信号
             body: dict[str, Any] = {
                 "windows": out, "quality": doc.quality,
                 "document_id": doc.document_id,

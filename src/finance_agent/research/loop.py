@@ -95,6 +95,10 @@ def _question_groups(plan_payload: dict) -> list[tuple[str, list[str]]]:
 
 logger = logging.getLogger("finance_agent.research")
 
+#: 基线发现 F11：连续「只有可验证探索、无正式产出」的轮次上限——给门禁修复
+#: 回环留轮次，但不允许无限探索（预算照常扣减，超限仍 stalled）
+_MAX_EXPLORATION_ONLY_ROUNDS = 2
+
 
 class ResearchLoop:
     def __init__(
@@ -174,6 +178,8 @@ class ResearchLoop:
         #: 研究充分度评估（§7.6；有计划+新存储时填充）
         self.assessment: object | None = None
         self.plan_payload: dict | None = None
+        #: F11：连续 exploration-only 轮次计数（有界修复回环）
+        self._exploration_rounds = 0
 
     def run(
         self,
@@ -422,6 +428,22 @@ class ResearchLoop:
                 (self.plan_payload or {}).get("budgets", {}).get("question_coverage_target", 0.8)
                 if self.plan_payload else 0.8
             )
+            progress = any(tr.any_progress for tr in trackers)
+            close_reads = sum(len(getattr(tr, "close_reads", [])) for tr in trackers)
+            answer_rejections = sum(
+                len(getattr(tr, "answer_rejections", [])) for tr in trackers
+            )
+            # F11：提交类门禁拒绝（propose_metric/claim、answer_question 等）=
+            # 模型真实尝试过交付、处于修复回环——与高价值精读同属可验证探索；
+            # 纯囤证据（只登记不提交）不算。仅限问题驱动（有冻结计划）：
+            # legacy 补字段模式保持旧停滞语义（基线事故形态发生在 plan 模式）
+            submission_rejections = sum(
+                len(getattr(tr, "submission_rejections", [])) for tr in trackers
+            )
+            exploration_only = (
+                (not progress) and self.plan_payload is not None
+                and (submission_rejections > 0 or close_reads >= 3)
+            )
             report = IterationReport(
                 run_id=self._manifest.run_id,
                 round=round_no,
@@ -432,12 +454,15 @@ class ResearchLoop:
                 rejected=rejected,
                 missing_after=list(gaps_after.missing),
                 # 进展 = 字段/观测/论断/计算/问题任一有成功产出（§7.7 防 stalled 误判）
-                progress=any(tr.any_progress for tr in trackers),
+                progress=progress,
                 observations_written=[m for tr in trackers for m in tr.observations],
                 claims_written=[c for tr in trackers for c in tr.claims],
                 calculations_done=[c for tr in trackers for c in tr.calculations],
                 questions_advanced=[q for tr in trackers for q in tr.questions_advanced],
                 question_coverage=coverage_after,
+                exploration_only=exploration_only,
+                close_reads=close_reads,
+                answer_rejections=answer_rejections,
             )
             self._emit(RESEARCH_ROUND_END, report.model_dump(mode="json"))
             reports.append(report)
@@ -460,11 +485,28 @@ class ResearchLoop:
                 self.stop_reason = "converged"
                 break
             if not report.progress:
-                self.stop_reason = "stalled"
-                self._emit_stall_diagnostic(
-                    entity_kind, entity_id, gaps_after, all_rejected, reports
-                )
-                break
+                if (
+                    report.exploration_only
+                    and self._exploration_rounds < _MAX_EXPLORATION_ONLY_ROUNDS
+                ):
+                    # F11（基线：answer_question 被拒后的修复尝试不计进展 → 提前 stalled）：
+                    # 可验证探索（提交尝试/精读）给修复回留有界轮次；不重置预算，
+                    # 连续无产出仍照常 stalled（不因模型自报「有进展」续命）
+                    self._exploration_rounds += 1
+                    logger.info(
+                        "research 第 %d 轮无正式产出但有可验证探索（%d 次交题尝试/%d 次精读）："
+                        "给门禁修复回轮次 %d/%d",
+                        round_no, report.answer_rejections, report.close_reads,
+                        self._exploration_rounds, _MAX_EXPLORATION_ONLY_ROUNDS,
+                    )
+                else:
+                    self.stop_reason = "stalled"
+                    self._emit_stall_diagnostic(
+                        entity_kind, entity_id, gaps_after, all_rejected, reports
+                    )
+                    break
+            else:
+                self._exploration_rounds = 0
 
         self._finalize_assessment(entity_kind, entity_id, _now(), reports)
         if self._run_budget is not None:
@@ -701,6 +743,7 @@ class ResearchLoop:
                     "written": list(tracker.written),
                     "rejected": list(tracker.rejected),
                     "evidence_registered": len(tracker.registered),  # 囤证据检测
+                    "close_reads": len(tracker.close_reads),  # F11 高价值精读计数
                     "observations": list(tracker.observations),
                     "claims": list(tracker.claims),
                     "questions_advanced": list(tracker.questions_advanced),
@@ -853,6 +896,21 @@ class ResearchLoop:
             "sources_available": list(self._gateway_sources),
             "suggestions": _stall_suggestions(entity_id, gaps.missing, self._gateway_sources),
         }
+        # F11：探索回环耗尽的 stalled 是另一种形态——有交题尝试/精读但零正式产出，
+        # 建议指向拒绝原因修复，而不是笼统的「换查询策略」
+        if reports and reports[-1].exploration_only:
+            last = reports[-1]
+            diag["exploration_exhausted"] = {
+                "answer_rejections": last.answer_rejections,
+                "close_reads": last.close_reads,
+                "rounds_granted": self._exploration_rounds,
+            }
+            diag["suggestions"].insert(0, (
+                f"门禁修复回环已耗尽（连续 {self._exploration_rounds} 轮只有探索无产出："
+                f"{last.answer_rejections} 次交题尝试/{last.close_reads} 次精读）——"
+                "按 answer_rejections/rejected 里的具体拒绝原因修复（引用/数值/期间/单位），"
+                "或把该题标 disputed/unavailable 并记录 attempts"
+            ))
         self.stall_diagnostic = diag
         logger.warning(
             "research stalled %s:%s：%d 轮零写入，缺口 %s；建议：%s",
