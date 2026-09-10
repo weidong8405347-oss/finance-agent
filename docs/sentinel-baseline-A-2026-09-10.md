@@ -81,3 +81,36 @@
 3. B 组：Docling 试点解决 garbled 中文 PDF（2228 题 4/8 文档乱码是当前最大原文可得性缺口）；
 4. P2-A 内容级 verifier（F8 反证沉淀已加纪律提示，硬核验归 verifier；引用语义支持率人工标注子集）；
 5. ai4s 重跑 F4–F5 完成后补漏斗全链数据（A 股候选 301080.SZ 在无 A 股披露源下的诚实降级表现是额外看点）。
+
+---
+
+## 7. A' 验证重跑与 A 对照（2026-09-10，F1–F9 整改后，commit `a19fa90`）
+
+同模型（research=kimi-k3 / fast=GLM-5.3）、同题集、同运行器（含闸口代行）；三题重跑：NVDA / BE / 2228.HK。数据：`data/sentinel/baseline-A-prime/`。
+
+| 题 | A（基线） | A'（整改后） | 对照结论 |
+| --- | --- | --- | --- |
+| NVDA guidance | sufficient 1/1；obs 4；答案 typed refs **0**；first_party **2**/4；833s | sufficient 1/1；obs 4；答案 typed refs **4/8**；first_party **4/4**；675s | 质量持平；F2 门禁触发 1 次→模型当轮恢复并带 obs 引用交题 ✓；F7 域细化把 sec.gov 直拉新闻稿正确归一手 ✓ |
+| BE 深研 | sufficient 12/12；obs **0**；focus 未编译；3097s | **partial 9/13**（key 0.625）；obs **2**；**focus 题编译且已答**；数值题全部带 typed refs；2084s | F1 ✓：`focus-0c9baca5` 直接回答订单口径——「PR 口径 ~$20B 总 backlog vs GAAP RPO $394.4M」，两条 firm_backlog 观测以 **basis=operating_metric/GAAP 正确分离**（语义键设计经受实战）；F2 ✓ 数字进库；覆盖度下降是门禁把「纯文本答案」变成未答 + stalled 提前终止（见 F11），符合「不为评分补造」原则但需调优 |
+| 2228.HK 中文财报 | partial **3/12**（key 0.43）；obs 12（含 unit=USD+currency=CNY 违例）；2601s | partial **12/13**（key **1.0**）；obs **16**（页码 locator 27–292）；**unit 违例 0**；开放冲突 1 项**可见披露**；2908s | F5 交题欠账提醒注入 **13 次**、F3 单位闸生效、提交率 3/12→12/13——整改直接因果；net_income H1 双口径（-224,944 vs -251,901 千元）形成竞争版本并诚实降为 partial（绝不静默覆盖 ✓），但 worker 未在预算内裁决（F12） |
+
+**ai4s 漏斗重跑**（R5/R6 整改后）：F1 completed（2 claims，新判定不拦停）→ thesis 落档 → F2 标的池 **49 只**（3 路并集均绑归属证据）→ F3 粗筛 **43 张卡** + 闸口代行（审计留痕）→ 深研名单 6 只（02228.HK/07666.HK/SDGR/RXRX/AC/**301080.SZ**）→ F4 深研完成（SDGR 88%/RXRX 100%/AC 88%/301080.SZ 100% converged；两只港股 budget 0% 诚实上报，失败隔离生效）→ F4.5 委员会 **6 票全产出**（四视角+空头+CIO，artifacts 落盘）→ **F5 rank_report 被运行器 120min 超时杀死**（CommandRunner 是 daemon 线程，主进程退出即杀在飞 step）——运行器已整改（45min 宽限窗口 + status=completed_after_grace）且题集超时调至 180min；漏斗机制本身全链验证通过。
+
+## 8. A' 新发现（F10–F13，未修）
+
+| # | 发现 | 证据 | 建议归属 |
+| --- | --- | --- | --- |
+| F10 | **千元归一不一致 + 语义键漂移**：2228 revenue 802,623（千元原样，p.242）与 802,623,000（归一至元，p.29）因 dims 漂移不同语义键、无冲突标记并存；cfo（千元）与 revenue（元）跨指标量表不一致 | A' metrics.db 观测清单 | 同实体同指标的量表归一策略 + 量级离群检测（P1 级，数值准确率命门） |
+| F11 | **stalled 提前终止**：answer_question 被拒后的修复尝试不计入进展信号，BE A' 4 题未答即判 stalled（budget 未耗尽） | BE A' stop=stalled, exhausted=[] | 方案 §8.3 既有方向：把「可验证的提交尝试/高价值精读」纳入进展信号 |
+| F12 | **开放冲突未在预算内裁决**：2228 net_income 冲突，list_conflicts/adjudicate_conflict 工具在但 worker 没用 | A' open_conflicts=1 | brief 纪律：数值题交题前查 list_conflicts，有开放冲突先裁决或注明 |
+| F13 | **重复窗口注册仍高**：duplicate_chunks BE 305→646、2228 557→803（门禁重试轮次增加；dedupe 保住上下文不膨胀但烧步数） | budget 快照 | P2-A EvidencePack（按问题组织证据包）根治 |
+
+正面确认：BE 双口径 backlog 以 basis 正确分离（未误报冲突）；2228 竞争版本机制正确标记双口径净利（append-only 不覆盖）；未答题全部带详细 attempts（「search_document 0 命中，10-K 未给 TAM 数字」级别的可核查记录）；诚实降级贯穿（港股 0% 完整度如实上报、garbled 拦截、A 股候选无披露源时靠 web 证据收敛）。
+
+## 9. 更新后的下一步
+
+1. **F10 量表归一**（数值准确率 ≥98% 目标的当前最大威胁）+ F12 裁决纪律（小改）；
+2. F11 进展信号扩展（提交尝试计为活动，给门禁修复回环留轮次）；
+3. B 组：Docling 试点（2228 题 4/8 文档 garbled 仍是原文可得性最大缺口）；
+4. P2-A 内容级 verifier + EvidencePack（F13 根治 + 引用语义支持率）；
+5. ai4s F5 用宽限窗口版运行器补跑（或从 committee 产物人工合成排序报告验证 F5 链路）。
