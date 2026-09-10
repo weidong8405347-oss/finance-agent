@@ -132,6 +132,10 @@ class StepDeps:
     #: 分页抓取（Document Read v2）：f(url) -> gateway.fetch.FetchedDocument；
     #: 缺省时研究工具退回旧纯文本抓取（兼容 eval 回放与旧装配）
     fetch_document_paged: Callable[[str], Any] | None = None
+    #: 薄插件层（P1-C）：PluginRegistry + 凭证可见性环境（manifest 冻结/能力页）；
+    #: 缺省 = 旧装配（无 registry 的测试/回放路径行为不变）
+    plugin_registry: Any | None = None
+    plugin_env: dict[str, str] | None = None
     max_rounds: int | None = None  # None → 动态预算（P3 §4.2：0%→5 轮/>50%→3 轮/仅刷新→1 轮）
     max_steps_per_round: int = 16
     # ---- 档案升级（knowledge-dossier-research-redesign §12.1）：typed 观测/计算/快照 ----
@@ -170,6 +174,33 @@ def _cancelled(ctx: StepContext) -> StepResult:
     return StepResult(status="cancelled", summary="已被用户停止")
 
 
+def _freeze_plugin_manifest(
+    deps: StepDeps, ctx: StepContext, stage: str, extra: dict[str, Any] | None = None,
+) -> None:
+    """manifest 冻结（tools-plugins 方案 §6.2）：同一 run 不静默切换能力面。
+
+    编译结果（启用插件/工具/schema 指纹/配置哈希，密钥不进哈希）落事件；
+    冻结失败不阻断研究（partial_with_reason）但必须可见：事件 + 日志。
+    无 registry 的旧装配（测试/回放）直接跳过，行为不变。
+    """
+    if deps.plugin_registry is None:
+        return
+    from ..plugins.freezing import freeze_manifest
+
+    try:
+        compiled = deps.plugin_registry.compile(stage=stage, env=deps.plugin_env or {})
+        freeze_manifest(
+            compiled, run_id=ctx.child_run_id, events=deps.events,
+            extra={"entity": f"{ctx.entity_kind}:{ctx.ticker}", **(extra or {})},
+        )
+    except Exception as e:  # noqa: BLE001 - 审计锚点失败可见不阻断（事件+日志双通道）
+        logger.warning("plugin manifest 冻结失败（%s/%s）：%s", stage, ctx.child_run_id, e)
+        deps.events.append(Event(
+            run_id=ctx.child_run_id, type="plugins/freeze_failed",
+            payload={"stage": stage, "error": f"{type(e).__name__}: {e}"},
+        ))
+
+
 # ---------------- S1 研究 ----------------
 
 
@@ -180,6 +211,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
     # 问题驱动研究（§7）：冻结 ResearchPlan 后，终止由问题覆盖+字段覆盖+预算共同决定；
     # 已有 100% 档案遇到新目标仍创建计划（只复用有效证据，不宣告「无需研究」）
     plan_id = _prepare_research_plan(deps, ctx)
+    _freeze_plugin_manifest(deps, ctx, "research", extra={"plan_id": plan_id})
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -1308,6 +1340,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         return StepResult(status="completed", summary="档案为空，跳过 thesis 修订")
 
     manifest = _open_child(deps, ctx, "profile_update")
+    _freeze_plugin_manifest(deps, ctx, "profile")
     outcome: dict[str, str] = {}
 
     def query_kb(_args: dict[str, Any]) -> dict[str, Any]:

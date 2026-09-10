@@ -151,15 +151,11 @@ def build_orchestrator(data_dir: Path):
     from .commands.steps import StepDeps
     from .decision.service import DecisionService
     from .decision.store import DecisionStore
-    from .gateway.adapters.edgar import EdgarAdapter, fetch_filing_text
-    from .gateway.adapters.exa_search import ExaSearchAdapter
-    from .gateway.adapters.fundamentals import AkshareHKFundamentalsAdapter, YFinanceFundamentalsAdapter
-    from .gateway.adapters.gdelt import GdeltNewsAdapter
-    from .gateway.adapters.prices import YFinancePricesAdapter
-    from .gateway.adapters.stooq import StooqPricesAdapter
+    from .gateway.adapters.edgar import fetch_filing_text
     from .gateway.fetch import fetch_document_paged  # Document Read v2（保页码/目录/完整性）
     from .harness.approvals import ApprovalService
     from .main_agent import MainAgent
+    from .plugins.builtin import build_builtin_registry
 
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -180,51 +176,23 @@ def build_orchestrator(data_dir: Path):
         store=metrics, kb=kb, events=events, subject_gate=make_subject_gate(kb, metrics)
     )
     calculations = CalculationService(metrics, events=events)
-    gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
-    gateway.register(EdgarAdapter())
-    from .gateway.adapters.edgar_facts import EdgarFactsAdapter
-
-    # SEC XBRL 结构化财务事实（tools-plugins 方案 §7.1 必做：公开 API 无需 key，
-    # acceptance 分钟精度 A 级 PIT；财务数字直接来自披露而非正文抽取）
-    gateway.register(EdgarFactsAdapter())
-    gateway.register(YFinancePricesAdapter())
-    gateway.register(StooqPricesAdapter())
-    # P2 数据源扩展（research-capability-upgrade §4.5；全部走 gateway 纪律）
-    gateway.register(YFinanceFundamentalsAdapter())  # C 级快照：美股基本面
-    gateway.register(GdeltNewsAdapter())  # B 级：全球新闻含中文媒体
-    from .gateway.adapters.hkexnews import HKEXNewsAdapter
-
-    gateway.register(HKEXNewsAdapter())  # A 级：港股披露原文（spike 已验证端点）
     # 数据源 key 解析约定与 LLMRouter 一致：.env 打底、环境变量优先
     from .llm.router import _read_dotenv
 
     _dotenv = _read_dotenv()
+    plugin_env = {**_dotenv, **{k: v for k, v in os.environ.items() if v}}
 
-    def _key(name: str) -> str | None:
-        return os.environ.get(name) or _dotenv.get(name)
-
-    # Exa 通道：NOVITA_API_KEY（网关 passthrough，优先）> EXA_API_KEY（直连回退）
-    exa = ExaSearchAdapter(novita_api_key=_key("NOVITA_API_KEY"), api_key=_key("EXA_API_KEY"))
-    if exa.configured:
-        gateway.register(exa)  # B 级：web 语义搜索（定性维度命脉）
-    else:
-        print(
-            "[finance-agent] NOVITA_API_KEY / EXA_API_KEY 均未配置："
-            "web 搜索源未注册（定性维度研究能力受限）"
-        )
-    from .gateway.adapters.tavily import TavilySearchAdapter
-
-    tavily = TavilySearchAdapter(api_key=_key("TAVILY_API_KEY"))
-    if tavily.configured:
-        gateway.register(tavily)  # C 级：Exa 的备份/并集搜索源
-    else:
-        print("[finance-agent] TAVILY_API_KEY 未配置：Tavily 搜索源未注册")
-    import importlib.util
-
-    if importlib.util.find_spec("akshare") is not None:
-        gateway.register(AkshareHKFundamentalsAdapter())  # C 级：港股基本面快照
-    else:
-        print("[finance-agent] akshare 未安装（uv sync --extra data）：港股基本面源未注册")
+    # 薄插件层装配（tools-plugins 方案 §6.2/P1-C）：registry 编译 → 网关注册；
+    # 能力页与 manifest 冻结从编译结果生成；缺凭证 = missing_config 可见不静默。
+    # 迁移不改变行为：adapter 集合与旧手工装配同源（同一批类/同一 key 约定）。
+    plugin_registry = build_builtin_registry(env=plugin_env)
+    compiled = plugin_registry.compile(stage="research", env=plugin_env)
+    gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
+    for adapter in compiled.adapters:
+        gateway.register(adapter)
+    for st in compiled.blocked:
+        # 启动提示保留（旧装配的可诊断性）：未启用插件带状态与原因
+        print(f"[finance-agent] 插件 {st.plugin_id} 未启用（{st.status}）：{st.reason}")
     decisions = DecisionService(kb=kb, decisions=DecisionStore(data_dir / "decisions.db"), events=events)
     approvals = ApprovalService(events)
     evals_dir = data_dir / "evals"
@@ -255,6 +223,11 @@ def build_orchestrator(data_dir: Path):
         price_book = PriceBook.from_gateway(gateway, cfg.tickers, require=True)
 
         def gateway_factory(as_of, run_id):
+            # 评估回放网关保持最小源集（历史评估接入 XBRL/新源另行验证，方案 §7.3）
+            from .gateway.adapters.edgar import EdgarAdapter
+            from .gateway.adapters.prices import YFinancePricesAdapter
+            from .gateway.adapters.stooq import StooqPricesAdapter
+
             g = DataGateway(
                 mode="eval", eval_as_of=as_of, allow_pit_b=cfg.allow_pit_b,
                 events=events, run_id=run_id,
@@ -309,6 +282,8 @@ def build_orchestrator(data_dir: Path):
         eval_runner=eval_runner,
         fetch_document=fetch_filing_text,
         fetch_document_paged=fetch_document_paged,  # Document Read v2：保页码/目录/完整性
+        plugin_registry=plugin_registry,
+        plugin_env=plugin_env,
         metrics=metrics,
         metric_writer=metric_writer,
         calculations=calculations,
@@ -345,7 +320,15 @@ def build_orchestrator(data_dir: Path):
                     models[role] = "未配置"
         except Exception:
             pass
-        return {"models": models, "gateway_sources": gateway.source_ids()}
+        # 插件视图从**实际编译结果**生成（方案 §6.2 Capabilities view 验收）：
+        # enabled / missing_config / unavailable / degraded + 版本 + 原因
+        try:
+            env_now = {**_read_dotenv(), **{k: v for k, v in os.environ.items() if v}}
+            plugins_view = plugin_registry.compile(stage="research", env=env_now).as_payload()
+        except Exception as e:  # noqa: BLE001 - 能力页降级可见，不装死
+            plugins_view = {"error": f"{type(e).__name__}: {e}"}
+        return {"models": models, "gateway_sources": gateway.source_ids(),
+                "plugins": plugins_view}
 
     return {
         "events": events,
@@ -358,6 +341,9 @@ def build_orchestrator(data_dir: Path):
         "knowledge_dir": knowledge_dir,
         "reports_dir": data_dir / "reports",
         "capabilities_info": capabilities_info,
+        # 薄插件层（P1-C）：registry + 凭证可见性环境（step 层 manifest 冻结用）
+        "plugin_registry": plugin_registry,
+        "plugin_env": plugin_env,
         # v2 档案路由装配（create_app 消费）
         "metrics": metrics,
         "dossier_service": dossier_service,
