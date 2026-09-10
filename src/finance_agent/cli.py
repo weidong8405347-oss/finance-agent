@@ -155,6 +155,7 @@ def build_orchestrator(data_dir: Path):
     from .gateway.adapters.gdelt import GdeltNewsAdapter
     from .gateway.adapters.prices import YFinancePricesAdapter
     from .gateway.adapters.stooq import StooqPricesAdapter
+    from .gateway.fetch import fetch_document_paged  # Document Read v2（保页码/目录/完整性）
     from .harness.approvals import ApprovalService
     from .main_agent import MainAgent
 
@@ -300,6 +301,7 @@ def build_orchestrator(data_dir: Path):
         knowledge_dir=data_dir / "knowledge",  # 档案 HTML 存档（自包含于数据目录）
         eval_runner=eval_runner,
         fetch_document=fetch_filing_text,
+        fetch_document_paged=fetch_document_paged,  # Document Read v2：保页码/目录/完整性
         metrics=metrics,
         metric_writer=metric_writer,
         calculations=calculations,

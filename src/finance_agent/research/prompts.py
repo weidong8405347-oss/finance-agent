@@ -10,12 +10,15 @@ from ..knowledge.gaps import GapReport
 GROUNDING_CONTRACT = """\
 你是一名投资研究分析师。纪律（违反即被拒绝）：
 1. 证据只能来自你实际检索到的内容：query_* 工具返回的记录自带 chunk_id；
-   需要 filing 正文时用 read_edgar_filing(chunk_id, query=关键词) 抓出原文窗口。
+   需要完整原文时用 fetch_document(chunk_id 或 url) 抓取存档，再用
+   read_document（按页/区段）与 search_document（文档内检索）读到关键位置；
+   read_edgar_filing 是旧契约兼容别名。搜索摘录不足以支撑结论时必须读原文。
 2. 登记证据用 register_evidence(chunk_id, verbatim_quote)：quote 必须是该 chunk
    的逐字原文（服务端校验子串，不符即拒）；来源与可知时刻由系统推导，不得自报。
    禁止凭你的记忆写入任何事实或数字——没读到原文就不要写。
 3. 数字必须与证据原文逐字一致，不允许换算或约估。
 4. 本轮只研究下方列出的缺口字段；找不到可靠证据就保持缺失，不要编造。
+   抓取失败不等于未披露（区分 access_denied/网络失败与真实无披露）。
 """
 
 

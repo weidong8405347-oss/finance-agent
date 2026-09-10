@@ -121,6 +121,8 @@ def make_research_tools(
     calculations: Any | None = None,  # CalculationService
     plan_id: str | None = None,  # 冻结的研究计划（answer_question 的落点）
     allowed_question_ids: list[str] | None = None,  # 调度器下发的本 worker 问题集
+    doc_store: Any | None = None,  # DocumentStore（run 级共享；缺省时内部自建）
+    fetch_paged: Any | None = None,  # 分页抓取 f(url) -> FetchedDocument（Document Read v2）
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -709,63 +711,346 @@ def make_research_tools(
 
         tools["calculate_metric"] = calculate_metric
 
-    if fetch_document is not None:
-        def read_edgar_filing(args: dict[str, Any]) -> dict[str, Any]:
-            """抓取 filing 正文并按 query 切窗口，窗口落 ChunkStore 供 register_evidence 引用。
+    # ---------------- 文档读取（Document Read v2，tools-plugins 方案 §5.1 P1-A） ----------
+    # 搜索用于发现资料，文档工具负责目录、正文、页与继续读取：
+    # - fetch_document：抓取并存档（内容哈希复用同版本），返回 document_id/目录/完整性/命中窗口；
+    # - read_document：按页/区段/关键词读取（超出首次解析上限的 PDF 页惰性续解）；
+    # - search_document：文档内关键词检索（页码+摘录 chunk，搜索范围显式）；
+    # - read_edgar_filing：兼容别名（旧契约 chunk_id+query → windows，方案 §11.1 旧工具保别名）。
+    if fetch_document is not None or fetch_paged is not None:
+        from ..gateway.documents import DocumentStore
 
-            抓取函数可返回 str 或 (str, TextQuality)；后者把抽取质量带进 chunk
-            （audit §3.5：乱码/扫描件单独标记，不得当作可靠数字来源）。
+        if doc_store is None:
+            doc_store = DocumentStore()
+
+        _WINDOW = 1600   # 命中窗口宽度（与旧 _windows 一致）
+        _PAGE_CHARS = 3200  # 返回文本单页上限（chunk 保存全文，超出显式标记可回读）
+
+        def _register_chunk(doc: Any, text: str, page: int | None) -> str:
+            return chunk_store.add(
+                source_id=doc.source_id, text=text, url=doc.url,
+                available_at=doc.available_at,  # PIT 元数据：记录 → 文档 → chunk 继承
+                pit_grade=doc.pit_grade, quality=doc.quality,
+                locator={"document_id": doc.document_id,
+                         **({"page": str(page)} if page is not None else {}),
+                         **doc.locator},
+            )
+
+        def _page_payload(doc: Any, page: int) -> dict[str, Any]:
+            text = doc.page_texts.get(page, "")
+            cid = _register_chunk(doc, text, page)
+            shown = text[:_PAGE_CHARS]
+            more = len(text) - len(shown)
+            return {
+                "chunk_id": cid, "page": page, "chars": len(text),
+                "text": shown + (
+                    f"…（本页余 {more} 字符，全文已存 chunk，read_chunk 可回读）"
+                    if more > 0 else ""
+                ),
+                "truncated": more > 0,
+            }
+
+        def _query_windows(doc: Any, query: str, pages: list[int] | None = None,
+                           *, max_windows: int = 4) -> list[dict[str, Any]]:
+            """逐页命中窗口（页码进 locator，证据可定位到页）。
+
+            只在命中的页上切窗口：未命中页不回退成「页首窗口」（_windows 的无命中
+            回退会挤掉真正命中页，定位语义就丢了）。
+            """
+            out: list[dict[str, Any]] = []
+            ql = query.lower()
+            for p in (pages if pages is not None else doc.parsed_pages):
+                text = doc.page_texts.get(p, "")
+                if query and ql not in text.lower():
+                    continue
+                for window in _windows(text, query, width=_WINDOW, max_windows=max_windows):
+                    out.append({"chunk_id": _register_chunk(doc, window, p),
+                                "page": p, "text": window})
+                    if len(out) >= max_windows:
+                        return out
+            return out
+
+        def _fetch_into_store(
+            target_url: str, *, source_id: str, available_at: Any, pit_grade: Any,
+            locator: dict[str, str] | None = None, freshness: str = "cached",
+        ) -> tuple[Any, dict[str, Any] | None]:
+            """抓取 → 文档库存档（同版本内容哈希复用）；失败返回 (None, 错误响应)。"""
+            if freshness != "refetch":
+                cached = doc_store.find_by_origin(
+                    target_url, source_id, available_at, pit_grade
+                )
+                if cached is not None:
+                    return cached, None
+            try:
+                if fetch_paged is not None:
+                    fetched = fetch_paged(target_url)
+                    doc = doc_store.add(
+                        url=target_url, source_id=source_id, fetched=fetched,
+                        available_at=available_at, pit_grade=pit_grade, locator=locator,
+                    )
+                else:
+                    legacy = fetch_document(target_url)
+                    if isinstance(legacy, tuple):
+                        text, tq = legacy[0], legacy[1]
+                        quality = getattr(tq, "quality", str(tq))
+                    else:
+                        from ..gateway.text_quality import assess_text_quality
+
+                        text = legacy
+                        quality = assess_text_quality(text).quality
+                    doc = doc_store.add_text(
+                        url=target_url, source_id=source_id, text=text, quality=quality,
+                        available_at=available_at, pit_grade=pit_grade, locator=locator,
+                    )
+                return doc, None
+            except Exception as e:
+                # 抓取失败 ≠ 未披露（方案 §5.1 实现顺序 6）：不把访问失败写成公司未披露
+                return None, {
+                    "content": (
+                        f"error: 抓取失败：{type(e).__name__}: {e}"
+                        "（抓取失败不等于未披露：可重试、换源，或标 unavailable 并记录 attempts）"
+                    ),
+                    "provenance": [],
+                }
+
+        def _quality_note(doc: Any) -> str:
+            if doc.quality in ("garbled", "needs_ocr"):
+                return (
+                    f"\n⚠ 抽取质量={doc.quality}：该正文不可作为结构化数值来源"
+                    "（propose_metric 会被拒）；需 OCR 或人工核对后重试。"
+                )
+            return ""
+
+        def _doc_provenance(doc: Any) -> list[dict[str, Any]]:
+            return [{
+                "source_id": doc.source_id,
+                "available_at": doc.available_at.isoformat() if doc.available_at else None,
+                "pit_grade": doc.pit_grade.value,
+            }]
+
+        def _fetch_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """抓取并存档一份文档：从检索记录（chunk_id，PIT 继承）或直接 URL（C 级降级）。"""
+            record = (chunk_store.get(str(args.get("chunk_id") or ""))
+                      if args.get("chunk_id") else None)
+            url = str(args.get("url") or "").strip()
+            if record is not None:
+                if not record.url:
+                    return {"content": "error: 该记录没有可抓取的 url", "provenance": []}
+                target, source_id = record.url, record.source_id
+                available_at, pit = record.available_at, record.pit_grade
+                locator: dict[str, str] = {"source_chunk": record.chunk_id}
+                pit_note = ""
+            elif url:
+                from ..knowledge.models import PitGrade
+
+                target, source_id = url, "web_fetch"
+                available_at, pit = None, PitGrade.C
+                locator = {"direct_url": "true"}
+                pit_note = (
+                    "直接 URL 抓取无时间保证（PIT C，available_at 未知）：仅生产研究可用，"
+                    "历史评估不得作为当时可知的证据；优先从 query_* 检索记录进入（继承 PIT）。"
+                )
+            else:
+                return {"content": "error: 必须给 chunk_id（query_* 返回的记录）或 url",
+                        "provenance": []}
+            doc, err = _fetch_into_store(
+                target, source_id=source_id, available_at=available_at, pit_grade=pit,
+                locator=locator, freshness=str(args.get("freshness") or "cached"),
+            )
+            if doc is None:
+                return err  # type: ignore[return-value]
+            query = str(args.get("query") or "").strip()
+            windows = _query_windows(doc, query) if query else []
+            query_note = ""
+            if query and not windows:
+                query_note = (
+                    f"'{query}' 在已解析 {len(doc.parsed_pages)}/{doc.total_pages} 页内未命中；"
+                    "可换关键词/同义词，或 read_document 按页区段继续读（空结果不等于不存在）"
+                )
+            if not windows:
+                windows = [_page_payload(doc, p) for p in doc.parsed_pages[:2]]
+            payload: dict[str, Any] = {
+                "document_id": doc.document_id, "url": doc.url, "source_id": doc.source_id,
+                "kind": doc.kind, "quality": doc.quality,
+                "completeness": doc.completeness_payload(),
+                "reused": doc.reuses > 0,
+                "toc": doc.toc[:40],
+                "windows": windows,
+                "next": (
+                    "read_document(document_id, page/page_range) 继续读；"
+                    "search_document(document_id, query) 文档内检索；"
+                    "窗口 chunk_id 可供 register_evidence（span_id 亦可）"
+                ),
+            }
+            if query_note:
+                payload["query_note"] = query_note
+            if pit_note:
+                payload["pit_note"] = pit_note
+            return {
+                "content": json.dumps(payload, ensure_ascii=False) + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        def read_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """按页/区段/关键词读已存档文档；PDF 未解析页惰性续解（后半部可达）。"""
+            doc = doc_store.get(str(args.get("document_id") or ""))
+            if doc is None:
+                return {"content": "error: 未知 document_id（先用 fetch_document 取得）",
+                        "provenance": []}
+            query = str(args.get("query") or "").strip()
+            page_arg = args.get("page")
+            page_range = str(args.get("page_range") or "").strip()
+            pages: list[int] = []
+            try:
+                if page_arg is not None and str(page_arg).strip():
+                    pages = [int(page_arg)]
+                elif page_range:
+                    lo, _, hi = page_range.partition("-")
+                    start_p = int(lo)
+                    end_p = int(hi) if hi.strip() else start_p
+                    if start_p > end_p:
+                        start_p, end_p = end_p, start_p
+                    pages = list(range(start_p, min(end_p, start_p + 19) + 1))  # 单次 ≤20 页
+                    if end_p - start_p + 1 > 20:
+                        page_range_note = f"单次最多 20 页，本次返回 {pages[0]}-{pages[-1]}"
+                    else:
+                        page_range_note = ""
+                elif query:
+                    pages = list(doc.parsed_pages)
+                else:
+                    pages = doc.parsed_pages[:1] or [1]
+            except ValueError:
+                return {"content": "error: page/page_range 非法（如 page=12 或 page_range='12-20'）",
+                        "provenance": []}
+            # 惰性续解：请求的页在 total 内但未解析 → 现场补解（重要表在后半部必须可达）
+            if doc.raw is not None:
+                missing = [p for p in pages
+                           if p not in doc.page_texts and p not in doc.failed_pages]
+                if missing:
+                    doc_store.ensure_pages(doc, missing)
+            out_of_range = [p for p in pages if p > doc.total_pages]
+            body: dict[str, Any]
+            if query:
+                windows = _query_windows(doc, query, pages=pages, max_windows=6)
+                body = {"mode": "query", "windows": windows,
+                        "note": "" if windows else
+                        f"'{query}' 在指定 {len(pages)} 页内未命中（空结果不等于不存在）"}
+            else:
+                body = {
+                    "mode": "pages",
+                    "pages": [_page_payload(doc, p) for p in pages if p in doc.page_texts],
+                    "failed_pages": [p for p in pages if p in doc.failed_pages],
+                }
+            if out_of_range:
+                body["out_of_range_pages"] = out_of_range
+            if page_range:
+                body["page_range_note"] = page_range_note
+            payload = {
+                "document_id": doc.document_id, **body,
+                "completeness": doc.completeness_payload(),
+                "unread_pages": max(0, doc.total_pages - doc.max_parsed_page),
+                "next": ("还有未读页时用 page_range 继续；定位关键词用 query 参数"
+                         "或 search_document"),
+            }
+            return {
+                "content": json.dumps(payload, ensure_ascii=False, default=str)
+                + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        def search_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """文档内关键词检索：页码 + 摘录 chunk；搜索范围与未命中都显式可见。"""
+            doc = doc_store.get(str(args.get("document_id") or ""))
+            if doc is None:
+                return {"content": "error: 未知 document_id（先用 fetch_document 取得）",
+                        "provenance": []}
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"content": "error: 必须给 query（文档内检索关键词）", "provenance": []}
+            try:
+                top_k = max(1, min(int(args.get("top_k") or 6), 12))
+            except (TypeError, ValueError):
+                top_k = 6
+            ql = query.lower()
+            scored = [(doc.page_texts.get(p, "").lower().count(ql), p)
+                      for p in doc.parsed_pages]
+            hits = [(c, p) for c, p in scored if c > 0]
+            mode = "phrase"
+            window_query = query
+            if not hits:
+                # 短语未命中 → 词元共现退化（中文无空格时 tokens 为空，保持空结果诚实返回）
+                tokens = [t for t in re.split(r"\s+", query) if len(t) >= 2]
+                if len(tokens) > 1:
+                    mode = "tokens"
+                    window_query = tokens[0]
+                    hits = [
+                        (sum(doc.page_texts.get(p, "").lower().count(t.lower()) for t in tokens), p)
+                        for p in doc.parsed_pages
+                        if all(t.lower() in doc.page_texts.get(p, "").lower() for t in tokens)
+                    ]
+            hits.sort(key=lambda cp: (-cp[0], cp[1]))
+            excerpts: list[dict[str, Any]] = []
+            for count, p in hits[:top_k]:
+                excerpts.extend(
+                    _query_windows(doc, window_query, pages=[p], max_windows=1)
+                )
+                if excerpts:
+                    excerpts[-1]["hit_count"] = count
+            payload = {
+                "document_id": doc.document_id, "query": query, "mode": mode,
+                "hits": excerpts,
+                "pages_scanned": len(doc.parsed_pages),
+                "completeness": doc.completeness_payload(),
+                "note": "" if excerpts else (
+                    f"'{query}' 未命中（已扫 {len(doc.parsed_pages)}/{doc.total_pages} 页）——"
+                    "可能是术语差异（试同义词/英文/表头原词），或该文档确实未披露；"
+                    "空结果不等于不存在，未读完的页用 read_document 续读"
+                ),
+            }
+            return {
+                "content": json.dumps(payload, ensure_ascii=False) + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        def read_edgar_filing(args: dict[str, Any]) -> dict[str, Any]:
+            """兼容别名（旧契约不变）：chunk_id 记录 → 抓取正文 → query 命中窗口。
+
+            内部改走文档服务：同内容哈希复用（同一财报只抓解一次），窗口带页码
+            locator；返回保留旧 {windows, quality} 形态，新增 document_id/completeness。
             """
             record_chunk = chunk_store.get(str(args.get("chunk_id") or ""))
             if record_chunk is None:
-                return {"content": "error: 未知 chunk_id（先 query_edgar 拿 filing 记录）", "provenance": []}
+                return {"content": "error: 未知 chunk_id（先 query_edgar 拿 filing 记录）",
+                        "provenance": []}
             if not record_chunk.url:
                 return {"content": "error: 该记录没有可抓取的 url", "provenance": []}
-            try:
-                fetched = fetch_document(record_chunk.url)
-            except Exception as e:
-                return {"content": f"error: 抓取失败：{type(e).__name__}: {e}", "provenance": []}
-            quality = "ok"
-            if isinstance(fetched, tuple):
-                text, tq = fetched[0], fetched[1]
-                quality = getattr(tq, "quality", str(tq))
-            else:
-                from ..gateway.text_quality import assess_text_quality
-
-                text = fetched
-                quality = assess_text_quality(text).quality
-            out = []
-            for window in _windows(text, str(args.get("query") or "")):
-                cid = chunk_store.add(
-                    source_id=record_chunk.source_id,
-                    text=window,
-                    url=record_chunk.url,
-                    available_at=record_chunk.available_at,  # PIT 元数据从 filing 记录继承
-                    pit_grade=record_chunk.pit_grade,
-                    quality=quality,
-                    locator={"source_chunk": record_chunk.chunk_id},
-                )
-                out.append({"chunk_id": cid, "text": window, "quality": quality})
-            note = ""
-            if quality in ("garbled", "needs_ocr"):
-                note = (
-                    f"\n⚠ 抽取质量={quality}：该正文不可作为结构化数值来源"
-                    "（propose_metric 会被拒）；需 OCR 或人工核对后重试。"
-                )
+            doc, err = _fetch_into_store(
+                record_chunk.url, source_id=record_chunk.source_id,
+                available_at=record_chunk.available_at,  # PIT 元数据从 filing 记录继承
+                pit_grade=record_chunk.pit_grade,
+                locator={"source_chunk": record_chunk.chunk_id},
+                freshness=str(args.get("freshness") or "cached"),
+            )
+            if doc is None:
+                return err  # type: ignore[return-value]
+            query = str(args.get("query") or "")
+            windows = _query_windows(doc, query) if query else []
+            if not windows:
+                windows = [_page_payload(doc, p) for p in doc.parsed_pages[:2]]
+            out = [{"chunk_id": w["chunk_id"], "text": w["text"],
+                    "quality": doc.quality, "page": w.get("page")} for w in windows]
             return {
-                "content": json.dumps({"windows": out, "quality": quality}, ensure_ascii=False)
-                + note,
-                "provenance": [
-                    {
-                        "source_id": record_chunk.source_id,
-                        "available_at": record_chunk.available_at.isoformat()
-                        if record_chunk.available_at
-                        else None,
-                        "pit_grade": record_chunk.pit_grade.value,
-                    }
-                ],
+                "content": json.dumps({
+                    "windows": out, "quality": doc.quality,
+                    "document_id": doc.document_id,
+                    "completeness": doc.completeness_payload(),
+                }, ensure_ascii=False) + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
             }
 
+        tools["fetch_document"] = _fetch_document_tool
+        tools["read_document"] = read_document_tool
+        tools["search_document"] = search_document_tool
         tools["read_edgar_filing"] = read_edgar_filing
 
     return tools, tracker
@@ -896,17 +1181,74 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["field"],
         },
     },
+    "fetch_document": {
+        "name": "fetch_document",
+        "description": (
+            "抓取并存档一份文档的正文/原件（内容哈希去重，同版本复用不重抓）："
+            "从 query_* 检索记录进入（chunk_id，PIT 元数据继承）或直接 url（无时间保证，C 级）。"
+            "返回 document_id、目录（toc）、完整性（full/partial/truncated/failed 与页数）、"
+            "抽取质量与 query 命中窗口（chunk_id 可直接 register_evidence）。"
+            "适用于任意检索到的长文（年报/公告/新闻/招股书），不限 SEC。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string", "description": "query_* 返回的记录 chunk_id（优先）"},
+                "url": {"type": "string", "description": "直接抓取 URL（无 PIT 继承，诚实降级）"},
+                "query": {"type": "string", "description": "可选：抓取后直接切命中窗口"},
+                "freshness": {"type": "string", "enum": ["cached", "refetch"],
+                              "description": "默认 cached（同来源同 URL 复用已存档版本）"},
+            },
+        },
+    },
+    "read_document": {
+        "name": "read_document",
+        "description": (
+            "读已存档文档：按页（page）、页区段（page_range 如 '85-100'，单次 ≤20 页）"
+            "或关键词（query，返回命中窗口）。PDF 超出首次解析上限的页惰性续解，"
+            "后半部表格可达；返回带页码 locator 的 chunk_id、完整性与未读页数（截断不静默）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "fetch_document 返回的文档 id"},
+                "page": {"type": "integer", "description": "读单页（1-based）"},
+                "page_range": {"type": "string", "description": "页区段，如 '85-100'"},
+                "query": {"type": "string", "description": "在指定页/全文内切命中窗口"},
+            },
+            "required": ["document_id"],
+        },
+    },
+    "search_document": {
+        "name": "search_document",
+        "description": (
+            "文档内关键词检索：返回命中页码 + 摘录窗口（chunk_id 可登记证据）。"
+            "短语未命中时退化词元共现；搜索范围（已扫页/总页）与未命中都显式返回，"
+            "空结果不等于不存在（可能需换术语或续读未解析页）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "query": {"type": "string", "description": "关键词（表头原词/术语同义词部可试）"},
+                "top_k": {"type": "integer", "description": "命中页上限（默认 6，最大 12）"},
+            },
+            "required": ["document_id", "query"],
+        },
+    },
     "read_edgar_filing": {
         "name": "read_edgar_filing",
         "description": (
-            "抓取一条 EDGAR filing 记录的正文，按 query 关键词切出原文窗口"
-            "（返回的窗口带新 chunk_id，供 register_evidence 引用）"
+            "兼容别名（新契约用 fetch_document/read_document/search_document）："
+            "抓取一条检索记录（如 query_edgar 返回的 filing）的正文，按 query 切出原文窗口"
+            "（窗口带页码与新 chunk_id，供 register_evidence 引用；同内容复用不重抓）"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "chunk_id": {"type": "string", "description": "query_edgar 返回的 filing 记录 chunk_id"},
                 "query": {"type": "string", "description": "定位关键词（如 'total revenue'）"},
+                "freshness": {"type": "string", "enum": ["cached", "refetch"]},
             },
             "required": ["chunk_id"],
         },

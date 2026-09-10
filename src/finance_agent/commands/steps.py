@@ -129,6 +129,9 @@ class StepDeps:
     eval_runner: Callable[..., dict[str, Any]] | None = None  # (config_name, child_run_id) → summary dict
     fetch_document: Callable[[str], str] | None = None  # 文档正文抓取（生产研究用；eval 回放经
                                                        # ReplayEngine 自带）
+    #: 分页抓取（Document Read v2）：f(url) -> gateway.fetch.FetchedDocument；
+    #: 缺省时研究工具退回旧纯文本抓取（兼容 eval 回放与旧装配）
+    fetch_document_paged: Callable[[str], Any] | None = None
     max_rounds: int | None = None  # None → 动态预算（P3 §4.2：0%→5 轮/>50%→3 轮/仅刷新→1 轮）
     max_steps_per_round: int = 16
     # ---- 档案升级（knowledge-dossier-research-redesign §12.1）：typed 观测/计算/快照 ----
@@ -191,6 +194,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         judge_llm=deps.judge_llm,
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
+        fetch_document_paged=deps.fetch_document_paged,
         worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
         plan_id=plan_id,
         metrics=deps.metrics,
@@ -1592,6 +1596,7 @@ def _industry_loop(
         judge_llm=deps.judge_llm,
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
+        fetch_document_paged=deps.fetch_document_paged,
         worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
         plan_id=plan_id,
         metrics=deps.metrics,
@@ -1657,6 +1662,7 @@ def step_candidate_pool(deps: StepDeps, ctx: StepContext) -> StepResult:
             store=deps.kb, writer=deps.writer, manifest=manifest,
             entity_kind="industry", entity_id=ctx.ticker,
             chunk_store=chunk_store, fetch_document=deps.fetch_document,
+            fetch_paged=deps.fetch_document_paged,
         )
         for source_id in deps.gateway.source_ids():
             tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
@@ -1780,6 +1786,7 @@ def step_thesis(deps: StepDeps, ctx: StepContext) -> StepResult:
         store=deps.kb, writer=deps.writer, manifest=manifest,
         entity_kind="industry", entity_id=ctx.ticker,
         chunk_store=chunk_store, fetch_document=deps.fetch_document,
+        fetch_paged=deps.fetch_document_paged,
     )
     for source_id in deps.gateway.source_ids():
         tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
@@ -1973,6 +1980,7 @@ def _screen_one_candidate(deps: StepDeps, ctx: StepContext, cand: dict, llm: LLM
         entity_kind="stock", entity_id=ticker,
         chunk_store=chunk_store,
         fetch_document=deps.fetch_document,
+        fetch_paged=deps.fetch_document_paged,
     )
     for source_id in deps.gateway.source_ids():
         tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
@@ -2202,6 +2210,7 @@ def step_deep_dive(deps: StepDeps, ctx: StepContext) -> StepResult:
                 judge_llm=deps.judge_llm,
                 should_stop=ctx.should_cancel,
                 fetch_document=deps.fetch_document,
+                fetch_document_paged=deps.fetch_document_paged,
                 worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
             )
             loop.run("stock", ticker, f"深度研究 {ticker}（赛道：{ctx.objective}）")

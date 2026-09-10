@@ -115,6 +115,8 @@ class ResearchLoop:
         judge_llm: LLM | None = None,  # research-rubric 软反馈（advisory，D4）
         should_stop: Callable[[], bool] | None = None,  # 取消闸（轮次边界检查）
         fetch_document: Callable[[str], str] | None = None,  # 文档正文抓取（live 才有）
+        #: 分页抓取（Document Read v2）：f(url) -> FetchedDocument；缺省退回旧纯文本抓取
+        fetch_document_paged: Callable[[str], object] | None = None,
         worker_llms: list[LLM] | None = None,  # 维度并行池（P3 §4.2）；None/单元素 → 串行兼容
         # ---- 问题驱动研究（knowledge-dossier-research-redesign §7）----
         plan_id: str | None = None,  # 冻结的 ResearchPlan（metrics 存储中）
@@ -144,6 +146,7 @@ class ResearchLoop:
         self._judge_llm = judge_llm
         self._should_stop = should_stop
         self._fetch_document = fetch_document
+        self._fetch_paged = fetch_document_paged
         self._worker_llms = worker_llms or []
         self._plan_id = plan_id
         self._metrics = metrics
@@ -184,6 +187,10 @@ class ResearchLoop:
 
         analyzer = GapAnalyzer(self._store)
         chunk_store = ChunkStore()  # 检索台账：本 run 的证据验证基准（跨轮共享）
+        # 文档库（Document Read v2）：同一财报只抓取解析一次，各 worker 共享只读文档引用
+        from ..gateway.documents import DocumentStore
+
+        doc_store = DocumentStore()
         reports: list[IterationReport] = []
         # 评估时刻：显式传入（评估回放）则固定；否则每次 gap 分析取当前真实时间，
         # 避免 run 内新写入的事实因 knowledge_time 晚于「起跑线时刻」而不可见。
@@ -325,7 +332,7 @@ class ResearchLoop:
                         self._run_group, entity_kind, entity_id, objective,
                         gaps_before, round_no, item,
                         workers[i % len(workers)], judge_feedback,
-                        playbook_text, chunk_store,
+                        playbook_text, chunk_store, doc_store,
                     )
                     for i, item in enumerate(schedule.items)
                 }
@@ -372,6 +379,8 @@ class ResearchLoop:
                     metric_writer=self._metric_writer,
                     calculations=self._calculations,
                     plan_id=self._plan_id,
+                    doc_store=doc_store,
+                    fetch_paged=self._fetch_paged,
                 )
                 for source_id in self._gateway_sources:
                     tools[f"query_{source_id}"] = make_gateway_tool(
@@ -462,6 +471,9 @@ class ResearchLoop:
             self.budget_snapshot = self._run_budget.snapshot().as_payload()
             # 台账级重复（同正文不同请求）与检索级重复（同请求）分开计数
             self.budget_snapshot["duplicate_chunks"] = chunk_store.duplicates
+            # 文档级重复（同内容哈希/同来源 URL 被短路复用）：重复资料率可见
+            self.budget_snapshot["duplicate_documents"] = doc_store.duplicates
+            self.budget_snapshot["documents_stored"] = len(doc_store)
             self.budget_snapshot["timed_out_groups"] = list(self.timed_out_groups)
             self._emit(RESEARCH_BUDGET, {
                 "action": "research_end", "stop_reason": self.stop_reason,
@@ -565,6 +577,7 @@ class ResearchLoop:
         judge_feedback: str | None,
         playbook_text: str,
         chunk_store,
+        doc_store=None,
     ) -> tuple[str, object]:
         """单个 WorkItem 的一轮研究：独立 child run（context 隔离）+ 独立步数预算。
 
@@ -587,6 +600,8 @@ class ResearchLoop:
             calculations=self._calculations,
             plan_id=self._plan_id,
             allowed_question_ids=list(item.question_ids) or None,
+            doc_store=doc_store,
+            fetch_paged=self._fetch_paged,
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(
