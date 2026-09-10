@@ -114,3 +114,31 @@
 3. B 组：Docling 试点（2228 题 4/8 文档 garbled 仍是原文可得性最大缺口）；
 4. P2-A 内容级 verifier + EvidencePack（F13 根治 + 引用语义支持率）；
 5. ai4s F5 用宽限窗口版运行器补跑（或从 committee 产物人工合成排序报告验证 F5 链路）。
+
+---
+
+## 10. ai4s 漏斗全链补跑（A 组基线收官，2026-09-10 深夜）
+
+前次 ai4s 重跑 F5（rank_report）被旧运行器 120min 超时杀死（daemon 线程随主进程退出）。
+本次用**宽限窗口版运行器**（180min 题时限 + 45min 宽限，`1f685f0`）在冻结 worktree
+（代码 `5eb0d2e`，与 A' 同基线）补跑全链，闸口代行带审计留痕。
+
+**结果：completed，124.8 分钟（未触发时限与宽限），F1→F5 七步全部完成。**
+数据：`data/sentinel/ai4s-final/`；环境冻结 research=kimi-k3 / fast=GLM-5.3。
+
+| 阶段 | 结果 | 与前次对照 |
+| --- | --- | --- |
+| F1 赛道地图 | completed（stalled 但有效产出不拦停）：**观测 15 条**、论断 5v/1d、问题覆盖 1/1；字段完整度 20%（market_size/growth_rate/competition/policy 缺口如实） | 前次观测 0 → **15**（a19fa90 行业 typed 示例 + growth_rate 主体闸修复生效） |
+| F1.5 thesis | 产业判断备忘录落档（绑证据） | 持平 |
+| F2 标的池 | **47 只**（3 路并集均绑归属证据） | 前次 49 只（检索波动，正常） |
+| F3 粗筛+闸口 | 43 卡 → 闸口第 1 轮通过（代行批准留痕：op=industry_screen, round=1）→ 深研 6 只：SDGR/RXRX/TEM/02228.HK/07666.HK/RLAY | 前次深研名单含 AC/301080.SZ，本次 TEM/RLAY（LLM 非确定性，均在池内） |
+| F4 深研 fan-out | RXRX 100%（converged）、RLAY 100%（converged）、SDGR 94%（budget）、TEM 94%（budget）、02228.HK 0%（budget）、07666.HK 0%（budget）——港股两只无进展**诚实上报**，失败隔离生效 | 前次同形态（港股源覆盖缺口是已知边界，归 B 组 HK 接入 spike） |
+| F4.5 委员会 | **6 票全产出**（四视角+空头+CIO，artifacts 落盘） | 持平 |
+| F5 排序报告 | **completed**（前次被杀）：核查型报告——SDGR 客户数 29→27 与 RLAY 现金 $121.2M 经 10-K/10-Q **A 级原文证实**；TEM Q2 数据属实但标注 C 级源降级；四只有数据票估值快照已算 | 运行器整改直接因果 |
+
+附注：industry 链路不发布 dossier 快照（dossier_published=0 为当前设计行为，非缺陷）；
+预检降级源 prices_stooq/news_gdelt/fundamentals_hk（本机网络，fail-closed 不阻塞）与 A 组一致。
+
+**基线验证状态：已完成。** A 组 6 题 + F1–F9 整改 + A' 三题对照 + ai4s 漏斗全链
+（含 F5）全部有冻结数据；F10–F13 已整改（`9ec8283`）。B 组对照（在 P1-C/P2-A/P2-B
+落地后的代码上重跑哨兵）为下一步，见实施记录 §6。
