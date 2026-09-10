@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -146,13 +148,15 @@ def _extract_signals(collected: list[dict], session: str) -> dict:
     return signals
 
 
-def run_task(task: dict, data_dir: Path, *, dry_run: bool) -> dict:
+def run_task(task: dict, data_dir: Path, *, dry_run: bool,
+             auto_approve_gates: bool = False) -> dict:
     task_id = str(task["id"])
     command = str(task.get("command") or "")
     result: dict = {
         "task_id": task_id, "title": task.get("title"), "market": task.get("market"),
         "command": command,
         "started_at": datetime.now(UTC).isoformat(),
+        "environment": _environment(auto_approve_gates),
     }
     if "{TICKER}" in command:
         result.update({
@@ -191,6 +195,39 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool) -> dict:
 
     t0 = time.monotonic()
     command_id = runner.start(CommandRequest(session_run_id=session, parsed=parsed))
+
+    # 人工闸口代行（--auto-approve-gates）：基线运行需要无人值守可复现；
+    # 每次代行都落 approval/decided 审计事件 + 记入结果 JSON（非人工判断，如实标注）
+    auto_approvals: list[dict] = []
+    stop_watch = threading.Event()
+
+    def watch_gates() -> None:
+        approvals = orch["approvals"]
+        while not stop_watch.is_set():
+            try:
+                for req in approvals.pending():
+                    approvals.decide(
+                        req.approval_id, True,
+                        comment="哨兵基线运行：脚本代行人工闸口（非人工判断，"
+                                "见 run_sentinel --auto-approve-gates）",
+                    )
+                    auto_approvals.append({
+                        "approval_id": req.approval_id,
+                        "op": (req.detail or {}).get("op"),
+                        "round": (req.detail or {}).get("round"),
+                        "recommended": (req.detail or {}).get("recommended"),
+                        "at": datetime.now(UTC).isoformat(),
+                    })
+            except Exception as e:  # noqa: BLE001 - 监视线程失败不拖死主运行，但留痕
+                auto_approvals.append({"watcher_error": f"{type(e).__name__}: {e}"})
+            stop_watch.wait(1.0)
+
+    watcher = None
+    if auto_approve_gates:
+        watcher = threading.Thread(target=watch_gates, daemon=True,
+                                   name=f"sentinel-gate-{task_id}")
+        watcher.start()
+
     done_payload = None
     deadline = t0 + timeout_s
     while time.monotonic() < deadline:
@@ -202,6 +239,9 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool) -> dict:
             break
         time.sleep(2.0)
     elapsed = time.monotonic() - t0
+    stop_watch.set()
+    if watcher is not None:
+        watcher.join(timeout=3.0)
 
     collected = _collect_events(events, since_seq)
     signals = _extract_signals(collected, session)
@@ -209,6 +249,7 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool) -> dict:
         "status": "completed" if done_payload else "timeout",
         "elapsed_seconds": round(elapsed, 1),
         "command_done": done_payload,
+        "auto_approvals": auto_approvals,
         "signals": signals,
         "events_collected": len(collected),
         "data_dir": str(data_dir),
@@ -218,19 +259,56 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool) -> dict:
     return result
 
 
+def _environment(auto_approve_gates: bool) -> dict:
+    """A 组基线冻结（方案 §10.1）：代码版本与模型配置随结果存档，事后可归因。"""
+    env: dict = {"auto_approve_gates": auto_approve_gates}
+    try:
+        env["git_commit"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True,
+            text=True, timeout=10,
+        ).stdout.strip()
+    except Exception:  # noqa: BLE001 - 环境信息缺失不阻断运行，但如实留空
+        env["git_commit"] = "unknown"
+    try:
+        from finance_agent.cli import _router
+
+        router = _router(None)
+        env["models"] = {}
+        for role in ("research", "fast"):
+            try:
+                env["models"][role] = getattr(router.get(role), "model_name", "?")
+            except Exception as e:  # noqa: BLE001
+                env["models"][role] = f"error: {type(e).__name__}"
+    except Exception as e:  # noqa: BLE001
+        env["models"] = {"error": str(e)[:100]}
+    return env
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="哨兵题集运行器（真实付费运行，默认隔离数据目录）")
     ap.add_argument("--list", action="store_true", help="只列出题集")
     ap.add_argument("--task", action="append", default=[], help="按 id 选题（可多次）")
     ap.add_argument("--all", action="store_true", help="跑全部题目")
     ap.add_argument("--dry-run", action="store_true", help="校验题目与解析，不发起研究")
+    ap.add_argument("--auto-approve-gates", action="store_true",
+                    help="代行人工闸口（如 /industry F3）：基线无人值守可复现；"
+                         "每次代行落审计事件并记入结果（非人工判断）")
     ap.add_argument("--data-dir", default="", help="隔离数据目录（默认 data/sentinel/<ts>）")
     args = ap.parse_args(argv)
 
     tasks = load_tasks()
     if args.list:
         return cmd_list()
-    selected = [t for t in tasks if args.all or str(t["id"]) in set(args.task)]
+    if args.all:
+        selected = tasks
+    else:
+        by_id = {str(t["id"]): t for t in tasks}
+        unknown = [i for i in args.task if i not in by_id]
+        if unknown:
+            print(f"未知题目 id: {unknown}（可用：{sorted(by_id)}）", file=sys.stderr)
+            return 2
+        # 按 --task 参数顺序执行（先快后慢：短题先验证管道，长题后置）
+        selected = [by_id[i] for i in args.task]
     if not selected:
         print(f"未选择题目（--task {'/'.join(str(t['id']) for t in tasks)} 或 --all）",
               file=sys.stderr)
@@ -253,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
         task_id = str(task["id"])
         print(f"\n== {task_id}: {task.get('title')} ==\n   {task.get('command')}")
         try:
-            result = run_task(task, data_dir, dry_run=args.dry_run)
+            result = run_task(task, data_dir, dry_run=args.dry_run,
+                              auto_approve_gates=args.auto_approve_gates)
         except Exception as e:  # noqa: BLE001 - 单题失败不拖死整批，但必须可见
             result = {"task_id": task_id, "status": "error",
                       "error": f"{type(e).__name__}: {e}"}

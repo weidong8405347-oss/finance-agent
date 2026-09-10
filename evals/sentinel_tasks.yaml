@@ -64,50 +64,62 @@ tasks:
   - id: restatement-handling
     title: 财报更正与竞争版本
     market: US
-    command: /research {TICKER} --depth=targeted --focus=更正后的最新口径与历史版本
+    command: /research LOB --depth=targeted --focus=更正后的最新口径与历史版本
     why: >-
-      重述/更正是双时态知识库的核心考验：竞争版本不得取平均、不得静默覆盖；
-      ticker 留空待选（从存在 10-K/A 或 XBRL 更正 amendments 的真实标的中冻结一个）。
-    pick_ticker_hint: 用 query_edgar include_history 找存在 10-K/A 的标的后冻结进本文件
+      重述/更正是双时态知识库的核心考验：竞争版本不得取平均、不得静默覆盖。
+    frozen_ticker: >-
+      LOB（Live Oak Bancshares，2026-09-10 冻结）：2025-11-12 8-K Item 4.02 非依赖 →
+      2025-11-17 10-K/A 重述 FY2022–2024 合并现金流量表及相关附注（贷款出售收益
+      分类差错）；链条完整（NT 10-Q → 4.02 → 10-K/A），多年度受影响，更正近期可验。
     expected:
       - 更正值形成竞争版本或修订链（conflict_flag / revision 可见）
       - 冲突走裁决闭环（winner 保存并晋升，不是只清标记）
       - 历史 as_of 投影仍见旧值（append-only 不破）
+      - 重述的现金流量表科目与年度范围以 10-K/A 原文为准（不取平均/不猜测）
     key_questions:
       - 更正涉及哪些科目/期间，更正前后差异多少
       - 更正原因（差错性质）与内控披露
     timeout_minutes: 45
 
   - id: deep-pdf-late-table
-    title: 80 页后关键表格可达性
-    market: US
-    command: /research {TICKER} --depth=targeted --focus=财务报表附注中的分部收入表
+    title: 80 页后关键表格可达性（巨型年报 PDF）
+    market: HK
+    command: /research 3988.HK --depth=targeted --focus=年报财务报表附注中的分部报告
     why: >-
-      旧实现 PDF 只读前 80 页且合并为纯文本——大型 10-K 的报表与附注在后半部，
+      旧实现 PDF 只读前 80 页且合并为纯文本——巨型年报后半部的附注表不可达，
       这是 Document Read v2 的直接验收场景（方案 §2 PDF/HTML P1）。
-    pick_ticker_hint: 选一份 >150 页的大型 10-K（如综合性工业/医药公司）后冻结进本文件
+    frozen_ticker: >-
+      3988.HK（中国银行，2026-09-10 冻结）：2025 年年度報告（2026-03-30 披露易发布，
+      A 级）实测 411 页 PDF，分部報告附注在 pp.315–320——远超旧 80 页上限；
+      且 411 > 400 页首次解析上限，同时验收惰性续解路径。
+      市场改为 HK 的理由：美股 10-K 主文档是 HTML（单页文档无分页概念，后半部靠
+      全文检索可达，验不到「分页续读」）；真正的巨型分页 PDF 在港股年报（全 PDF）。
     expected:
-      - read_document 能按页区段读到 80 页之后的附注表
-      - 分部收入观测 locator 带 page（可回原件核对）
-      - completeness 状态如实（truncated 时惰性续解或显式声明）
+      - 年报 PDF 被存档为带页码文档（completeness 如实：411 页首次 truncated、续解后可达）
+      - read_document/search_document 能定位 pp.315+ 的分部報告附注
+      - 分部观测/证据 locator 带 page（可回原件核对）
+      - 关键数值逐字来自附注原文（不依赖新闻转述）
     key_questions:
-      - 分部收入表的期间/口径/币种
-      - 附注中收入确认政策原文
+      - 分部報告中各业务/地区分部的收入与利润（最新财年）
+      - 分部口径定义与上年可比性
     timeout_minutes: 45
 
   - id: guidance-to-actual
     title: 电话会指引与实际兑现
     market: US
-    command: /research {TICKER} --depth=targeted --focus=最近两个季度指引与实际值对比
+    command: /research NVDA --depth=targeted --focus=最近两个季度公司指引与实际披露值对比
     why: >-
-      guidance/consensus 数据源尚未接入（方案第二批 source.earnings）——
-      本题验收的是**诚实降级**：缺源必须显式 missing + 原因，
-      不得用新闻转述冒充发行人指引，不得假装完成兑现时间线。
-    pick_ticker_hint: 选一家有公开季度 guidance 的美股（如已接入 IR 材料的公司）后冻结
+      guidance/consensus 专用数据源尚未接入（方案第二批 source.earnings）——
+      本题验收的是**诚实降级与来源分层**：要么绑发行人材料原文（电话会 transcript/
+      新闻稿），要么显式 missing + 原因；不得用媒体转述冒充发行人指引。
+    frozen_ticker: >-
+      NVDA（2026-09-10 冻结）：每季给出明确下季收入指引（±2%），发行人新闻稿/电话会
+      材料公开且覆盖丰富；指引与实际值均可从披露原文验证。
     expected:
       - guidance 观测要么绑发行人材料原文，要么模块显式 missing + 原因
       - guidance 与 reported 不混 nature（判别联合强制来源义务）
       - 兑现对比只在两类观测都存在时给出，否则声明缺口
+      - 一手/二手分档如实（来源角色：发行人材料 vs 媒体转载）
     key_questions:
       - 最近两个季度的公司指引（指标/区间/发布时间）
       - 对应期间实际披露值与指引的差距
