@@ -25,6 +25,66 @@ from .plan import ResearchPlan
 logger = logging.getLogger("finance_agent.research.assessment")
 
 
+# ---------------- 来源角色（与 PIT 等级分离，tools-plugins 方案 §2/§4.1） ----------------
+# PIT 等级回答「时间可追溯性」，来源角色回答「一手/二手/供应商」——两者不得混用。
+# 旧缺陷：first_party_observations 实际统计的是 PIT A。本表是角色归类的唯一真相源；
+# 插件化（P1-C）后随 manifest 的 source_type 迁移，未知 source 一律 unknown（不偺一手）。
+SOURCE_ROLES: dict[str, str] = {
+    "edgar": "issuer_filing",        # 发行人向 SEC 提交的披露原文
+    "edgar_facts": "issuer_filing",  # 同上（XBRL 结构化通道）
+    "hkex_news": "issuer_filing",    # 港交所披露易发行人公告
+    "web_search": "media_secondary",       # Exa：媒体/转载为主
+    "web_search_tavily": "media_secondary",
+    "news_gdelt": "media_secondary",
+    "fundamentals": "vendor_snapshot",     # yfinance 供应商快照
+    "fundamentals_hk": "vendor_snapshot",  # akshare/东财快照
+    "prices": "market_data",
+    "prices_stooq": "market_data",
+    "canary_news": "eval_decoy",     # 评估诱饵源，不计入任何真实来源档
+}
+
+#: 算作「一手」的角色：发行人/监管披露（权威原文）
+_FIRST_PARTY_ROLES = frozenset({"issuer_filing", "regulator"})
+
+
+def source_role(source_id: str) -> str:
+    """source_id → 来源角色；未知源 = unknown（诚实缺省，不默认一手）。"""
+    return SOURCE_ROLES.get(source_id, "unknown")
+
+
+def classify_observation_source(obs: Any, evidence_sources: dict[str, str] | None) -> str:
+    """一条观测的来源档：first_party / secondary / vendor / derived / internal /
+    market_data / unknown（方案 §2「时间可追溯与一手/权威来源被混用」的拆分）。
+
+    - guidance：发行人自己的指引 → first_party（发布者义务已在 schema 层强制）；
+    - consensus：供应商快照 → vendor；model_estimate → internal；calculated → derived；
+    - reported：看所绑证据的来源角色——全部一手才算一手，混入媒体即 secondary，
+      证据源不可解析 → unknown（不能因为拿不到来源就默认一手）。
+    """
+    nature = getattr(obs, "nature", "reported")
+    if nature == "guidance":
+        return "first_party"
+    if nature == "consensus":
+        return "vendor"
+    if nature == "model_estimate":
+        return "internal"
+    if nature == "calculated":
+        return "derived"
+    refs = list(getattr(obs, "evidence_refs", []) or [])
+    if not refs or evidence_sources is None:
+        return "unknown"
+    roles = {source_role(evidence_sources[r]) for r in refs if r in evidence_sources}
+    if not roles:
+        return "unknown"
+    if roles <= _FIRST_PARTY_ROLES:
+        return "first_party"
+    if "market_data" in roles and roles <= {"market_data", *_FIRST_PARTY_ROLES}:
+        return "market_data"
+    if roles <= {"vendor_snapshot"}:
+        return "vendor"
+    return "secondary"
+
+
 class IntegrityCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +169,7 @@ def assess(
     stop_reason: str = "",
     namespace: str = "prod",
     now: datetime | None = None,
+    evidence_sources: dict[str, str] | None = None,  # evidence_id → source_id（来源角色归类用）
 ) -> ResearchAssessment:
     """确定性评估（硬门禁由代码运行）。LLM rubric 结果不进本函数的门禁判断。"""
     issues = list(validation_issues or [])
@@ -170,12 +231,32 @@ def assess(
 
     cov = coverage_of(plan)
 
-    # Evidence quality（披露，不打分）
-    first_party = sum(1 for o in observations if getattr(o.pit_grade, "value", o.pit_grade) == "A")
+    # Evidence quality（披露，不打分）：PIT 与来源角色分开统计（方案 §2 P0）——
+    # pit_a 回答「时间可追溯」，first_party 回答「是否发行人/监管一手披露」。
+    pit_a = sum(1 for o in observations if getattr(o.pit_grade, "value", o.pit_grade) == "A")
+    source_buckets: dict[str, int] = {}
+    for o in observations:
+        bucket = classify_observation_source(o, evidence_sources)
+        source_buckets[bucket] = source_buckets.get(bucket, 0) + 1
+    # validated 论断的内容级核验状态（方案 §5.4）：引用校验过 ≠ 原文支持结论，
+    # 未核验的数量必须可见，不得对外呈现为「事实已核验」。
+    validated_claims = [c for c in claims if c.get("status") == "validated"]
+    content_unchecked = sum(
+        1 for c in validated_claims
+        if (c.get("verification") or {}).get("evidence_support", "unchecked") == "unchecked"
+    )
     evidence_quality = {
         "observations": len(observations),
-        "first_party_observations": first_party,
-        "validated_claims": sum(1 for c in claims if c.get("status") == "validated"),
+        "pit_a_observations": pit_a,
+        "first_party_observations": source_buckets.get("first_party", 0),
+        "secondary_observations": source_buckets.get("secondary", 0),
+        "vendor_observations": source_buckets.get("vendor", 0),
+        "derived_observations": source_buckets.get("derived", 0),
+        "market_data_observations": source_buckets.get("market_data", 0),
+        "unknown_source_observations": source_buckets.get("unknown", 0)
+        + source_buckets.get("internal", 0) + source_buckets.get("eval_decoy", 0),
+        "validated_claims": len(validated_claims),
+        "validated_claims_content_unchecked": content_unchecked,
         "draft_claims": sum(1 for c in claims if c.get("status") == "draft"),
         "open_conflicts": open_conflicts,
         "stale_fields": list(stale_fields or []),
@@ -247,6 +328,11 @@ def assess(
         notes.append(f"{open_conflicts} 项开放冲突未裁决——不输出无条件结论")
         if verdict == "sufficient":
             verdict = "partial"
+    if validated_claims and content_unchecked:
+        notes.append(
+            f"{content_unchecked}/{len(validated_claims)} 条 validated 论断仅过引用校验，"
+            "内容级核验（原文是否支持结论）尚未执行"
+        )
     if stop_reason in ("budget", "stalled", "cancelled"):
         notes.append(f"stop_reason={stop_reason} 属于预算/执行边界，不是公司基本面结论")
 

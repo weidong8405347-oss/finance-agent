@@ -507,6 +507,17 @@ class ResearchLoop:
                 as_of=now, exclude_resolved=True,
             )
         )
+        # 来源角色归类需要 evidence_id → source_id（PIT 与一手分离，方案 §2 P0）；
+        # 解析不了的引用归 unknown 档（诚实缺省，不默认一手）
+        evidence_sources: dict[str, str] = {}
+        for obs in observations:
+            for ref in getattr(obs, "evidence_refs", None) or []:
+                if ref in evidence_sources:
+                    continue
+                try:
+                    evidence_sources[ref] = self._store.get_evidence(ref).source_id
+                except Exception:  # noqa: BLE001 - 不可解析本身由 assessment 计入 unknown 档
+                    continue
         assessment = assess(
             plan,
             claims=claims,
@@ -517,6 +528,7 @@ class ResearchLoop:
             stop_reason=self.stop_reason or "",
             namespace=self._namespace,
             now=now,
+            evidence_sources=evidence_sources,
         )
         self.assessment = assessment
         self._emit(RESEARCH_ASSESSMENT, assessment.model_dump(mode="json"))
@@ -621,10 +633,14 @@ class ResearchLoop:
                 assigned_question_ids=list(item.question_ids) or None,
             )
             + f"\n\n你是「{group}」维度组的专职研究员。\n{playbook_text}"
-            # 生产纪律（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）
-            + "\n\n生产纪律（防囤证据空转）：按字段逐个推进——每字段：搜索 → 登记 1-2 条关键证据"
-              " → 立即 propose_fact；禁止连续登记超过 3 条证据而不写事实；"
-              "本组字段写完才准碰可选维度；写不出就留白，换下一个字段。"
+            + _worker_discipline(
+                question_driven=bool(item.question_ids),
+                has_document_reader=(
+                    "document" if "read_document" in tools
+                    else "edgar" if "read_edgar_filing" in tools
+                    else ""
+                ),
+            )
         )
         try:
             kernel = AgentKernel(
@@ -827,7 +843,7 @@ class ResearchLoop:
             return None
         from .rubric import RubricJudge
 
-        digest = report.model_dump_json()
+        digest = self._build_judge_digest(report)
         score = RubricJudge(self._judge_llm).judge(digest)
         if score is None:
             self._emit(RESEARCH_RUBRIC, {"round": report.round, "parse_error": True})
@@ -838,8 +854,96 @@ class ResearchLoop:
         )
         return "；".join(score.gaps) if score.gaps else None
 
+    #: rubric digest 上限：够放 ~12 条论断 + 摘录，不致于把 judge 上下文打爆
+    _JUDGE_DIGEST_MAX_CHARS = 12000
+
+    def _build_judge_digest(self, report: IterationReport) -> str:
+        """rubric 输入升级（tools-plugins 方案 §2「研究评审」P0）。
+
+        旧缺陷：judge 只收到 IterationReport 的 ID/字段/计数，无法判断一手证据、
+        反证质量、推理跳跃和关键遗漏。现在附带：本轮写入论断的原文 + 支持摘录、
+        计划问题的结论/未解决项（均有界），让评分基于内容而非仅基于结构。
+        """
+        parts: list[str] = [report.model_dump_json()]
+        if self._metrics is not None and report.claims_written:
+            claim_entries = []
+            for cid in report.claims_written[:12]:
+                payload = self._metrics.get_claim(cid)
+                if payload is None:
+                    continue
+                quotes = []
+                for ref in (payload.get("support_refs") or [])[:3]:
+                    if str(ref).startswith("ev-"):
+                        try:
+                            quotes.append(self._store.get_evidence(str(ref)).verbatim_quote[:400])
+                        except Exception:  # noqa: BLE001 - 未登记引用本身就是评审信号
+                            quotes.append(f"{ref}（不可解析）")
+                claim_entries.append({
+                    "claim_id": cid,
+                    "statement": str(payload.get("statement") or "")[:400],
+                    "kind": payload.get("kind"),
+                    "status": payload.get("status"),
+                    "question_id": payload.get("question_id"),
+                    "limitations": (payload.get("limitations") or [])[:3],
+                    "support_quotes": quotes,
+                })
+            if claim_entries:
+                parts.append(
+                    "本轮写入的论断（含支持证据原文摘录，评审其是否真正支持结论）："
+                    + json.dumps(claim_entries, ensure_ascii=False)
+                )
+        if self.plan_payload:
+            answered = [
+                {"question_id": q.get("question_id"), "status": q.get("status"),
+                 "conclusion": str(q.get("conclusion") or "")[:300],
+                 "unresolved": (q.get("unresolved") or [])[:3]}
+                for q in self.plan_payload.get("questions", [])
+                if q.get("status") not in (None, "", "unanswered")
+            ]
+            if answered:
+                parts.append("计划问题状态与结论：" + json.dumps(answered, ensure_ascii=False))
+        digest = "\n".join(parts)
+        if len(digest) > self._JUDGE_DIGEST_MAX_CHARS:
+            digest = digest[: self._JUDGE_DIGEST_MAX_CHARS] + "\n…（digest 截断）"
+        return digest
+
     def _emit(self, type_: str, payload: dict) -> None:
         self._events.append(Event(run_id=self._manifest.run_id, type=type_, payload=payload))
+
+
+def _worker_discipline(*, question_driven: bool, has_document_reader: str | bool) -> str:
+    """worker 尾部生产纪律（tools-plugins 方案 §2「研究策略」P0）。
+
+    旧缺陷：plan 模式下 worker 尾部仍附「先逐字段写入」纪律，会把开放问题
+    压回快速填字段，影响深度。现在：分配到问题的 worker 用问题驱动纪律
+    （搜索发现 → 重要资料精读 → 证据 → 观测/论断 → 立即交题），
+    legacy 补字段模式（无计划/无分配问题）才保留逐字段纪律。
+
+    has_document_reader："document" = read_document 已装配；"edgar" = 仅
+    read_edgar_filing；其他/False = 无文档读取工具（提示只引用真实存在的工具）。
+    """
+    if question_driven:
+        # 精读提示只引用实际装配的工具（能力与提示同源，不引导模型调不存在的工具）
+        if has_document_reader == "document":
+            read_hint = "用 read_document/search_document 按页精读原文"
+        elif has_document_reader == "edgar":
+            read_hint = "用 read_edgar_filing 抓正文并定位原文窗口"
+        else:
+            read_hint = "用 read_chunk 取回完整正文"
+        return (
+            "\n\n生产纪律（问题驱动，防囤证据空转）：按问题逐个推进——每题：搜索发现 →"
+            f" 重要资料精读（{read_hint}，搜索摘录不足以支撑结论）→ 登记证据 →"
+            " propose_metric/propose_claim → 完成一题立即 answer_question；"
+            "禁止连续登记超过 3 条证据而不产出观测/论断/答案；"
+            "查不到就标 unavailable 并记录 attempts，不烧预算空转。"
+            "旧字段（propose_fact）只在回答问题的顺带产出时写，不为刷字段完整度消耗预算。"
+        )
+    # legacy 补字段模式（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）
+    return (
+        "\n\n生产纪律（防囤证据空转）：按字段逐个推进——每字段：搜索 → 登记 1-2 条关键证据"
+        " → 立即 propose_fact；禁止连续登记超过 3 条证据而不写事实；"
+        "本组字段写完才准碰可选维度；写不出就留白，换下一个字段。"
+    )
 
 
 def _question_stall_suggestions(

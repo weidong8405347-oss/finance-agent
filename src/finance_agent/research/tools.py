@@ -265,18 +265,41 @@ def make_research_tools(
         }
 
     def resolve_conflict(args: dict[str, Any]) -> dict[str, Any]:
-        """裁决字段冲突（Q2）：采集到更强证据后调用，清除该字段的竞争版本标记。"""
+        """裁决字段冲突（Q2 + tools-plugins 方案 P0）：真正选择并保存获胜版本。
+
+        旧缺陷：收 keep_evidence_id 却向 writer 传空 keep_fact_id，底层只清标记——
+        能显示「已处理」却没有保存获胜事实。现走 writer.adjudicate_conflict：
+        定位获胜版本 → 非最新则同值晋升 → 清标记，全部留痕；定位失败即拒。
+        """
         field = str(args["field"])
-        keep = str(args["keep_evidence_id"])
-        n = writer.resolve_conflict(
-            entity_kind, entity_id, field,
-            keep_fact_id="",  # 以证据为准的裁决（keep_fact_id 仅作审计记录）
-            note=str(args.get("note") or f"以证据 {keep} 为准"),
-            run=manifest,
-            namespace=namespace,
-        )
-        return {"content": json.dumps({"resolved": field, "cleared": n}, ensure_ascii=False),
-                "provenance": []}
+        keep_fact_id = str(args.get("keep_fact_id") or "")
+        keep_evidence_id = str(args.get("keep_evidence_id") or "")
+        if not keep_fact_id and not keep_evidence_id:
+            return {
+                "content": "rejected: 必须给出 keep_fact_id 或 keep_evidence_id（裁决需要明确的获胜方）",
+                "provenance": [],
+            }
+        try:
+            out = writer.adjudicate_conflict(
+                entity_kind, entity_id, field,
+                keep_fact_id=keep_fact_id,
+                keep_evidence_id=keep_evidence_id,
+                note=str(args.get("note") or ""),
+                run=manifest,
+                namespace=namespace,
+            )
+        except (KnowledgeError, KeyError, ValueError) as e:
+            tracker.rejected.append({"conflict": field, "reason": str(e)})
+            return {"content": f"rejected: {e}", "provenance": []}
+        return {
+            "content": json.dumps({
+                "resolved": field,
+                "winner_fact_id": out["winner_fact_id"],
+                "promoted_fact_id": out["promoted_fact_id"],
+                "cleared": out["cleared"],
+            }, ensure_ascii=False),
+            "provenance": [],
+        }
 
     tools: dict[str, Any] = {
         "register_evidence": register_evidence,
@@ -456,8 +479,11 @@ def make_research_tools(
             }
 
         def propose_claim(args: dict[str, Any]) -> dict[str, Any]:
-            """研究论断（分析层）：支持/反方引用可解析 → validated，否则 draft 留痕。"""
+            """研究论断（分析层）：支持/反方引用可解析 → validated（仅引用校验），
+            否则 draft 留痕。分项核验状态写入 verification（方案 §5.4）：
+            validated 不得被下游当作「内容已核验」。"""
             from ..eventstore.events import RESEARCH_CLAIM_VALIDATED
+            from .artifacts import ClaimVerification
 
             statement = str(args.get("statement") or "").strip()
             support = [str(r) for r in (args.get("support_refs") or [])]
@@ -506,6 +532,16 @@ def make_research_tools(
                     support_refs=support, counter_refs=counter,
                     limitations=[str(x) for x in (args.get("limitations") or [])],
                     status=status,  # type: ignore[arg-type]
+                    # 分项核验状态（方案 §5.4）：本工具只做引用校验；内容级支持性、
+                    # 数值一致性、推理审查留给独立 verifier（P2），缺省 unchecked 诚实标记。
+                    verification=ClaimVerification(
+                        references_valid=status == "validated",
+                        evidence_support="unchecked",
+                        numeric_checks="unchecked",
+                        analysis_review="not_required" if kind == "fact_summary" else "unchecked",
+                        counter_evidence_search=bool(counter),
+                        verified_by="propose_claim:references",
+                    ),
                     evidence_cutoff=datetime.now(UTC),
                     run_id=manifest.run_id, namespace=namespace,
                 ).with_id()
@@ -520,6 +556,8 @@ def make_research_tools(
                 events.append(Event(run_id=manifest.run_id, type=RESEARCH_CLAIM_VALIDATED, payload={
                     "claim_id": claim.claim_id, "entity": f"{entity_kind}:{entity_id}",
                     "checks": ["support_refs_resolvable"],
+                    # 诚实标记：本事件只代表引用校验，不代表内容级核验已过
+                    "content_checked": False,
                 }))
             tracker.claims.append(claim.claim_id)
             note = ""
@@ -535,6 +573,8 @@ def make_research_tools(
                     )
                 elif not support:
                     note = "（draft：无支持引用）"
+            else:
+                note = "（validated = 引用可解析；内容级核验尚未执行，见 verification.evidence_support）"
             return {"content": json.dumps({"claim_id": claim.claim_id, "status": status, "note": note},
                                            ensure_ascii=False), "provenance": []}
 
@@ -828,15 +868,21 @@ TOOL_SCHEMAS: dict[str, dict] = {
     },
     "resolve_conflict": {
         "name": "resolve_conflict",
-        "description": "裁决字段的开放冲突：采集到更强证据后调用，清除该字段的竞争版本标记",
+        "description": (
+            "裁决字段的开放冲突：必须指定获胜方（keep_fact_id 或支撑保留值的 "
+            "keep_evidence_id）。服务端会真正保存获胜版本（非最新版时同值晋升为当前投影）"
+            "并清除竞争标记；获胜方不在版本链中会被拒绝，不会静默清标记。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "field": {"type": "string"},
-                "keep_evidence_id": {"type": "string", "description": "以哪条证据为准"},
+                "keep_fact_id": {"type": "string", "description": "保留哪个事实版本（优先）"},
+                "keep_evidence_id": {"type": "string",
+                                     "description": "或以哪条证据为准（服务端反查绑定该证据的版本）"},
                 "note": {"type": "string", "description": "裁决理由"},
             },
-            "required": ["field", "keep_evidence_id"],
+            "required": ["field"],
         },
     },
     "read_edgar_filing": {
@@ -944,6 +990,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "提交一条研究论断（分析层，与事实分离）：kind=fact_summary 事实摘要 / "
             "inference 推论 / hypothesis 待验证假设 / analysis 分析。"
             "support_refs 全部可解析（ev-/obs-/calc-/fact-/claim-）才标 validated，否则 draft。"
+            "注意：validated 仅表示引用校验通过；原文是否支持整句结论属于内容级核验"
+            "（verification.evidence_support），未核验前不得当作已证事实引用。"
         ),
         "parameters": {
             "type": "object",

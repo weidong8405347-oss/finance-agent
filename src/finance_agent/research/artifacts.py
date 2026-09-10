@@ -24,6 +24,44 @@ ClaimKind = Literal["fact_summary", "inference", "hypothesis", "analysis"]
 ClaimStatus = Literal["draft", "validated", "superseded"]
 ArtifactSufficiency = Literal["sufficient", "partial", "blocked"]
 
+#: 内容级核验结论（tools-plugins 方案 §5.4）：引用可解析 ≠ 原文支持结论。
+#: 四项检查独立记录，任何一项都不能被总评分抵消。
+EvidenceSupport = Literal[
+    "unchecked", "supported", "partially_supported", "contradicted", "insufficient"
+]
+NumericCheckState = Literal["not_applicable", "unchecked", "passed", "failed"]
+AnalysisReviewState = Literal["not_required", "unchecked", "passed", "failed"]
+
+
+class ClaimVerification(BaseModel):
+    """论断的分项核验状态（additive：旧数据缺省 = 只做过引用校验）。
+
+    历史语义映射（方案 §5.4）：旧 `status=validated` 只表示「引用校验已过」，
+    即 references_valid=True 而 evidence_support=unchecked——不得批量升级成
+    「内容已核验」。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: 引用可解析（存在性 + 命名空间 + 实体上下文）——propose_claim 服务端已做
+    references_valid: bool = False
+    #: 原文是否支持结论（内容级核验，verify_claim/P2 才产出非 unchecked 值）
+    evidence_support: EvidenceSupport = "unchecked"
+    #: 数值一致性检查（论断中的数字可否由引用观测/计算重算支撑）
+    numeric_checks: NumericCheckState = "unchecked"
+    #: 推理审查（前提/推理边界/替代解释；fact_summary 可标 not_required）
+    analysis_review: AnalysisReviewState = "unchecked"
+    #: 反证检索是否执行过（有记录即可，不要求必须找到反证）
+    counter_evidence_search: bool = False
+    verified_at: datetime | None = None
+    verified_by: str = ""  # 核验者标识（工具/模型/人工），不是真值担保
+    notes: list[str] = Field(default_factory=list)
+
+    @property
+    def content_checked(self) -> bool:
+        """是否做过内容级核验（区别于仅引用校验）。"""
+        return self.evidence_support != "unchecked"
+
 #: 段落内引用锚点：[ev-xxx]（证据）/{{metric:obs-id}}（数值插值）
 _EV_REF_RE = re.compile(r"\[(ev-[A-Za-z0-9_-]+)\]")
 _METRIC_REF_RE = re.compile(r"\{\{metric:([A-Za-z0-9_-]+)\}\}")
@@ -44,6 +82,9 @@ class ResearchClaim(BaseModel):
     counter_refs: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     status: ClaimStatus = "draft"
+    #: 分项核验状态（tools-plugins 方案 §5.4）：status=validated 仅表示引用校验过，
+    #: 内容级支持性看 verification.evidence_support（旧数据缺省 unchecked）
+    verification: ClaimVerification = Field(default_factory=ClaimVerification)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     evidence_cutoff: datetime | None = None
     run_id: str | None = None
