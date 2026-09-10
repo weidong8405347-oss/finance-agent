@@ -221,6 +221,15 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
         tests="tests/unit/test_context_tools.py",
     )
     reg(
+        id="profile.consolidator", kind="processing",
+        tools=["prepare_profile_update", "commit_profile_update"], schemas=s["profile"],
+        capabilities=["profile.consolidation", "profile.dependency_invalidation",
+                      "profile.semantic_diff"],
+        stages=["profile"],
+        requires=["metrics.typed", "kb.bitemporal", "snapshot.isolation"],
+        tests="tests/unit/test_profile_consolidator.py",
+    )
+    reg(
         id="synthesize.core", kind="processing",
         tools=["submit_report_document", "submit_structures"], schemas=s["synthesize"],
         capabilities=["report.compose"], stages=["synthesize"],

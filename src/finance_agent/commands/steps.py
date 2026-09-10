@@ -51,16 +51,21 @@ logger = logging.getLogger("finance_agent.steps")
 
 # S2 档案更新的契约（tools-plugins 方案 §9.1：从「重写 thesis」扩展为整合与更新）
 _PROFILE_CONTRACT = """\
-你是档案整合员（不只是 thesis 重写员）。基于冻结基线与本轮研究产出修订该标的的投资论点。
+你是档案整合员（不只是 thesis 重写员）。基于冻结基线与本轮研究产出整合更新该标的档案。
 工作流：
-1. get_research_context 读取上下文：问题结论、typed 观测/论断/计算、字段投影与开放冲突；
+1. prepare_profile_update 取变化集：待合并（新观测/论断/计算）、重复与量表可疑项、
+   开放冲突、失效依赖（已作废观测的下游）与预期 diff；get_research_context 看问题结论详情；
 2. list_conflicts 检查开放冲突；有则先 adjudicate_conflict 裁决（必须给 rationale；
    不得留着冲突值写无条件结论）；
 3. read_evidence 核对支撑论点的关键证据原文；
 4. propose_thesis 提交：论点与已裁决的观测/论断一致，绑定支撑证据 id；
-   证据不足或未裁决的点在 limitations 里明确写出。
+   证据不足或未裁决的点在 limitations 里明确写出；
+5. 有失效依赖或需作废旧论断时，commit_profile_update(change_set_id,
+   expected_base_hash, note, invalidate_claims) 幂等提交并留变化说明；
+   基线过期会被拒，重新 prepare 后再提交。
 纪律：论点只能建立在档案事实/typed 数据之上；validated 仅表示引用校验过，
-内容是否支持结论由你对照原文把关。
+内容是否支持结论由你对照原文把关（关键论断可 verify_claim 核验）；
+没有证据表明观点变化时，不得把「新增一条重复资料」说成新投资发现。
 """
 
 PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
@@ -84,6 +89,55 @@ PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
                                 "description": "证据不足/未裁决/待验证的限制点"},
             },
             "required": ["thesis", "evidence_ids"],
+        },
+    },
+    "prepare_profile_update": {
+        "name": "prepare_profile_update",
+        "description": (
+            "档案整合预览（确定性只读，不写任何状态）：返回待合并（相对基线快照的"
+            "新观测/论断/计算）、重复与量表可疑项、开放冲突、失效依赖（已作废观测的"
+            "下游计算/论断/产物）与预期 diff，以及 commit 需要的 change_set_id 与 "
+            "expected_base_hash。base_snapshot 缺省取最新快照。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_snapshot": {"type": "string", "description": "基线快照 id（可选）"},
+                "candidate_refs": {"type": "array", "items": {"type": "string"},
+                                   "description": "本轮整合候选引用（服务端验可解析性）"},
+            },
+        },
+    },
+    "commit_profile_update": {
+        "name": "commit_profile_update",
+        "description": (
+            "幂等提交档案整合（宿主规则校验）：expected_base_hash 与当前状态不符"
+            "则拒绝（基线过期，重新 prepare）；invalidate_claims 逐条验归属后追加"
+            "失效记录（旧快照与历史投影不变，按时态合并）；同 change_set_id 重放"
+            "返回首次结果。note（变化说明）必填，进审计事件。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "change_set_id": {"type": "string"},
+                "expected_base_hash": {"type": "string"},
+                "note": {"type": "string", "description": "变化说明（哪些数据/结论/置信度变了）"},
+                "invalidate_claims": {
+                    "type": "array",
+                    "description": "需作废的依赖论断（依赖的观测已失效/被更正）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim_id": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "source_refs": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["claim_id", "reason"],
+                    },
+                },
+                "base_snapshot": {"type": "string"},
+            },
+            "required": ["change_set_id", "expected_base_hash", "note"],
         },
     },
 }
@@ -1376,6 +1430,51 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         manifest=manifest, events=deps.events,
     )
 
+    # 整合与刷新（方案 §9.1/§9.3，P2-B）：prepare 确定性预览（只读），
+    # commit 幂等提交（基线哈希校验 + 失效追加记录，旧快照不变）
+    consolidator_tools: dict[str, Any] = {}
+    if deps.metrics is not None:
+        from ..dossier.consolidator import ProfileConsolidator
+
+        consolidator = ProfileConsolidator(
+            kb=deps.kb, metrics=deps.metrics, events=deps.events)
+
+        def prepare_profile_update(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                out = consolidator.prepare_update(
+                    ctx.entity_kind, ctx.ticker,
+                    base_snapshot_id=(str(args["base_snapshot"])
+                                      if args.get("base_snapshot") else None),
+                    candidate_refs=[str(r) for r in (args.get("candidate_refs") or [])],
+                )
+            except Exception as e:  # noqa: BLE001 - 拒绝原因回给模型（可修正重试）
+                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+            return {"content": json.dumps(out, ensure_ascii=False, default=str),
+                    "provenance": []}
+
+        def commit_profile_update(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                out = consolidator.commit_update(
+                    ctx.entity_kind, ctx.ticker,
+                    change_set_id=str(args.get("change_set_id") or ""),
+                    expected_base_hash=str(args.get("expected_base_hash") or ""),
+                    note=str(args.get("note") or ""),
+                    invalidate_claims=args.get("invalidate_claims") or [],
+                    base_snapshot_id=(str(args["base_snapshot"])
+                                      if args.get("base_snapshot") else None),
+                    manifest=manifest,
+                )
+            except Exception as e:  # noqa: BLE001 - 基线过期/非法失效条目都拒绝可见
+                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+            outcome["change_set_id"] = str(args.get("change_set_id") or "")
+            return {"content": json.dumps(out, ensure_ascii=False, default=str),
+                    "provenance": []}
+
+        consolidator_tools = {
+            "prepare_profile_update": prepare_profile_update,
+            "commit_profile_update": commit_profile_update,
+        }
+
     def propose_thesis(args: dict[str, Any]) -> dict[str, Any]:
         evidence_ids = [str(r) for r in (args.get("evidence_ids") or [])]
         thesis = str(args["thesis"])
@@ -1444,19 +1543,25 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         store=deps.events,
         llm=deps.llm_for("research"),
         manifest=manifest,
-        tools={"query_kb": query_kb, "propose_thesis": propose_thesis, **context_tools},
-        # 6 → 10 步：整合需要读上下文/核证据/裁决冲突的余量（方案 §9.1）
-        max_steps=10,
+        tools={"query_kb": query_kb, "propose_thesis": propose_thesis,
+               **context_tools, **consolidator_tools},
+        # 6 → 12 步：整合需要读上下文/预览变化集/核证据/裁决冲突/提交的余量（§9.1）
+        max_steps=12,
     )
     kernel.run_turn(
-        f"请基于本轮研究产出整合更新 {ctx.entity_kind}:{ctx.ticker} 的档案论点。\n"
-        "步骤：① get_research_context 读取冻结基线与本轮产出（问题结论/观测/论断/计算）；"
-        "② list_conflicts 检查开放冲突，有则先 adjudicate_conflict 裁决（给 rationale）；"
-        "③ read_evidence 核对关键证据原文；④ propose_thesis 提交修订（绑定支撑证据 id，"
-        "证据不足的点写进 limitations）。若上下文与档案已一致且无新证据，可不提交（保持现状）。"
+        f"请基于本轮研究产出整合更新 {ctx.entity_kind}:{ctx.ticker} 的档案。\n"
+        "步骤：① prepare_profile_update 取变化集（待合并/重复/冲突/失效依赖/预期 diff，"
+        "兼得 get_research_context 的问题结论详情）；② 有开放冲突先 adjudicate_conflict "
+        "裁决（给 rationale）；③ read_evidence 核对关键证据；④ propose_thesis 提交修订"
+        "（绑证据，限制写 limitations）；⑤ 若变化集里有失效依赖或需要作废旧论断，"
+        "commit_profile_update(change_set_id, expected_base_hash, note, invalidate_claims) "
+        "幂等提交并留变化说明（基线过期会被拒，重新 prepare）。"
+        "若上下文与档案已一致且无新证据，可不提交（保持现状）。"
     )
     if "fact_id" in outcome:
         extra = f"，claim {outcome['claim_id']}" if outcome.get("claim_id") else ""
+        if outcome.get("change_set_id"):
+            extra += f"，整合提交 {outcome['change_set_id']}"
         return StepResult(status="completed",
                           summary=f"thesis 已修订（{outcome['fact_id']}{extra}）")
     return StepResult(status="completed", summary="模型未提交 thesis 修订（保持现状）")
@@ -2536,17 +2641,20 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
         "hooks": [],
     },
     "profile_update": {
-        "title": "S2 档案更新（整合：读基线与本轮产出 → 裁决冲突 → thesis 分层落库）",
+        "title": "S2 档案更新（整合：预览变化集 → 裁决冲突 → thesis 分层落库 → 幂等提交）",
         "model_role": "research",
         "tools": [
+            "prepare_profile_update / commit_profile_update（幂等，基线哈希校验，失效追加记录）",
             "get_research_context / query_observations / query_claims / query_calculations",
             "read_evidence / list_conflicts / adjudicate_conflict",
             "query_kb", "propose_thesis（Fact 兼容投影 + 带证据/limitations 的分析 Claim）",
         ],
-        "plugins": ["thesis 版本化", "claim 分项核验状态（validated 仅=引用校验）"],
+        "plugins": ["thesis 版本化", "claim 分项核验状态（validated 仅=引用校验）",
+                    "依赖图与失效记录（claim_invalidations，旧快照不变）"],
         "hooks": ["evidence-binding", "ProfileWriter 单写者",
-                  "裁决 fail-loud（获胜方定位不了不清标记）"],
-        "budget": {"max_steps": 10},
+                  "裁决 fail-loud（获胜方定位不了不清标记）",
+                  "commit 基线过期拒绝（expected_base_hash）"],
+        "budget": {"max_steps": 12},
     },
     "decide": {
         "title": "S3 决策（DecisionCard）",

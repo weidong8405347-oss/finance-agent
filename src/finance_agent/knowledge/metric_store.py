@@ -182,6 +182,38 @@ CREATE TABLE IF NOT EXISTS metric_revisions (
 CREATE INDEX IF NOT EXISTS idx_revisions_obs ON metric_revisions(namespace, observation_id, revised_at);
 CREATE INDEX IF NOT EXISTS idx_revisions_entity
     ON metric_revisions(namespace, entity_kind, entity_id, revised_at);
+
+-- 论断失效记录（tools-plugins 方案 §9.3，P2-B）：依赖变更时追加失效行，
+-- 不原位改冻结历史——旧快照按 invalidated_at 时态隔离，保持原样。
+CREATE TABLE IF NOT EXISTS claim_invalidations (
+    invalidation_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    claim_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source_refs TEXT NOT NULL DEFAULT '[]',
+    invalidated_at TEXT NOT NULL,
+    run_id TEXT,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (namespace, invalidation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_inval ON claim_invalidations(namespace, claim_id, invalidated_at);
+
+-- 档案整合提交台账（P2-B）：change_set_id 幂等，重跑不重复落失效记录。
+CREATE TABLE IF NOT EXISTS profile_update_commits (
+    change_set_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    expected_base_hash TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    run_id TEXT,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (namespace, change_set_id)
+);
+CREATE INDEX IF NOT EXISTS idx_profile_commits
+    ON profile_update_commits(namespace, entity_kind, entity_id, committed_at);
 """
 
 _OBS_COLUMNS = (
@@ -637,6 +669,74 @@ class MetricStore:
             (namespace, entity_kind, entity_id, t.isoformat()),
         ).fetchall()
         return [ConflictResolution.model_validate_json(r[0]) for r in rows]
+
+    # ---------------- 论断失效与整合提交（P2-B，追加式时态记录） ----------------
+
+    def save_claim_invalidation(
+        self, *, invalidation_id: str, namespace: str, entity_kind: str, entity_id: str,
+        claim_id: str, reason: str, source_refs: list[str], invalidated_at: datetime,
+        run_id: str | None = None,
+    ) -> str:
+        """追加论断失效记录（不改冻结历史；读侧按 invalidated_at 时态合并）。"""
+        payload = {
+            "invalidation_id": invalidation_id, "namespace": namespace,
+            "entity_kind": entity_kind, "entity_id": entity_id,
+            "claim_id": claim_id, "reason": reason,
+            "source_refs": [str(r) for r in source_refs],
+            "invalidated_at": invalidated_at.isoformat(), "run_id": run_id,
+        }
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO claim_invalidations (invalidation_id, namespace, entity_kind,"
+                " entity_id, claim_id, reason, source_refs, invalidated_at, run_id,"
+                " payload_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (invalidation_id, namespace, entity_kind, entity_id, claim_id, reason,
+                 json.dumps(payload["source_refs"], ensure_ascii=False),
+                 invalidated_at.isoformat(), run_id,
+                 json.dumps(payload, ensure_ascii=False)),
+            )
+            self._conn.commit()
+        return invalidation_id
+
+    def invalidations_as_of(
+        self, entity_kind: str, entity_id: str, t: datetime, *, namespace: str = "prod",
+    ) -> list[dict[str, Any]]:
+        """T 时点已生效的失效记录（历史快照不泄露「今天才作废」的状态）。"""
+        rows = self._conn.execute(
+            "SELECT payload_json FROM claim_invalidations WHERE namespace = ?"
+            " AND entity_kind = ? AND entity_id = ? AND invalidated_at <= ?"
+            " ORDER BY invalidated_at",
+            (namespace, entity_kind, entity_id, t.isoformat()),
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def save_profile_update_commit(
+        self, *, change_set_id: str, namespace: str, entity_kind: str, entity_id: str,
+        expected_base_hash: str, committed_at: datetime, run_id: str | None,
+        payload: dict[str, Any],
+    ) -> bool:
+        """整合提交台账（change_set_id 幂等）：返回是否首次提交。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO profile_update_commits (change_set_id, namespace,"
+                " entity_kind, entity_id, expected_base_hash, committed_at, run_id,"
+                " payload_json) VALUES (?,?,?,?,?,?,?,?)",
+                (change_set_id, namespace, entity_kind, entity_id, expected_base_hash,
+                 committed_at.isoformat(), run_id,
+                 json.dumps(payload, ensure_ascii=False, default=str)),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def get_profile_update_commit(
+        self, change_set_id: str, *, namespace: str = "prod",
+    ) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM profile_update_commits"
+            " WHERE namespace = ? AND change_set_id = ?",
+            (namespace, change_set_id),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
 
     # ---------------- 计算 ----------------
 
