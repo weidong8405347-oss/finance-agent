@@ -113,12 +113,23 @@ export interface Capabilities {
   main_agent: { tools: string[]; model: string };
   gateway_sources: string[];
   models: Record<string, string>;
+  // 插件编译视图（P1-C）：从实际编译结果生成，含不可用原因与版本
+  plugins?: {
+    stage: string; market: string; role: string;
+    config_hash: string; compiled_at: string;
+    plugins: {
+      id: string; version: string; kind: string; status: string;
+      reason: string; capabilities: string[]; tools: string[];
+    }[];
+    tools: string[];
+    adapters: string[];
+  } | null;
   commands: {
     name: string; summary: string; usage: string; needs_approval: boolean;
     steps: {
       step: string; title?: string; model_role?: string | null;
       tools?: string[]; plugins?: string[]; hooks?: string[];
-      budget?: Record<string, number>;
+      budget?: Record<string, number | string>;
     }[];
   }[];
 }

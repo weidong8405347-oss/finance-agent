@@ -640,6 +640,9 @@ def create_app(
             },
             "gateway_sources": dynamic.get("gateway_sources", []),
             "models": dynamic.get("models", {}),
+            # 插件编译视图（P1-C）：从实际编译结果生成（enabled/missing_config/
+            # unavailable/degraded + 版本 + 原因），不是手维清单
+            "plugins": dynamic.get("plugins"),
             "commands": [
                 {
                     "name": spec.name,
