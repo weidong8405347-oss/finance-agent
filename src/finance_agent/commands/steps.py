@@ -49,6 +49,25 @@ from ..research.tools import make_research_tools
 
 logger = logging.getLogger("finance_agent.steps")
 
+
+class _LazyResearchLLM:
+    """惰性 research LLM 代理：首次真正调用时才向 llm_for 取实例。
+
+    用于 S2 的 verify_claim 工具：不预先消耗 llm_for 的脚本计数（测试装配的
+    llm_for 按调用次序发脚本，预取会把主 kernel 的脚本顶掉）。
+    """
+
+    model_name = "research(lazy)"
+
+    def __init__(self, deps: StepDeps):
+        self._deps = deps
+        self._inner = None
+
+    def complete(self, messages, tools):
+        if self._inner is None:
+            self._inner = self._deps.llm_for("research")
+        return self._inner.complete(messages, tools)
+
 # S2 档案更新的契约（tools-plugins 方案 §9.1：从「重写 thesis」扩展为整合与更新）
 _PROFILE_CONTRACT = """\
 你是档案整合员（不只是 thesis 重写员）。基于冻结基线与本轮研究产出整合更新该标的档案。
@@ -1435,9 +1454,18 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
     consolidator_tools: dict[str, Any] = {}
     if deps.metrics is not None:
         from ..dossier.consolidator import ProfileConsolidator
+        from ..research.verifier import make_verify_claim_tool
 
         consolidator = ProfileConsolidator(
             kb=deps.kb, metrics=deps.metrics, events=deps.events)
+
+        # verify_claim（§5.4）：S2 整合时对关键论断做内容级核验（与 S1 同一实现）；
+        # judge_llm 优先（独立于主研究模型），缺省惰性取 research 角色
+        verify_tool = make_verify_claim_tool(
+            kb=deps.kb, metrics=deps.metrics, events=deps.events, manifest=manifest,
+            namespace="prod", entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+            llm=deps.judge_llm or _LazyResearchLLM(deps),
+        )
 
         def prepare_profile_update(args: dict[str, Any]) -> dict[str, Any]:
             try:
@@ -1473,6 +1501,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         consolidator_tools = {
             "prepare_profile_update": prepare_profile_update,
             "commit_profile_update": commit_profile_update,
+            "verify_claim": verify_tool,
         }
 
     def propose_thesis(args: dict[str, Any]) -> dict[str, Any]:

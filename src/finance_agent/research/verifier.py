@@ -396,5 +396,48 @@ def verify_claim(
 
 __all__ = [
     "VerificationResult", "AtomicVerdict", "ReasoningReview",
-    "run_hard_checks", "content_review", "verify_claim", "VERIFY_PROMPT",
+    "run_hard_checks", "content_review", "verify_claim", "make_verify_claim_tool",
+    "VERIFY_PROMPT",
 ]
+
+
+def make_verify_claim_tool(
+    *, kb: BitemporalStore, metrics: Any, events: EventStore | None,
+    manifest: RunManifest | None, namespace: str, entity_kind: str, entity_id: str,
+    llm: LLM | None,
+    on_reject: Any | None = None,
+) -> Any:
+    """verify_claim 工具工厂（S1 worker 与 S2 整合共用同一实现）。
+
+    on_reject(claim_id, reason)：拒绝记账回调（S1 的 tracker；可选）。
+    """
+    import json as _json
+
+    from ..knowledge.normalize import normalize_entity_id
+
+    canonical_id = normalize_entity_id(entity_kind, entity_id)
+
+    def verify_claim_tool(args: dict[str, Any]) -> dict[str, Any]:
+        claim_id = str(args.get("claim_id") or "")
+        if not claim_id:
+            return {"content": "rejected: claim_id 必填", "provenance": []}
+        counter_search = args.get("counter_search")
+        if counter_search is not None and not isinstance(counter_search, dict):
+            return {"content": "rejected: counter_search 必须是对象"
+                                   "{queries,sources,found,notes}", "provenance": []}
+        try:
+            result = verify_claim(
+                kb, metrics, claim_id=claim_id, llm=llm,
+                events=events, manifest=manifest, namespace=namespace,
+                entity_kind=entity_kind, entity_id=canonical_id,
+                counter_search=counter_search,
+            )
+        except ValueError as e:
+            if on_reject is not None:
+                on_reject(claim_id, str(e))
+            return {"content": f"rejected: {e}", "provenance": []}
+        return {"content": _json.dumps(
+            result.model_dump(mode="json"), ensure_ascii=False, default=str
+        ), "provenance": []}
+
+    return verify_claim_tool

@@ -304,6 +304,11 @@ class TestS2ConsolidationWiring:
                     "evidence_ids": ["ev-1"],
                     "limitations": ["claim-dep 依赖观测待复核"],
                 })]),
+            # 关键论断核验（S2 与 S1 共用 verify_claim；惰性 LLM 拿到的是非 JSON
+            # 脚本回复 → 内容审查不可用，诚实降级为只做硬检查）
+            AssistantReply(content="", tool_calls=[
+                ToolCall(call_id="c1b", name="verify_claim",
+                         arguments={"claim_id": "claim-dep"})]),
             AssistantReply(content="", tool_calls=[
                 ToolCall(call_id="c2", name="commit_profile_update", arguments={
                     "change_set_id": "__FILL__", "expected_base_hash": "__FILL__",
@@ -315,8 +320,8 @@ class TestS2ConsolidationWiring:
         ]
         # 用真实 prepare 结果填 commit 参数（模型在真实运行中读 prepare 响应获得）
         preview = cons.prepare_update("stock", "BE")
-        script[2].tool_calls[0].arguments["change_set_id"] = preview["change_set_id"]
-        script[2].tool_calls[0].arguments["expected_base_hash"] = preview[
+        script[3].tool_calls[0].arguments["change_set_id"] = preview["change_set_id"]
+        script[3].tool_calls[0].arguments["expected_base_hash"] = preview[
             "expected_base_hash"]
 
         deps = StepDeps(
@@ -343,6 +348,13 @@ class TestS2ConsolidationWiring:
         names = [e.payload["name"] for e in events.read(ctx.child_run_id)
                  if e.type == "tool/result"]
         assert "prepare_profile_update" in names and "commit_profile_update" in names
+        assert "verify_claim" in names, "S2 与 S1 共用内容级核验工具"
+        verified = metrics.get_claim("claim-dep")["verification"]
+        assert verified["references_valid"] is True
+        assert verified["evidence_support"] == "unchecked", \
+            "内容审查不可用时诚实降级（不冒充已核验）"
+        # 核验只改 verification 不改状态：claim 仍在，commit 基线哈希不受影响
+        assert metrics.get_claim("claim-dep")["status"] == "validated"
         # commit 真实落库：提交台账 + 失效记录 + 事件
         committed = metrics.get_profile_update_commit(preview["change_set_id"])
         assert committed and committed["note"].startswith("整合：")

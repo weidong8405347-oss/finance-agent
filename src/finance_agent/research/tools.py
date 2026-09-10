@@ -850,35 +850,16 @@ def make_research_tools(
                  "note": "子问题不扩大预算与投资范围；退出条件达成即收敛"},
                 ensure_ascii=False), "provenance": []}
 
-        def verify_claim_tool(args: dict[str, Any]) -> dict[str, Any]:
-            """内容级核验（§5.4）：硬检查（代码）+ 原文支持性审查（LLM 意见）。
+        # verify_claim：共享工厂（S1/S2 同一实现）；拒绝计入 tracker 供停滞诊断归因
+        from .verifier import make_verify_claim_tool
 
-            结果是可审计核验意见不是绝对真值；contradicted/insufficient 的
-            validated 论断降级 draft；反证检索记录随核验落库。
-            """
-            from .verifier import verify_claim as verify_claim_service
-
-            claim_id = str(args.get("claim_id") or "")
-            if not claim_id:
-                return {"content": "rejected: claim_id 必填", "provenance": []}
-            counter_search = args.get("counter_search")
-            if counter_search is not None and not isinstance(counter_search, dict):
-                return {"content": "rejected: counter_search 必须是对象"
-                                       "{queries,sources,found,notes}", "provenance": []}
-            try:
-                result = verify_claim_service(
-                    store, metrics, claim_id=claim_id, llm=verify_llm,
-                    events=events, manifest=manifest, namespace=namespace,
-                    entity_kind=entity_kind,
-                    entity_id=normalize_entity_id(entity_kind, entity_id),
-                    counter_search=counter_search,
-                )
-            except ValueError as e:
-                tracker.rejected.append({"verify": claim_id, "reason": str(e)})
-                return {"content": f"rejected: {e}", "provenance": []}
-            return {"content": json.dumps(
-                result.model_dump(mode="json"), ensure_ascii=False, default=str
-            ), "provenance": []}
+        verify_claim_tool = make_verify_claim_tool(
+            kb=store, metrics=metrics, events=events, manifest=manifest,
+            namespace=namespace, entity_kind=entity_kind, entity_id=entity_id,
+            llm=verify_llm,
+            on_reject=lambda cid, reason: tracker.rejected.append(
+                {"verify": cid, "reason": reason}),
+        )
 
         tools.update({
             "submit_question_result": submit_question_result,
