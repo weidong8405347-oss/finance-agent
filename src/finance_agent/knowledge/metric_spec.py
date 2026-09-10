@@ -130,7 +130,8 @@ REGISTRY: dict[str, MetricSpec] = {s.metric_key: s for s in (
     _ratio("gross_margin", "毛利率（毛利/收入；percent 或 ratio 二选一，不得混用）"),
     _ratio("operating_margin", "营业利润率"),
     _ratio("net_margin", "净利率"),
-    _ratio("growth_rate", "同比/复合增速（需说明比较期）"),
+    _ratio("growth_rate", "同比/复合增速（需说明比较期；行业增速写行业实体）",
+           subject_kinds=("stock", "industry")),
     MetricSpec(metric_key="share_dilution", value_kind="ratio",
                meaning="股本稀释比例（期间股本变动/期初股本）",
                value_range=(Decimal("-1"), Decimal("10"))),
@@ -262,7 +263,10 @@ def check_observation(
     if u and u not in spec.units():
         violations.append(
             f"单位 {u!r} 不在 {spec.value_kind} 类指标允许集合 {sorted(spec.units())}"
-            f"（{spec.metric_key}: {spec.meaning}）"
+            f"（{spec.metric_key}: {spec.meaning}）。"
+            "修法：unit 用规范代码（金额类如 CNY/USD，比例类如 percent/ratio），"
+            "原文量表写进 unit_text（如 'RMB'000' / 'USD millions'），"
+            "规模换算由服务端按 value_text/unit_text 显式登记，不要自造单位字符串"
         )
     if spec.value_kind in ("ratio", "count", "duration", "quantity") and currency:
         violations.append(

@@ -254,9 +254,16 @@ def test_stall_emits_diagnostic_event(tmp_path):
 
 
 def test_stall_diagnostic_suggests_hkex_for_hk_ticker(tmp_path):
-    """港股代码的停滞建议指向 HKEXnews（EDGAR 不覆盖港股披露）。"""
+    """港股代码的停滞建议指向 hkex_news（EDGAR 不覆盖港股披露）。
+
+    2026-09-10 基线整改后按装配状态分流：本测试 loop 未装 hkex_news 源 →
+    建议必须是「源未装配」（可操作），而不是过时的「待接入后重试」。
+    """
     llm = MockLLM([AssistantReply(content="查不到")])
     loop, _, events = make_loop(tmp_path, llm, max_rounds=1)
     loop.run("stock", "2228.HK", objective="研究", now=NOW)
     diag = events.read("live-1", types={"research/stall_diagnostic"})
-    assert any("HKEXnews" in s for s in diag[0].payload["suggestions"])
+    suggestions = diag[0].payload["suggestions"]
+    assert any("hkex_news" in s for s in suggestions)
+    assert any("未装配" in s for s in suggestions)
+    assert not any("待接入" in s for s in suggestions), "hkex_news 已上线，旧文案过时"

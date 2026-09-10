@@ -1611,6 +1611,23 @@ def _industry_loop(
     return loop
 
 
+def _industry_map_stall_blocked(loop, gaps) -> bool:
+    """F1 停滞是否应拦停漏斗（哨兵基线 ai4s 事故整改 2026-09-10）。
+
+    旧判据只看字段完整度：问题已答、论断/观测已落但旧字段 0% 时，整个 /industry
+    被 blocked（基线实测：F1 问题覆盖 1/1 sufficient 仍被拦停）。与 step_research
+    同一口径：有任意有效产出（已答问题/观测/论断）就不算一无所获。
+    """
+    a = getattr(loop, "assessment", None)
+    if a is not None:
+        eq = getattr(a, "evidence_quality", None) or {}
+        qc = getattr(a, "question_coverage", None)
+        if (getattr(qc, "answered", 0) or eq.get("observations")
+                or eq.get("validated_claims") or eq.get("draft_claims")):
+            return False
+    return not gaps.completeness
+
+
 def step_industry_map(deps: StepDeps, ctx: StepContext) -> StepResult:
     """F1 赛道地图：子赛道拆解 → industry 档案（sub_sectors + 五必填字段）。"""
     if ctx.should_cancel():
@@ -1619,14 +1636,22 @@ def step_industry_map(deps: StepDeps, ctx: StepContext) -> StepResult:
     if loop.stop_reason == "cancelled":
         return _cancelled(ctx)
     gaps = GapAnalyzer(deps.kb).analyze("industry", ctx.ticker, datetime.now(UTC))
-    if loop.stop_reason == "stalled" and not gaps.completeness:
+    if loop.stop_reason == "stalled" and _industry_map_stall_blocked(loop, gaps):
         diag = (loop.stall_diagnostic or {}).get("suggestions") or []
         return StepResult(status="blocked",
                           summary=f"赛道地图停滞：完整度 0%（{'；'.join(diag)}）")
-    return StepResult(
-        status="completed",
-        summary=f"赛道地图完成（{loop.stop_reason}）：行业档案完整度 {gaps.completeness:.0%}",
-    )
+    summary = f"赛道地图完成（{loop.stop_reason}）：行业档案完整度 {gaps.completeness:.0%}"
+    a = getattr(loop, "assessment", None)
+    if a is not None and gaps.completeness < 0.5:
+        # 问题优先产出、字段缺口如实（不把 stalled+0% 字段包装成「完成」）
+        qc = a.question_coverage
+        eq = a.evidence_quality or {}
+        summary += (
+            f"；问题覆盖 {qc.answered}/{qc.applicable}，观测 {eq.get('observations', 0)} 条，"
+            f"论断 {eq.get('validated_claims', 0)}v/{eq.get('draft_claims', 0)}d"
+            f"；缺口字段：{'、'.join(gaps.missing[:5]) or '无'}"
+        )
+    return StepResult(status="completed", summary=summary)
 
 
 def step_candidate_pool(deps: StepDeps, ctx: StepContext) -> StepResult:

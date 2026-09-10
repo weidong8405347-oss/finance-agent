@@ -1003,18 +1003,36 @@ _QUALITATIVE_FIELDS = frozenset({"moat", "risks", "management", "catalysts", "co
 
 
 def _stall_suggestions(entity_id: str, missing: list[str], sources: list[str]) -> list[str]:
-    """停滞建议（规则化，不依赖 LLM）：按缺口形态指出最可能的数据边界。"""
+    """停滞建议（规则化，不依赖 LLM）：按缺口形态指出最可能的数据/工具边界。
+
+    2026-09-10 按当前工具面更新（哨兵基线实测：旧文案指向「待接入 HKEXnews/Exa」，
+    两者早已装配——过时建议会把排查引向不存在的缺口）。
+    """
     out: list[str] = []
     if re.fullmatch(r"\d{4,5}(\.HK)?", entity_id) or entity_id.upper().endswith(".HK"):
-        out.append(
-            "港股披露不在 SEC EDGAR 覆盖内；待接入 HKEXnews 源后重试"
-            "（docs/research-capability-upgrade.md P2）"
-        )
+        if "hkex_news" in sources:
+            out.append(
+                "港股披露用 hkex_news（A 级，全 PDF）：中文 PDF 乱码时（quality=garbled/"
+                "needs_ocr）换英文版/HTML 公告或标 unavailable 并记录 attempts，"
+                "不要硬引乱码正文"
+            )
+        else:
+            out.append(
+                "港股披露不在 SEC EDGAR 覆盖内，且 hkex_news 源未装配"
+                "（检查启动时的源注册/预检提示）"
+            )
     if set(missing) & _QUALITATIVE_FIELDS:
-        out.append(
-            "定性维度（护城河/风险/管理层等）靠现有 EDGAR+行情源覆盖薄弱；"
-            "待接入 web 搜索源（Exa）后重试（docs/research-capability-upgrade.md P2）"
-        )
+        if "web_search" in sources or "web_search_tavily" in sources:
+            out.append(
+                "定性维度（护城河/风险/管理层等）靠 web_search + 文档精读"
+                "（fetch_document/read_document/search_document）；检查检索预算与"
+                "查询改写，连续低收益就发布 partial 并标明缺口"
+            )
+        else:
+            out.append(
+                "定性维度靠 EDGAR/行情源覆盖薄弱，且 web 搜索源未装配"
+                "（检查 NOVITA_API_KEY/EXA_API_KEY/TAVILY_API_KEY 与启动提示）"
+            )
     if not out:
         out.append("可换查询策略重试，或缩小研究目标范围（objective 指定更具体的缺口字段）")
     return out
