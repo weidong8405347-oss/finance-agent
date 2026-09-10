@@ -1,0 +1,118 @@
+# 哨兵题集（tools-plugins 方案 §10.1「先选 6 个哨兵任务跑通」）
+#
+# 用途：改造前后同题对照的最小基线（A 当前基线 / B 工具改善 / C 工具+流程）。
+# 纪律：冻结题目、目标、允许来源与期望产物；不预设公司结论；
+#       关键任务至少重复 3 次测波动；结果只是阶段决策依据，不证明普遍追平。
+#
+# 运行：uv run python scripts/run_sentinel.py --list
+#       uv run python scripts/run_sentinel.py --task be-orders-revenue   # 真实付费运行（LLM+网络）
+# 状态：脚手架已就绪；**尚未执行真实运行**（方案交付复核口径：没有运行付费研究）。
+version: 1
+frozen_at: "2026-09-10"
+tasks:
+  - id: be-orders-revenue
+    title: BE 财务与订单口径
+    market: US
+    command: /research BE --depth=deep --focus=订单口径与收入确认
+    why: >-
+      历史事故标的：合同潜在总额/已收首付款/里程碑上限曾被混为一个指标，
+      量级与口径错置是本项目真实失败场景（audit §3.2）。
+    expected:
+      - firm_backlog / booked_revenue / revenue 是不同 metric_key，不混写
+      - 金额观测带 currency + period + locator（document/page/table）
+      - 关键数值可重算（numbers_recomputable 硬门禁通过）
+      - 订单口径的定义引用披露原文（不是新闻转述）
+    key_questions:
+      - 在手订单的口径定义（含税？含未行权期权？）与期间
+      - 订单转收入的节奏与确认政策
+    timeout_minutes: 60
+
+  - id: 2228hk-chinese-filings
+    title: 2228.HK 中文财报与合同定义
+    market: HK
+    command: /research 2228.HK --depth=deep --focus=中文披露的合同定义与收入口径
+    why: >-
+      港股披露全是中文 PDF：实体归一（2228.HK vs 02228）、中文抽取质量
+      （garbled/needs_ocr）与合同定义术语是项目真实失败场景。
+    expected:
+      - HKEXnews 原文可达（A 级，披露时刻分钟精度）
+      - 乱码/扫描件正文不进指标库（质量标记拦截可见）
+      - 实体 id 归一为单一档案（无 2228/02228 双档案）
+      - 合同定义类结论引用中文原文逐字摘录
+    key_questions:
+      - 重大合同/框架协议中收入相关条款的原文定义
+      - 报告币种与会计准则（IFRS/HKFRS）口径
+    timeout_minutes: 60
+
+  - id: ai4s-tech-commercial
+    title: AI for Science 技术与商业兑现
+    market: US
+    command: /industry ai-for-science
+    why: >-
+      行业漏斗全链路（F1-F5）：技术证据与商业兑现必须分层，
+      论文数量不得直接变成护城河评分（方案 §5.2 search_domain_evidence 边界）。
+    expected:
+      - candidate_assessment 区分 technology_stage 与 commercial_stage
+      - 独立验证（论文/试验/客户）与公司自述分开标注
+      - 每票绑归属证据；淘汰给理由
+      - 反证检索有记录（找不到反证时保存查过的范围）
+    key_questions:
+      - 哪些公司已形成技术护城河且有商业爆发可能
+      - 各候选的现金消耗与验证事件时间线
+    timeout_minutes: 120
+
+  - id: restatement-handling
+    title: 财报更正与竞争版本
+    market: US
+    command: /research {TICKER} --depth=targeted --focus=更正后的最新口径与历史版本
+    why: >-
+      重述/更正是双时态知识库的核心考验：竞争版本不得取平均、不得静默覆盖；
+      ticker 留空待选（从存在 10-K/A 或 XBRL 更正 amendments 的真实标的中冻结一个）。
+    pick_ticker_hint: 用 query_edgar include_history 找存在 10-K/A 的标的后冻结进本文件
+    expected:
+      - 更正值形成竞争版本或修订链（conflict_flag / revision 可见）
+      - 冲突走裁决闭环（winner 保存并晋升，不是只清标记）
+      - 历史 as_of 投影仍见旧值（append-only 不破）
+    key_questions:
+      - 更正涉及哪些科目/期间，更正前后差异多少
+      - 更正原因（差错性质）与内控披露
+    timeout_minutes: 45
+
+  - id: deep-pdf-late-table
+    title: 80 页后关键表格可达性
+    market: US
+    command: /research {TICKER} --depth=targeted --focus=财务报表附注中的分部收入表
+    why: >-
+      旧实现 PDF 只读前 80 页且合并为纯文本——大型 10-K 的报表与附注在后半部，
+      这是 Document Read v2 的直接验收场景（方案 §2 PDF/HTML P1）。
+    pick_ticker_hint: 选一份 >150 页的大型 10-K（如综合性工业/医药公司）后冻结进本文件
+    expected:
+      - read_document 能按页区段读到 80 页之后的附注表
+      - 分部收入观测 locator 带 page（可回原件核对）
+      - completeness 状态如实（truncated 时惰性续解或显式声明）
+    key_questions:
+      - 分部收入表的期间/口径/币种
+      - 附注中收入确认政策原文
+    timeout_minutes: 45
+
+  - id: guidance-to-actual
+    title: 电话会指引与实际兑现
+    market: US
+    command: /research {TICKER} --depth=targeted --focus=最近两个季度指引与实际值对比
+    why: >-
+      guidance/consensus 数据源尚未接入（方案第二批 source.earnings）——
+      本题验收的是**诚实降级**：缺源必须显式 missing + 原因，
+      不得用新闻转述冒充发行人指引，不得假装完成兑现时间线。
+    pick_ticker_hint: 选一家有公开季度 guidance 的美股（如已接入 IR 材料的公司）后冻结
+    expected:
+      - guidance 观测要么绑发行人材料原文，要么模块显式 missing + 原因
+      - guidance 与 reported 不混 nature（判别联合强制来源义务）
+      - 兑现对比只在两类观测都存在时给出，否则声明缺口
+    key_questions:
+      - 最近两个季度的公司指引（指标/区间/发布时间）
+      - 对应期间实际披露值与指引的差距
+    timeout_minutes: 45
+
+# 对照与验收（方案 §10.2）：先跑 A（当前基线）冻结结果，再上 B/C 组比较；
+# 指标口径：有效问题覆盖、引用可解析率、关键数值准确率、原文可获取率、
+# 重复资料率、成本效率、首个有效产物时间。盲评与 24 题扩展属 P3，不在本脚手架内。

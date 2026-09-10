@@ -72,7 +72,20 @@ uv run ruff check src tests
 
 ### 当前进度
 
-**Knowledge 档案升级已落地（M0/M1/M2 + M3/M4 部分，分支 feat/knowledge-dossier-research-upgrade）**
+**Research/Profile 能力加强第一轮已落地（分支 `feat/research-profile-capability-upgrade`，方案见 [tools-plugins 计划](docs/research-profile-tools-plugins-plan-2026-09-09.md)，对照见 [实施记录](docs/research-profile-tools-implementation-2026-09-10.md)）**
+
+| 项 | 内容 |
+| --- | --- |
+| P0 可信度 | 冲突真裁决（获胜版本保存+晋升，不再只清标记）；claim 核验状态拆分（validated 仅=引用校验，`verification.evidence_support` 诚实标 unchecked）；一手来源与 PIT 分档统计；plan 模式 worker 不再被「逐字段写入」纪律压回填字段；rubric 评审收到论断原文+支持摘录 |
+| 统一知识读取 | `research/context_tools.py`：get_research_context / query_observations·claims·calculations（过滤+游标，截断不静默）/ read_evidence（批量逐项成败）/ list_conflicts / adjudicate_conflict（typed 语义键裁决落事件）——S1/S2/合成/委员会共用同一契约 |
+| S2 整合第一步 | profile_update 读冻结基线+本轮产出→裁决冲突→thesis 同时落 Fact（兼容）+带证据/limitations 的分析 Claim（dossier 总论新读侧） |
+| Document Read v2 | run 级文档库（内容哈希去重，同财报只抓解一次）；PDF 保页码+惰性续解（**80 页后表格可达**）；fetch_document/read_document/search_document + 目录/完整性（full·partial·truncated·failed）透明；窗口 chunk 带 document/page locator；抓取失败≠未披露 |
+| SEC 结构化披露 | `query_edgar_facts`（companyfacts XBRL：原始 tag/unit/期间/accn+原文链接，A 级 acceptance 时刻）；公开时刻 acceptance 优先、日精度保守取 UTC 日末；历史分段遍历；≤10 req/s 节流 |
+| 哨兵题集脚手架 | `evals/sentinel_tasks.yaml`（6 题冻结）+ `scripts/run_sentinel.py`（隔离运行/信号采集）；真实对照运行待执行 |
+
+验收：812 passed + ruff 通过（本轮新增 60+ 例：P0 整改/共享工具/文档分页/多页 PDF 惰性续解/XBRL 离线夹具/题集契约）。
+
+**Knowledge 档案升级已落地（M0/M1/M2 + M3/M4 部分，已合入 `main`，截至 `d1b83ee`）**
 
 | 层 | 内容 |
 | --- | --- |

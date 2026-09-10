@@ -1,8 +1,8 @@
 # Research / Profile：Tools 与 Plugins 能力提升方案
 
-> 日期：2026-09-09。代码基线：`8777748`。
+> 初次调研：2026-09-09，代码基线 `8777748`；交付复核：2026-09-10，代码基线 `c718a66`。外部来源核验于 9 月 9 日。
 > 方法：当前源码静态审查、既有实施/事故文档对照，以及官方文档、作者工程文章和官方数据服务的网上检索。
-> 本文的 Profile 指股票/行业投研档案。本文是设计方案，尚未实施；没有运行付费研究、购买数据服务或进行 ChatGPT Deep Research 同题实验。优先级是基于代码证据的工程判断，收益与工期是待验证的估计。
+> 本文的 Profile 指股票/行业投研档案。本文是设计方案；**第一轮实施已落地**（P0 + 统一知识读取 + Document Read v2 + SEC 财务工具 + 哨兵题集脚手架，见 [实施记录](research-profile-tools-implementation-2026-09-10.md)），其余阶段仍未实施；没有运行付费研究、购买数据服务或进行 ChatGPT Deep Research 同题实验。优先级是基于代码证据的工程判断，收益与工期是待验证的估计。
 
 ## 1. 建议与边界
 
@@ -24,23 +24,25 @@
 
 | 能力 | 当前实现与证据 | 对产出的影响 | 建议优先级 |
 | --- | --- | --- | --- |
-| 搜索输入 | Exa 请求及结果都限制 1,200 字符；Tavily 固定 basic 并截断 1,200 字符。[Exa](../src/finance_agent/gateway/adapters/exa_search.py#L93)、[Tavily](../src/finance_agent/gateway/adapters/tavily.py#L55) | 适合发现来源，难以支撑脚注、商业机制和细致反证 | P0/P1 |
-| 通用全文读取 | `read_edgar_filing` 实际能读取任意检索 chunk 的 URL，但接口命名/提示仍偏 SEC/HKEX；定位只做完整 query 的精确子串，无命中返回开头。[读取](../src/finance_agent/research/tools.py#L662)、[窗口](../src/finance_agent/research/tools.py#L91) | 容易错过正文深处的证据，也不利于模型发现工具适用范围 | P0/P1 |
-| PDF/HTML | PDF 默认前 80 页，所有页合并为纯文本；HTML 删除标签和空白。已有乱码检测，尚无 OCR 修复及保结构解析。[fetch](../src/finance_agent/gateway/fetch.py#L42) | 页、表头、期间、单位和脚注可能丢失，80 页后的数据不可达 | P1 |
-| 论断核验 | `propose_claim` 的 validated 主要来自引用可解析和作用域检查。[tools](../src/finance_agent/research/tools.py#L458) | 引用正确指向一段文字，仍可能不支持整句结论 | P0 |
-| 研究评审 | rubric 收到 `IterationReport` JSON，主要是 ID、字段和计数，缺论断与原文。[loop](../src/finance_agent/research/loop.py#L810) | 无法充分判断一手证据、反证质量、推理跳跃和关键遗漏 | P0 |
-| 来源质量 | `first_party_observations` 实际统计 PIT A。[assessment](../src/finance_agent/research/assessment.py#L173) | 时间可追溯与一手/权威来源被混用 | P0 |
-| 知识复用 | S1 的 `query_kb` 主要返回 legacy value/time；typed 查询已在合成阶段实现，但尚未共用。[S1](../src/finance_agent/research/tools.py#L249)、[合成](../src/finance_agent/commands/steps.py#L617) | 研究和档案更新不能充分复用已有观测、论断、计算及其出处 | P0/P1 |
-| Profile 更新 | S2 是最多 6 步的 `query_kb → propose_thesis`，主要读取旧 Fact；建档主体工作在 S1。[profile_update](../src/finance_agent/commands/steps.py#L1296) | 更新更像重写 thesis，缺少完整的整合、依赖失效和差异解释 | P1 |
-| 旧事实冲突工具 | `keep_evidence_id` 进入说明，实际向 writer 传空 `keep_fact_id`，底层清除 conflict_flag。[工具](../src/finance_agent/research/tools.py#L267)、[store](../src/finance_agent/knowledge/store.py#L285) | 可显示冲突已处理，却没有真正选择与保存获胜事实 | P0 |
-| SEC 数据 | 读取 submissions 的 recent 部分；未见专门 companyfacts/XBRL 工具及历史文件遍历。[edgar](../src/finance_agent/gateway/adapters/edgar.py#L62) | 可利用的结构化财务事实尚未成为主要输入 | P1 |
-| 插件 | SourceAdapter 已有；源、schema、handler、STEP_MANIFEST 分散手工装配。MCP 仍在扩展文档中列为后置。[扩展说明](how-to-extend.md) | 扩展容易漏配，难以按任务组合、统一测量与冻结版本 | P1 |
-| 研究策略 | plan 模式强调问题研究，但 worker 尾部仍附带先逐字段写入的纪律。[loop](../src/finance_agent/research/loop.py#L603) | 会把开放问题压回快速填字段，影响深度 | P0 |
-| 上下文 | Kernel 每步从事件投影历史；已有按需 chunk 和请求去重，尚未有完整语义压缩。[kernel](../src/finance_agent/loop/kernel.py#L80) | 长任务中历史资料重复占用上下文和输入预算 | P1 |
+| 搜索输入 | Exa 请求及结果都限制 1,200 字符；Tavily 固定 basic 并截断 1,200 字符。[Exa](/Users/sixing/dev/work/finance-agent/src/finance_agent/gateway/adapters/exa_search.py:93)、[Tavily](/Users/sixing/dev/work/finance-agent/src/finance_agent/gateway/adapters/tavily.py:55) | 适合发现来源，难以支撑脚注、商业机制和细致反证 | P0/P1 |
+| 通用全文读取 | `read_edgar_filing` 实际能读取任意检索 chunk 的 URL，但接口命名/提示仍偏 SEC/HKEX；定位只做完整 query 的精确子串，无命中返回开头。[读取](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/tools.py:662)、[窗口](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/tools.py:91) | 容易错过正文深处的证据，也不利于模型发现工具适用范围 | P0/P1 |
+| PDF/HTML | PDF 默认前 80 页，所有页合并为纯文本；HTML 删除标签和空白。已有乱码检测，尚无 OCR 修复及保结构解析。[fetch](/Users/sixing/dev/work/finance-agent/src/finance_agent/gateway/fetch.py:42) | 页、表头、期间、单位和脚注可能丢失，80 页后的数据不可达 | P1 |
+| 论断核验 | `propose_claim` 的 validated 主要来自引用可解析和作用域检查。[tools](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/tools.py:458) | 引用正确指向一段文字，仍可能不支持整句结论 | P0 |
+| 研究评审 | rubric 收到 `IterationReport` JSON，主要是 ID、字段和计数，缺论断与原文。[loop](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/loop.py:824) | 无法充分判断一手证据、反证质量、推理跳跃和关键遗漏 | P0 |
+| 来源质量 | `first_party_observations` 实际统计 PIT A。[assessment](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/assessment.py:173) | 时间可追溯与一手/权威来源被混用 | P0 |
+| 知识复用 | S1 的 `query_kb` 主要返回 legacy value/time；typed 查询已在合成阶段实现，但尚未共用。[S1](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/tools.py:249)、[合成](/Users/sixing/dev/work/finance-agent/src/finance_agent/commands/steps.py:635) | 研究和档案更新不能充分复用已有观测、论断、计算及其出处 | P0/P1 |
+| Profile 更新 | S2 是最多 6 步的 `query_kb → propose_thesis`，主要读取旧 Fact；建档主体工作在 S1。[profile_update](/Users/sixing/dev/work/finance-agent/src/finance_agent/commands/steps.py:1343) | 更新更像重写 thesis，缺少完整的整合、依赖失效和差异解释 | P1 |
+| 旧事实冲突工具 | `keep_evidence_id` 进入说明，实际向 writer 传空 `keep_fact_id`，底层清除 conflict_flag。[工具](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/tools.py:267)、[store](/Users/sixing/dev/work/finance-agent/src/finance_agent/knowledge/store.py:298) | 可显示冲突已处理，却没有真正选择与保存获胜事实 | P0 |
+| SEC 数据 | 读取 submissions 的 recent 部分；未见专门 companyfacts/XBRL 工具及历史文件遍历。[edgar](/Users/sixing/dev/work/finance-agent/src/finance_agent/gateway/adapters/edgar.py:62) | 可利用的结构化财务事实尚未成为主要输入 | P1 |
+| 插件 | SourceAdapter 已有；源、schema、handler、STEP_MANIFEST 分散手工装配。MCP 仍在扩展文档中列为后置。[扩展说明](/Users/sixing/dev/work/finance-agent/docs/how-to-extend.md) | 扩展容易漏配，难以按任务组合、统一测量与冻结版本 | P1 |
+| 研究策略 | plan 模式强调问题研究，但 worker 尾部仍附带先逐字段写入的纪律。[loop](/Users/sixing/dev/work/finance-agent/src/finance_agent/research/loop.py:625) | 会把开放问题压回快速填字段，影响深度 | P0 |
+| 上下文 | 已增加投影裁剪：默认保留最近 6 条工具结果全文，更早内容保留前 1,200 字符并提示回读；原日志完整。[裁剪实现](/Users/sixing/dev/work/finance-agent/src/finance_agent/eventstore/store.py:81) | 已缓解长结果重复输入，但尚无保留问题状态和关键证据的语义压缩，按前缀裁剪可能丢掉重要尾部信息 | P1 增强 |
 
 补充：当前工具已经按 step 过滤，不是把所有工具一股脑交给所有 agent。应在此基础上继续增加按问题、市场和阶段的能力选择。
 
-已有实施文档也明确：电话会/guidance/consensus、真实新旧效果盲评等仍待完成。本次没有复跑过去的研究，不能从旧事故统计推断当前耗时和质量。[实施状态](knowledge-dossier-implementation-status.md)
+9 月 10 日复核确认：行业 F1/F2 已接入计划和 typed 工具；合成结构已支持按 kind 部分接受与修正；档案投影和可视化已增强。这些均视为现有基础，本方案的 Profile 工作聚焦证据、知识复用和更新语义。[行业装配](/Users/sixing/dev/work/finance-agent/src/finance_agent/commands/steps.py:1544)
+
+已有实施文档明确：电话会/guidance/consensus、真实新旧效果盲评等仍待完成；其中关于上下文的旧描述应以上述代码复核为准。本次没有复跑过去的研究，不能从旧事故统计推断当前耗时和质量。[实施状态](/Users/sixing/dev/work/finance-agent/docs/knowledge-dossier-implementation-status.md)
 
 ## 3. 网上最佳实践如何映射到本项目
 
@@ -106,7 +108,7 @@ EvidencePack
 
 ## 5. Tools 详细改造
 
-下列是建议工具契约，不表示目前已可调用。研究者通常只暴露 6–10 个相关工具；内部可调用多个 adapter，批处理每项单独返回成功/失败和证据血缘。
+下列是建议工具契约，不表示目前已可调用。建议初始配置向每个研究者暴露 6–10 个相关工具，再按题集调优；内部可调用多个 adapter，批处理每项单独返回成功/失败和证据血缘。
 
 ### 5.1 搜索与文档工具：第一优先级
 
@@ -277,6 +279,16 @@ contract_tests: sec_source_v1
 
 本轮不沿用旧文档中的历史套餐价格或免费额度作为预算依据。按本次未实际调用的商业 API，价格、权限和可用性均为接入前检查项。对当前目标，优先花钱改善全文、表格、电话会和预期的可得性，暂缓行情/交易执行类插件扩容。
 
+### 7.3 可选外部研究引擎的接法
+
+如需快速评估专用研究模型的价值，可单独试点 `ResearchEngine.run(plan, evidence_scope, budget)`，返回候选报告、引用列表、可获取的研究轨迹和用量，不直接写 Profile。保留本地引擎用于对照及专有工具调用。
+
+OpenAI 路径采用 Responses API 的专用研究模型，长任务使用 background mode，并限制工具调用数。向其提供内部资料时，只导出受运行范围约束的只读 `search`/`fetch` MCP；现有写事实、计算和裁决工具仍由本地主流程执行。本文引用的专用研究模型不支持通用 function calling，不能只改 model 名称完成迁移。[Deep Research 接口与工具限制](https://developers.openai.com/api/docs/guides/deep-research)
+
+对返回报告逐条解析引用、重新取得可访问原文、建立 EvidencePack，经本地核验后再转成 Observation/Claim/Artifact。仅有外部报告摘要而拿不到原文的结论保持待核验。历史评估不得直接使用不受本地时间网关控制的实时网页搜索；先在固定文档集上测试，再判断受控 MCP 路径能否满足项目的时态和防污染要求。
+
+该试点可作为模型归因实验提前进行，但不作为第一批基础改造的依赖。判断是否保留它，看同题的有效问题覆盖、引用支持率、成本和耗时，不以报告篇幅决定。
+
 ## 8. Research 流程改进：让工具产生有效研究
 
 ### 8.1 冻结目标，允许内部研究路径演进
@@ -313,9 +325,9 @@ contract_tests: sec_source_v1
 - 当前并行架构继续使用；真正独立的公司/问题才并行。同一财报尽量抓取解析一次，各 worker 共享只读文档引用。
 - 单问题窄查询可以一个 worker 完成；对比/多市场再分工。公开实践也强调按任务形态控制拆分。[LangChain 研究示例](https://docs.langchain.com/oss/python/deepagents/deep-research)
 - 利用已有 RunBudget，对检索、抓取/OCR、LLM、重试和子任务统一扣费/限时。初始建议预留 15%–20% 总预算给核验与合成；这是待实验调优的配置。
-- 停滞区分“没有新事实”“检索无新资料”“核验一直失败”“源不可达”。只有登记事实才算进展会惩罚必要的精读与证伪；可增加新高价值证据、关键冲突消除等进展信号。
+- 停滞区分“没有新产出”“检索无新资料”“核验一直失败”“源不可达”。当前已经计入 Fact、Observation、Claim、Calculation 和问题推进；保留这些判据，再增加可验证的高价值精读、关键冲突消除等信号，避免必要探索被误判为空转。不得仅凭模型自报“有进展”重置预算。
 - 连续低收益时执行有界的改写查询、换来源、精读附件；仍不足就发布 partial 和具体缺口。来源数量不作为强制凑数指标。
-- 上下文压缩保留目标、已知证据 ID、重要原文定位、未解决冲突、当前假设和下一步；将压缩结果与来源事件区间/hash 记录为新事件，不删除原日志，确保可重建。
+- 在已有投影裁剪之上增加语义压缩，保留目标、已知证据 ID、重要原文定位、未解决冲突、当前假设和下一步；将压缩结果与来源事件区间/hash 记录为新事件，不删除原日志，确保可重建。
 
 ## 9. Profile 应升级为持续维护的研究资产
 
