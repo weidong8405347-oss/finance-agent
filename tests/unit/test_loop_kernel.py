@@ -169,3 +169,53 @@ def test_streaming_emits_chunks_then_message(tmp_path):
     # derive_messages 只见终态 message，不见 chunk
     msgs = store.derive_messages("r1")
     assert sum(1 for m in msgs if m.get("role") == "assistant") == 1
+
+
+def test_endgame_warning_injected_once_and_visible(tmp_path):
+    """收官提醒（哨兵基线试跑整改）：剩余步数 ≤ 阈值 → 注入一次 system 提醒且模型可见。
+
+    事故形态：worker 12 步全烧在发现/精读，11 条完美证据登记成功却零提交（stalled）——
+    模型对剩余步数零感知。提醒必须：① 每 turn 只注入一次（不重复挤压上下文）；
+    ② 经事件投影进入模型消息（「模型可见 = 已记录」不变量不破）。
+    """
+    store = EventStore(tmp_path / "e.db")
+
+    def noop(args):
+        return {"content": "ok", "provenance": []}
+
+    replies = [
+        AssistantReply(content="", tool_calls=[
+            ToolCall(call_id=f"c{i}", name="noop", arguments={})])
+        for i in range(4)
+    ]
+    llm = MockLLM(replies)
+    kernel = AgentKernel(store=store, llm=llm, manifest=live_manifest(),
+                         tools={"noop": noop}, max_steps=4, endgame_warn_steps=3)
+    kernel.run_turn("任务")
+
+    injects = [e for e in store.read("run-1") if e.type == "context/inject"
+               and "收官提醒" in str(e.payload.get("content", ""))]
+    assert len(injects) == 1, "提醒只注入一次"
+    assert injects[0].payload["role"] == "system"
+    assert "剩余交互步数约 3 步" in injects[0].payload["content"]
+    seen = any("收官提醒" in str(m.get("content", ""))
+               for rec in llm.received for m in rec)
+    assert seen, "提醒必须随投影进入模型消息"
+
+
+def test_endgame_warning_disabled_with_zero(tmp_path):
+    store = EventStore(tmp_path / "e.db")
+
+    def noop(args):
+        return {"content": "ok", "provenance": []}
+
+    replies = [
+        AssistantReply(content="", tool_calls=[
+            ToolCall(call_id=f"c{i}", name="noop", arguments={})])
+        for i in range(4)
+    ]
+    llm = MockLLM(replies)
+    kernel = AgentKernel(store=store, llm=llm, manifest=live_manifest(),
+                         tools={"noop": noop}, max_steps=4, endgame_warn_steps=0)
+    kernel.run_turn("任务")
+    assert not [e for e in store.read("run-1") if e.type == "context/inject"]

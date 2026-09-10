@@ -17,6 +17,7 @@ from typing import Any
 from ..eventstore.events import (
     ASSISTANT_CHUNK,
     ASSISTANT_MESSAGE,
+    CONTEXT_INJECT,
     RESEARCH_BUDGET,
     STEP_END,
     STEP_START,
@@ -48,6 +49,8 @@ class AgentKernel:
         budget: Any | None = None,
         max_tool_chars: int | None = None,
         keep_recent_tools: int | None = None,
+        #: 剩余步数 ≤ 此阈值时注入一次收官提醒（0 = 关闭）
+        endgame_warn_steps: int = 3,
     ):
         self._store = store
         self._llm = llm
@@ -62,6 +65,11 @@ class AgentKernel:
         #: 两者都给才生效（None = 不裁，保持旧行为）
         self._max_tool_chars = max_tool_chars
         self._keep_recent_tools = keep_recent_tools
+        #: 收官提醒（哨兵基线试跑整改 2026-09-10）：剩余步数 ≤ 阈值时注入一次
+        #: 系统提醒——模型对自己剩余步数零感知，会把全部预算烧在发现/精读上，
+        #: 证据全对却零提交（NVDA guidance 题：11 条完美证据，步数耗尽未交答案）。
+        self._endgame_warn_steps = endgame_warn_steps
+        self._endgame_warned = False
         self._turn = 0
         #: 预算终止原因（非 None = 本 turn 因预算提前结束，供上层归因）
         self.budget_stop: str | None = None
@@ -76,6 +84,7 @@ class AgentKernel:
         run_id = self._manifest.run_id
         turn = len(self._store.read(run_id, types={TURN_START})) + 1
         self._turn = turn
+        self._endgame_warned = False
         self._emit(TURN_START, turn=turn)
         if user_input is not None:
             self._emit(USER_MESSAGE, payload={"content": user_input}, turn=turn)
@@ -85,6 +94,31 @@ class AgentKernel:
         n_calls = 0
         for step in range(1, self._max_steps + 1):
             self._emit(STEP_START, turn=turn, step=step)
+            # 收官提醒（每 turn 一次）：剩余步数不足时显式告知模型转入提交——
+            # 基线试跑事故形态：证据全部登记成功，但模型对剩余步数零感知，
+            # 12 步全烧在发现/精读上，零观测零答案（stalled）。
+            remaining = self._max_steps - step + 1
+            if (
+                self._endgame_warn_steps > 0
+                and step > 1
+                and remaining <= self._endgame_warn_steps
+                and not self._endgame_warned
+            ):
+                self._endgame_warned = True
+                self._emit(
+                    CONTEXT_INJECT,
+                    payload={
+                        "role": "system",
+                        "content": (
+                            f"【收官提醒】本轮剩余交互步数约 {remaining} 步（含本步）。"
+                            "立即用提交类工具交出已形成的结论/产物，不要再开启新的检索或精读；"
+                            "未完成部分按提交入口要求记录缺口/原因/尝试"
+                            "（无可提交时如实说明零成果原因）。"
+                        ),
+                    },
+                    turn=turn,
+                    step=step,
+                )
             messages = self._store.derive_messages(
                 run_id,
                 max_tool_chars=self._max_tool_chars,

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
@@ -149,6 +149,14 @@ class _ObservationBase(BaseModel):
                 f"TTM 仅允许可加总流量指标（{sorted(ADDITIVE_FLOW_METRICS)}），"
                 f"{self.metric_key} 请用 instant/期末值"
             )
+        # 时区归一（哨兵基线试跑整改 2026-09-10）：日期串（"2026-02-25"）解析出
+        # naive datetime，与 aware 字段比较会 TypeError 炸门禁——无时区一律按 UTC；
+        # 旧存量 payload 反序列化时同样在此归一（读取路径兼容）。
+        for name in ("knowledge_time", "retrieved_at", "created_at", "source_available_at",
+                     "guidance_published_at", "consensus_snapshot_at"):
+            v = getattr(self, name, None)
+            if isinstance(v, datetime) and v.tzinfo is None:
+                setattr(self, name, v.replace(tzinfo=UTC))
         return self
 
     # ---- 语义键（设计 §6.4.1）：实体+指标+期间+维度+币种+口径+性质 ----

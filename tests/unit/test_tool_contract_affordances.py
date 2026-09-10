@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -163,3 +164,65 @@ class TestDisciplineAffordance:
         qd = _worker_discipline(question_driven=True, has_document_reader="document")
         assert "能答就先交答案" in qd
         assert "不要放弃提交" in qd
+
+
+# ---------------- naive datetime 归一（基线 r3 试跑暴露的 TypeError） ----------------
+
+
+class TestNaiveDatetimeNormalization:
+    def test_guidance_date_only_string_writes_end_to_end(self, env):
+        """基线 r3 事故：published_at="2026-02-25"（日期串→naive）与 aware
+        knowledge_time 比较 TypeError 炸门禁。整改后：无时区按 UTC，端到端写入成功。"""
+        tools, _, metrics = env
+        out = content(tools["propose_metric"]({
+            "metric_key": "revenue", "value_text": "$78.0 billion",
+            "value_span": "Revenue is expected to be $78.0 billion",
+            "period": {"start": "2026-01-26", "end": "2026-04-26",
+                       "frequency": "Q", "fiscal_label": "FY2027Q1"},
+            "nature": "guidance", "evidence_ids": ["ev-guidance"],
+            "guidance": {"issuer": "NVIDIA Corporation", "published_at": "2026-02-25",
+                         "target_period": {"start": "2026-01-26", "end": "2026-04-26",
+                                           "frequency": "Q", "fiscal_label": "FY2027Q1"}},
+            "unit": "USD", "currency": "USD",
+            "locator": {"document": "doc-x", "section": "Outlook"},
+        }))
+        assert "observation_id" in out, f"日期串 published_at 必须能写入：{out[:400]}"
+        obs = json.loads(out)
+        stored = metrics.get_observation(obs["observation_id"])
+        assert stored.nature == "guidance"
+        assert stored.guidance_published_at.tzinfo is not None, "落库必须带时区（UTC 归一）"
+
+    def test_model_normalizes_naive_fields(self):
+
+        from finance_agent.knowledge.metrics import (
+            ConsensusObservation,
+            GuidanceObservation,
+            MetricPeriod,
+            RawValue,
+        )
+
+        common = {
+            "entity_kind": "stock", "entity_id": "NVDA", "metric_key": "revenue",
+            "period": MetricPeriod(start=datetime(2026, 1, 26, tzinfo=UTC).date(),
+                                   end=datetime(2026, 4, 26, tzinfo=UTC).date(),
+                                   frequency="Q", fiscal_label="FY2027Q1"),
+            "value": "78000000000", "unit": "USD", "currency": "USD",
+            "raw": RawValue(value_text="$78.0 billion", quote_ref="ev-x"),
+            "evidence_refs": ["ev-x"],
+            "knowledge_time": datetime(2026, 2, 25, 21, 0, tzinfo=UTC),
+            "retrieved_at": datetime(2026, 9, 10, tzinfo=UTC),
+            "created_at": datetime(2026, 9, 10, tzinfo=UTC),
+        }
+        g = GuidanceObservation(
+            **common, issuer="NVIDIA",
+            guidance_published_at=datetime(2026, 2, 25),  # naive
+            target_period=MetricPeriod(start=datetime(2026, 1, 26, tzinfo=UTC).date(),
+                                       end=datetime(2026, 4, 26, tzinfo=UTC).date(),
+                                       frequency="Q"),
+        )
+        assert g.guidance_published_at.tzinfo == UTC
+        c = ConsensusObservation(
+            **common, vendor="vendor-x",
+            consensus_snapshot_at=datetime(2026, 8, 1),  # naive
+        )
+        assert c.consensus_snapshot_at.tzinfo == UTC

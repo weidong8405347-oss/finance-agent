@@ -668,7 +668,10 @@ class ResearchLoop:
                 ),
                 tools=tools,
                 hooks=self._hooks,
-                max_steps=12,  # 维度组独立步数预算（§4.2）
+                # 维度组独立步数预算（§4.2）：问题驱动组 16 步（精读→证据→观测/论断→
+                # 交题的完整链需要余量；哨兵基线试跑：12 步下证据全部登记成功却零提交），
+                # legacy 补字段组保持 12 步（防囤证据空转的旧约束不变）
+                max_steps=16 if item.question_ids else 12,
                 budget=self._run_budget,  # 全局墙钟/token/检索预算共享扣减（audit §3.3）
                 max_tool_chars=self._max_tool_chars,
                 keep_recent_tools=self._keep_recent_tools,

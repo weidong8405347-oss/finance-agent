@@ -1362,7 +1362,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "properties": {
                         "issuer": {"type": "string", "description": "发布者（公司名/管理层角色）"},
                         "published_at": {"type": "string",
-                                         "description": "指引发布日 YYYY-MM-DD 或 ISO 时刻"},
+                                         "description": "指引发布日 YYYY-MM-DD（按 UTC 解释）或 ISO 时刻"},
                         "target_period": {
                             "type": "object",
                             "description": "指引覆盖的未来期间（与 period 同构）：如 "

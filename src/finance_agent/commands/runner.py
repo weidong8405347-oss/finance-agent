@@ -104,8 +104,9 @@ class CommandRunner:
         self._steers: dict[str, list[str]] = {}  # command_id → 累计改向（后续 step 启动时继承）
         self._current_child: dict[str, str] = {}  # command_id → 当前正在跑的 child run
 
-    def set_wake(self, wake: WakeFn) -> None:
-        """接线 command/done → 主 agent 唤醒（装配期环依赖的晚绑定点）。"""
+    def set_wake(self, wake: WakeFn | None) -> None:
+        """接线 command/done → 主 agent 唤醒（装配期环依赖的晚绑定点；
+        None = 禁用——哨兵基线等无人值守可复现测量不得让主 agent 自主重发命令）。"""
         self._wake = wake
 
     # ---------------- 派发 ----------------

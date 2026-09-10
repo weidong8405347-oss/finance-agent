@@ -187,6 +187,10 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool,
     orch = build_orchestrator(data_dir)
     events = orch["events"]
     runner = orch["command_runner"]
+    # 哨兵基线是无人值守的可复现测量：禁用主 agent 唤醒（否则 command 结束后
+    # 主 agent 会自主在同一会话重发研究命令，污染题目范围与预算；
+    # 2026-09-10 r2 实测：stalled 后主 agent 自発 10 题 standard 重试）
+    runner.set_wake(None)
     # 全库事件水位：只采集本题目运行期间新增的事件
     row = events._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()  # noqa: SLF001
     since_seq = int(row[0])
