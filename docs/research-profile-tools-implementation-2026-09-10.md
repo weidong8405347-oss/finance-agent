@@ -1,10 +1,11 @@
-# Research / Profile 能力加强：第一轮实施记录（2026-09-10）
+# Research / Profile 能力加强：实施记录（2026-09-10，两轮）
 
 > 对应设计方案：[research-profile-tools-plugins-plan-2026-09-09.md](research-profile-tools-plugins-plan-2026-09-09.md)
-> 实施范围：方案 §11.2「最值得先做的范围」= **P0 + 统一知识读取 + Document Read v2 + SEC 财务工具 + 哨兵题集脚手架**。
+> 第一轮范围：方案 §11.2「最值得先做的范围」= **P0 + 统一知识读取 + Document Read v2 + SEC 财务工具 + 哨兵题集脚手架**。
+> 第二轮范围：哨兵基线 A/A' 真实运行 + 基线发现整改（R1–R8、F1–F13）+ **P1-C 薄插件层 + P2-A 证据核验与研究路径 + P2-B profile.consolidator**。
 > 分支 `feat/research-profile-capability-upgrade`；基线 `c718a66`（main）。
 > 状态口径：**已落地** = 有代码与测试；**未做** = 本轮未实施（如实标注）。
-> 本轮没有执行真实付费研究运行、没有购买数据服务、没有跑 ChatGPT Deep Research 同题对照。
+> 哨兵基线 A（6 题）与 A' 验证重跑（3 题 + ai4s 漏斗）为**真实付费运行**；未购买数据服务、未跑 ChatGPT Deep Research 同题对照。基线详情见 [sentinel-baseline-A-2026-09-10.md](sentinel-baseline-A-2026-09-10.md)。
 
 ## 1. 交付对照（方案章节 → 代码落点 → 测试）
 
@@ -41,7 +42,7 @@
    新增数据源 `query_edgar_facts`（serve 装配默认注册，无需 key）。
 6. **预算快照**新增 `duplicate_documents/documents_stored`（重复资料率可见性）。
 
-## 3. 未做（如实清单，按方案阶段）
+## 3. 未做（第一轮末状态；第二轮已推进项见 §5，最新清单见 §5.6）
 
 | 方案条目 | 状态 |
 | --- | --- |
@@ -57,28 +58,119 @@
 ## 4. 验收入口
 
 ```bash
-uv run pytest                                        # 812 passed, 9 skipped
+uv run pytest                                        # 939 passed, 9 skipped（第二轮后）
 uv run ruff check src tests scripts
 
-# 本轮专项回归
+# 第一轮专项回归
 uv run pytest tests/unit/test_p0_trust_remediation.py    # P0 可信度与策略
 uv run pytest tests/unit/test_context_tools.py           # 统一知识读取 + S2 整合装配
 uv run pytest tests/unit/test_document_read_v2.py        # 文档服务/分页/完整性/PIT
 uv run pytest tests/unit/test_edgar_facts.py             # XBRL/acceptance/历史分段
 
+# 第二轮专项回归
+uv run pytest tests/unit/test_baseline_findings_round3.py # F10 量表闸/F11 修复回环/F12 裁决纪律
+uv run pytest tests/unit/test_plugin_registry.py          # P1-C 插件层（含迁移 parity）
+uv run pytest tests/unit/test_claim_verifier.py           # P2-A 核验/批量提交/子问题/状态卡
+uv run pytest tests/unit/test_profile_consolidator.py     # P2-B 整合/幂等/时态失效
+
 # 哨兵题集（脚手架离线自检 → 真实付费运行需 LLM key + 网络）
 uv run python scripts/run_sentinel.py --list
 uv run python scripts/run_sentinel.py --task be-orders-revenue --dry-run
-uv run python scripts/run_sentinel.py --task be-orders-revenue   # 真实运行（隔离数据目录）
+uv run python scripts/run_sentinel.py --all --auto-approve-gates   # 真实运行（隔离数据目录）
 ```
 
-## 5. 下一步建议（按方案 §11.2 的失败分布决策）
+## 5. 第二轮：基线验证与 P1-C/P2 交付（2026-09-10 晚）
 
-1. 跑 A 组基线：`scripts/run_sentinel.py --all`（先冻结 3 个待选 ticker），
-   把 assessment/预算/重复资料信号存成基线 JSON。
-2. P2-A 内容级 verifier（EvidencePack + verify_claim）：把 `evidence_support` 从
-   unchecked 变成可审计核验意见——这是「论断接受内容级核验」的最后一公里。
-3. Docling 试点 + extract_table：在保页码基础上补表头/单元格定位，
-   用哨兵题 deep-pdf-late-table 对照 pypdf 路径。
-4. P1-C 薄插件层：把本轮收敛的装配点（context_tools/documents/adapters）迁到
-   类型化 manifest + registry，能力页从编译结果生成。
+### 5.1 哨兵基线 A / A'（真实运行，详见基线报告）
+
+- 基线 A（6 题，commit c7f5af5→33fd781）：5/6 题走通全链（3 题 sufficient），
+  411 页 PDF 附注直达、中文乱码诚实拦截、重述链条逐字准确、指引-实际正确配对；
+  运行中即时整改 R1–R8，基线发现 F1–F9 已全部整改（a19fa90，27 例回归）。
+- A' 验证重跑（NVDA/BE/2228.HK + ai4s 漏斗）：三题全改善（typed refs 0→4/8、
+  focus 题编译命中、提交率 3/12→12/13、单位违例归零）；ai4s F1→F4.5 全链验证、
+  新发现 F10–F13。
+- ai4s F5 补跑（旧运行器 120min 超时杀死 daemon 线程丢失 rank_report）：已用
+  宽限窗口版运行器（45min grace + 180min 题时限）在冻结 worktree 重跑，
+  结果落 `data/sentinel/ai4s-final/`。
+
+### 5.2 基线发现整改（F10–F13，commit 9ec8283 + P2-A）
+
+| # | 整改 | 落点 |
+| --- | --- | --- |
+| F10 量表归一 | 规模词识别扩展（RMB'000/'000s → thousand）；写侧硬闸：原文/表头声明规模词而换算链无步骤 → 拒写给修法；离群扫描（同语义组 ~10^3/10^6 倍 + 同值异键）进 assessment 披露与 propose_metric 响应预警 | normalization/metric_writer 2c/assessment/numeric_consistency_scan |
+| F11 stalled 提前终止 | 提交类门禁拒绝（propose_metric/claim/fact、answer、calc）与高价值精读（文档工具/read_chunk ≥3）= 可验证探索；plan 模式下 exploration-only 轮给 ≤2 轮修复回环（不重置预算），超限 stalled 且诊断卡指向拒绝原因；组级基础设施失败（死 provider）不享受回环 | loop/_Tracker/IterationReport.exploration_only |
+| F12 冲突未裁决 | PLAN_MODE_CONTRACT：数值结论交题前 list_conflicts，有则先 adjudicate 或在 unresolved 注明 | prompts |
+| F13 重复窗口注册 | 状态卡列出已存档文档与证据 ID 回流下轮 brief（复用不重抓）+ EvidencePack 按问题组织证据（根治方向） | loop 状态卡/evidence_pack |
+
+### 5.3 P1-C 薄插件层（commit 83bd3ec，方案 §6.2）
+
+- `plugins/` 包：contracts（PluginManifest/ToolDefinition/HOST_CAPABILITIES）、
+  registry（重名拒绝/api_version/依赖迭代/配置校验/场景编译/能力页 payload）、
+  executor（参数校验/超时/有界重试扣预算/错误码封装/trace 事件）、
+  freezing（plugins/manifest_frozen，密钥不进哈希）、builtin（14 个内建插件
+  包装现有能力）。
+- cli 装配改 registry 驱动：**迁移不改变行为**（编译出的 adapter 集合与旧手工
+  装配逐一相等，parity 测试锁定）；缺凭证 missing_config 可见；akshare 缺失
+  degraded 可见；capabilities_info 输出插件编译视图；step_research/profile_update
+  落 manifest 冻结事件（无 registry 的旧装配跳过，行为不变）。
+- 内建强约束仍在宿主（时间准入/证据绑定/MetricSpec/单写者/快照隔离），
+  manifest 无任何字段可关闭它们。
+
+### 5.4 P2-A 证据核验与研究路径（commit 45b2024，方案 §5.4/§8.1/§8.3）
+
+- EvidencePack（research/evidence_pack.py）：从既有 typed 数据组装（观测背后证据
+  原文一并进包），input_hash 可复现；不建新事实库。
+- verify_claim（research/verifier.py）：硬检查（引用/数字逐字/主体期间/冲突，
+  确定性代码）+ 内容审查（原子论断逐条 verdict，LLM 可审计意见非真值）；
+  聚合是硬规则：数字硬失败封顶 partially_supported（软评分不得抵消硬失败）；
+  contradicted/insufficient 的 validated 降级 draft；发布规则：ArtifactValidator
+  对 contradicted 引用硬失败、insufficient 软问题；LLM 不可用/解析失败 →
+  content_review_available=false 诚实降级（不冒充已核验）。
+- 反证闭环：counter_search{queries,sources,found} 落 verification.notes，
+  找不到反证也保存检索范围；无记录 → next_actions 要求补检索。
+- submit_question_result：一题的观测/论断/答案一次提交，逐项门禁不放松，
+  新接受引用自动并入 support_refs。
+- track_sub_question：内部子问题版本化追加（触发证据/退出条件），硬约束不扩
+  预算与范围，同文本幂等，越位拒绝；回流 plan brief。
+- 语义压缩状态卡：轮末确定性构建（目标/问题状态/证据 ID+locator/已存档文档/
+  冲突/论断与核验状态/下一步），落 research/context_compressed 事件
+  （source_events 区间 + state_hash，原日志不删可重建）并回流下一轮 brief。
+- assessment 新增 claims_by_evidence_support 分档；rubric digest 带核验状态。
+
+### 5.5 P2-B profile.consolidator（commit 3e18d16 + c8c06b1，方案 §9.1/§9.3）
+
+- dependency_graph：document→observation→calculation→claim→module 依赖边
+ （复用现有引用关系）。
+- prepare_profile_update：确定性只读预览（待合并/重复与量表可疑/冲突/失效依赖/
+  预期 diff/change_set_id + expected_base_hash）。
+- commit_profile_update：幂等（change_set_id 重放返回首次结果）；基线哈希不符
+  拒绝（并发新观测/修订才触发；S2 自身的 thesis/裁决不触发）；invalidate_claims
+  逐条验归属后**追加** claim_invalidations（时态记录，旧快照与冻结 payload 不变）；
+  profile/update_committed + profile/claim_invalidated 事件。
+- S2 全链：prepare → 裁决 → thesis（Fact+Claim）→ verify_claim → commit；
+  拒绝回到模型上下文可修正重试。
+
+### 5.6 第二轮后仍未做（如实清单）
+
+| 方案条目 | 状态 |
+| --- | --- |
+| source.earnings（电话会/指引）、source.consensus（一致预期） | 未接——依赖供应商验收与套餐权限（方案 §7.2 验收卡流程），guidance 观测契约已就绪 |
+| source.disclosures_hk/cn 授权接入（HKEX IIS/巨潮） | 未做——现有 hkex_news 公开通道保留，正式授权接口待商务 |
+| SearchBroker（Exa 主 + Tavily 备、转载族去重）、Exa 新参数 Novita 透传验证 | 未做（文档层内容哈希去重已落） |
+| Docling/OCR 结构解析试点、extract_table（表头/单元格定位） | 未做——基线实证 2228 题 4/8 中文 PDF garbled 是当前最大原文可得性缺口，B 组首选 |
+| engine.deep_research 外部研究引擎试点、MCP bridge | 未做（方案第三批） |
+| 重要结论第二次独立提取/抽样人工核对（§5.4 检查 4） | 未做（属 P3 评估/人工流程） |
+| 24 题扩展、消融、盲评（P3） | 未做（6 题哨兵 + A/A' 对照已跑通，扩展依失败分布决策） |
+| 定时监控/事件驱动刷新（§9.3 后续产品能力） | 未做（第一期用户触发 refresh，按计划） |
+
+## 6. 下一步建议（按方案 §11.2 失败分布决策，第二轮后更新）
+
+1. 跑 B 组对照：在当前代码（F10–F13 + P1-C + P2-A/B 全部落地）上重跑哨兵 6 题，
+   与基线 A/A' 对照（重点：2228 提交率与量表、BE typed 观测稳定性、ai4s F1–F5 全链、
+   verify_claim 核验覆盖率、duplicate_chunks 下降）。
+2. Docling 试点 + extract_table：基线实证中文 PDF garbled（2228 题 4/8 文档）是
+   原文可得性最大缺口；保页码基础上补表头/单元格定位。
+3. source.earnings 验收卡：发行人 IR + FMP 小样本对照（方案 §7.2），解锁 guidance
+   兑现时间线（NVDA 哨兵题的完整形态）。
+4. P3：24 题扩展与盲评（C vs A 胜率）、插件消融（关 verifier/关知识复用/关第二搜索源）。
+5. 投影层消费 claim_invalidations 的 UI 展示（随下轮 dossier 页面升级）。

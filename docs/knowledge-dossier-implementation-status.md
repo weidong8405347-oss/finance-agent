@@ -4,7 +4,7 @@
 > 更新：2026-09-08 · 分支 `fix/research-audit-a2cce641-remediation`（上一分支已合并进 `main`）。
 > 状态口径：**已落地** = 有代码与测试；**部分** = 契约已落地但依赖数据/后续阶段；**未做** = 本期未实施（如实标注，不宣称 ready）。
 > 本轮增量：[ai-for-science-live-a2cce641 审计](ai-for-science-live-a2cce641-audit-and-optimization.md) 的 P0/P1 整改，逐项对照见 [整改状态](ai-for-science-audit-remediation.md)。
-> 2026-09-10 增量：[research-profile-tools-plugins 方案](research-profile-tools-plugins-plan-2026-09-09.md)第一轮实施（P0 可信度/统一知识读取/Document Read v2/SEC XBRL/哨兵脚手架），对照见 [实施记录](research-profile-tools-implementation-2026-09-10.md)。
+> 2026-09-10 增量：[research-profile-tools-plugins 方案](research-profile-tools-plugins-plan-2026-09-09.md)两轮实施——第一轮（P0 可信度/统一知识读取/Document Read v2/SEC XBRL/哨兵脚手架）+ 哨兵基线 A/A' 真实运行与 F1–F13 整改 + 第二轮（P1-C 薄插件层/P2-A 证据核验与研究路径/P2-B profile.consolidator），对照见 [实施记录](research-profile-tools-implementation-2026-09-10.md)与[基线报告](sentinel-baseline-A-2026-09-10.md)。
 
 ## 里程碑完成度
 

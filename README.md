@@ -72,18 +72,17 @@ uv run ruff check src tests
 
 ### 当前进度
 
-**Research/Profile 能力加强第一轮已落地（分支 `feat/research-profile-capability-upgrade`，方案见 [tools-plugins 计划](docs/research-profile-tools-plugins-plan-2026-09-09.md)，对照见 [实施记录](docs/research-profile-tools-implementation-2026-09-10.md)）**
+**Research/Profile 能力加强已落地两轮（分支 `feat/research-profile-capability-upgrade`，方案见 [tools-plugins 计划](docs/research-profile-tools-plugins-plan-2026-09-09.md)，对照见 [实施记录](docs/research-profile-tools-implementation-2026-09-10.md)，哨兵基线见 [基线报告](docs/sentinel-baseline-A-2026-09-10.md)）**
 
 | 项 | 内容 |
 | --- | --- |
-| P0 可信度 | 冲突真裁决（获胜版本保存+晋升，不再只清标记）；claim 核验状态拆分（validated 仅=引用校验，`verification.evidence_support` 诚实标 unchecked）；一手来源与 PIT 分档统计；plan 模式 worker 不再被「逐字段写入」纪律压回填字段；rubric 评审收到论断原文+支持摘录 |
-| 统一知识读取 | `research/context_tools.py`：get_research_context / query_observations·claims·calculations（过滤+游标，截断不静默）/ read_evidence（批量逐项成败）/ list_conflicts / adjudicate_conflict（typed 语义键裁决落事件）——S1/S2/合成/委员会共用同一契约 |
-| S2 整合第一步 | profile_update 读冻结基线+本轮产出→裁决冲突→thesis 同时落 Fact（兼容）+带证据/limitations 的分析 Claim（dossier 总论新读侧） |
-| Document Read v2 | run 级文档库（内容哈希去重，同财报只抓解一次）；PDF 保页码+惰性续解（**80 页后表格可达**）；fetch_document/read_document/search_document + 目录/完整性（full·partial·truncated·failed）透明；窗口 chunk 带 document/page locator；抓取失败≠未披露 |
-| SEC 结构化披露 | `query_edgar_facts`（companyfacts XBRL：原始 tag/unit/期间/accn+原文链接，A 级 acceptance 时刻）；公开时刻 acceptance 优先、日精度保守取 UTC 日末；历史分段遍历；≤10 req/s 节流 |
-| 哨兵题集脚手架 | `evals/sentinel_tasks.yaml`（6 题冻结）+ `scripts/run_sentinel.py`（隔离运行/信号采集）；真实对照运行待执行 |
+| 第一轮 | P0 可信度（冲突真裁决/validated 分项核验/一手与 PIT 分离/plan 纪律/rubric 内容输入）；统一知识读取（S1/S2/合成共享 typed 查询+证据回读+双层裁决）；Document Read v2（保页码/惰性续解/80 页后表格可达/完整性透明）；SEC XBRL `query_edgar_facts`（acceptance 时刻 A 级）；哨兵题集脚手架 |
+| 基线验证 | 哨兵 6 题真实运行（A 组）+ F1–F9 整改 + A' 验证重跑：5/6 题全链、3 题 sufficient；411 页 PDF 附注直达、中文乱码诚实拦截、重述链条逐字准确、指引-实际正确配对；F10–F13 已整改（量表硬闸/有界修复回环/裁决纪律/状态卡） |
+| P1-C 薄插件层 | `plugins/` 包：类型化 manifest + 注册表（重名/版本/依赖/配置校验，按 stage×market×role 编译）+ 执行器（超时/重试扣预算/错误码）+ manifest 冻结（密钥不进哈希）+ 能力页从编译结果生成；cli 装配 registry 驱动（迁移不改变行为，parity 测试锁定） |
+| P2-A 证据核验 | EvidencePack；verify_claim（硬检查代码 + 原文支持性 LLM 意见，数字硬失败封顶、contradicted 降级 draft、发布硬拦截、反证检索留痕）；submit_question_result 批量提交；track_sub_question 内部子问题（不扩预算/范围）；语义压缩状态卡（事件可重建 + 回流 brief） |
+| P2-B 档案整合 | profile.consolidator：依赖图（document→obs→calc→claim→module）、prepare（待合并/冲突/失效依赖/预期 diff）、commit（幂等 + 基线哈希校验 + 时态失效记录，旧快照不变）；S2 全链接入（含 verify_claim） |
 
-验收：812 passed + ruff 通过（本轮新增 60+ 例：P0 整改/共享工具/文档分页/多页 PDF 惰性续解/XBRL 离线夹具/题集契约）。
+验收：939 passed + ruff 通过（两轮累计新增 130+ 例）。
 
 **Knowledge 档案升级已落地（M0/M1/M2 + M3/M4 部分，已合入 `main`，截至 `d1b83ee`）**
 
