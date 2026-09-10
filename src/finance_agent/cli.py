@@ -100,9 +100,11 @@ def _all_tool_schemas() -> dict:
     from .decision.loop import DECISION_TOOL_SCHEMAS
     from .gateway.tools import GATEWAY_TOOL_SCHEMAS
     from .main_agent import MAIN_AGENT_TOOL_SCHEMAS
+    from .research.context_tools import CONTEXT_TOOL_SCHEMAS
     from .research.tools import TOOL_SCHEMAS as RESEARCH_TOOL_SCHEMAS
 
     return {
+        **CONTEXT_TOOL_SCHEMAS,  # 统一知识读取（S1/S2/合成/委员会共享同一契约）
         **RESEARCH_TOOL_SCHEMAS,
         **GATEWAY_TOOL_SCHEMAS,
         **MAIN_AGENT_TOOL_SCHEMAS,

@@ -58,6 +58,9 @@ def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | N
 #: 5 轮 576 次工具调用、0/9 问题推进。
 PLAN_MODE_CONTRACT = """\
 本轮是「问题驱动研究」，不是「档案字段补全」。交付物是下列问题的答案，逐题推进：
+0. 复用：开工前用 get_research_context 读已有成果（问题状态/观测/论断/计算/冲突），
+   已登记的数据用 query_observations/query_claims/read_evidence 直接取，
+   不重复搜索、不重新编写已有结论；发现开放冲突用 list_conflicts 查看并裁决。
 1. 证据：先用 query_* / read_* 拿到原文，再 register_evidence 登记逐字摘录；
    数字必须能在摘录里逐字定位（带规模词与表头，裸数字会被拒）。
 2. 分析：把证据整理成 propose_metric（结构化数值）/ propose_claim（结论句），
@@ -104,11 +107,16 @@ def build_round_brief(
         parts.append("存在冲突待裁决：" + ", ".join(gaps.conflicts))
     if judge_feedback:
         parts.append("上一轮评审反馈（软反馈，供参考）：" + judge_feedback)
-    tools_line = "可用工具：register_evidence / propose_fact / query_kb / 数据源查询工具。"
+    tools_line = (
+        "可用工具：register_evidence / propose_fact / query_kb / read_evidence / "
+        "list_conflicts / adjudicate_conflict / 数据源查询工具。"
+    )
     if typed_tools:
         tools_line = (
-            "可用工具：register_evidence / propose_fact / propose_metric / propose_claim / "
-            "answer_question / calculate_metric / query_kb / 数据源查询工具。"
+            "可用工具：get_research_context / register_evidence / propose_fact / "
+            "propose_metric / propose_claim / answer_question / calculate_metric / "
+            "query_observations / query_claims / query_calculations / read_evidence / "
+            "list_conflicts / adjudicate_conflict / query_kb / 数据源查询工具。"
         )
     parts.append(tools_line)
     if plan_payload:

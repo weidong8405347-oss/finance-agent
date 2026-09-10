@@ -28,6 +28,7 @@ from ..knowledge.store import BitemporalStore
 from ..knowledge.verify import STRUCTURED_LIST_FIELDS
 from ..knowledge.writer import ProfileWriter
 from .calc import CALC_TOOL_SCHEMA, calc_tool
+from .context_tools import CONTEXT_TOOL_SCHEMAS, make_context_tools
 from .evidence_desk import ChunkStore, EvidenceVerificationError, verify_and_build
 
 #: 抓取函数的签名：filing URL → 纯文本正文（HTML 已剥离）
@@ -306,9 +307,18 @@ def make_research_tools(
         "read_chunk": read_chunk,
         "propose_fact": propose_fact,
         "query_kb": query_kb,
-        "resolve_conflict": resolve_conflict,
+        "resolve_conflict": resolve_conflict,  # adjudicate_conflict(target=field) 的兼容别名
         "calc": calc_tool,  # §4.7：数字保护双保险（逐字 + 计算一致性）
     }
+
+    # ---------------- 统一知识读取（tools-plugins 方案 §5.3，S1/S2/合成共享模块） ----
+    # 复用已有 typed 数据（观测/论断/计算/冲突）与证据原文，减少重复搜索与重写结论；
+    # as_of/namespace/实体由运行上下文固定，模型参数只能缩小范围。
+    for name, fn in make_context_tools(
+        kb=store, metrics=metrics, entity_kind=entity_kind, entity_id=entity_id,
+        namespace=namespace, plan_id=plan_id, writer=writer, manifest=manifest, events=events,
+    ).items():
+        tools.setdefault(name, fn)
 
     # ---------------- typed 工具（档案升级 §6.2/§7.3/§8.1；未装配新存储则不注入） ----------------
     if metrics is not None and metric_writer is not None:
@@ -869,8 +879,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "resolve_conflict": {
         "name": "resolve_conflict",
         "description": (
-            "裁决字段的开放冲突：必须指定获胜方（keep_fact_id 或支撑保留值的 "
-            "keep_evidence_id）。服务端会真正保存获胜版本（非最新版时同值晋升为当前投影）"
+            "裁决字段的开放冲突（adjudicate_conflict(target=field) 的兼容别名）："
+            "必须指定获胜方（keep_fact_id 或支撑保留值的 keep_evidence_id）。"
+            "服务端会真正保存获胜版本（非最新版时同值晋升为当前投影）"
             "并清除竞争标记；获胜方不在版本链中会被拒绝，不会静默清标记。"
         ),
         "parameters": {
@@ -900,20 +911,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["chunk_id"],
         },
     },
-    # read_evidence 在多个 step 内动态注入（synthesize/committee/rank_report）；
-    # 缺 schema 时路由层回退空参 schema，模型会以 read_evidence({}) 空转——
-    # 2026-09-02 P4 验收实测：委员会 financial 视角 8 步全烧在空参调用上
-    "read_evidence": {
-        "name": "read_evidence",
-        "description": "读取一条已登记证据的原文（verbatim_quote）与来源，用于核对事实锚点",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "evidence_id": {"type": "string", "description": "证据 id（ev- 前缀）"},
-            },
-            "required": ["evidence_id"],
-        },
-    },
+    # read_evidence 已迁至共享上下文工具（context_tools.CONTEXT_TOOL_SCHEMAS，
+    # S1/S2/合成/委员会/rank_report 共用同一契约：单条 evidence_id 或批量 refs）。
+    # 此处引用同一 schema 对象，保持 TOOL_SCHEMAS 消费方（路由/测试）可见。
+    "read_evidence": CONTEXT_TOOL_SCHEMAS["read_evidence"],
     # ---- typed 工具（档案升级；未装配 MetricStore 时路由层不会绑定） ----
     "propose_metric": {
         "name": "propose_metric",
