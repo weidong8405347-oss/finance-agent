@@ -32,10 +32,12 @@ def _build(
     gateway = DataGateway(mode="live", events=events, run_id="live-cli")
     if register_adapters:
         from .gateway.adapters.edgar import EdgarAdapter
+        from .gateway.adapters.edgar_facts import EdgarFactsAdapter
         from .gateway.adapters.prices import YFinancePricesAdapter
         from .gateway.adapters.stooq import StooqPricesAdapter
 
         gateway.register(EdgarAdapter())
+        gateway.register(EdgarFactsAdapter())
         gateway.register(YFinancePricesAdapter())
         gateway.register(StooqPricesAdapter())
     manifest = RunManifest(run_id="live-cli", mode=RunMode.LIVE)
@@ -180,6 +182,11 @@ def build_orchestrator(data_dir: Path):
     calculations = CalculationService(metrics, events=events)
     gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
     gateway.register(EdgarAdapter())
+    from .gateway.adapters.edgar_facts import EdgarFactsAdapter
+
+    # SEC XBRL 结构化财务事实（tools-plugins 方案 §7.1 必做：公开 API 无需 key，
+    # acceptance 分钟精度 A 级 PIT；财务数字直接来自披露而非正文抽取）
+    gateway.register(EdgarFactsAdapter())
     gateway.register(YFinancePricesAdapter())
     gateway.register(StooqPricesAdapter())
     # P2 数据源扩展（research-capability-upgrade §4.5；全部走 gateway 纪律）

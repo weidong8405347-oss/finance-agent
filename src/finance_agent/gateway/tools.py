@@ -133,12 +133,48 @@ def gateway_grade(gateway: DataGateway, source_id: str) -> str:
 GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
     "query_edgar": {
         "name": "query_edgar",
-        "description": "查询 SEC EDGAR 披露（filingDate 为 PIT 可知时刻）",
+        "description": (
+            "查询 SEC EDGAR 披露文件清单（filing 记录：表格/期间/原文链接）。"
+            "公开时刻优先 acceptanceDateTime（分钟精度），缺失保守取 filingDate 日末，A 级 PIT。"
+            "拿到记录后用 fetch_document/read_document 读原文；结构化数字首选 query_edgar_facts"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "ticker": {"type": "string"},
                 "forms": {"type": "array", "items": {"type": "string"}},
+                "include_history": {"type": "boolean",
+                                    "description": "遍历历史分段索引（默认只返回最近约千条）"},
+                "max_history_files": {"type": "integer",
+                                      "description": "历史分段上限（默认 4；每段一次额外请求）"},
+            },
+            "required": ["ticker"],
+        },
+    },
+    "query_edgar_facts": {
+        "name": "query_edgar_facts",
+        "description": (
+            "查询 SEC XBRL 结构化财务事实（companyfacts，A 级：acceptance 受理时刻为可知时刻）。"
+            "返回原始 tag/unit/期间/filing 版本（accn）与原文链接——美股收入/利润/现金流/"
+            "资产负债的正式口径首选，数字不依赖正文抽取。注意：分部 KPI/自定义口径可能"
+            "缺失，需回 filing 原文（fetch_document）；结果按披露时间倒序、上限 limit 条，"
+            "用 tags/forms/period 过滤缩小，截断不静默（换更窄过滤条件重查）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "cik": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"},
+                         "description": "XBRL 概念过滤（如 Revenues / NetIncomeLoss / "
+                                        "NetCashProvidedByUsedInOperatingActivities）"},
+                "forms": {"type": "array", "items": {"type": "string"},
+                          "description": "如 10-K / 10-Q / 8-K"},
+                "units": {"type": "array", "items": {"type": "string"},
+                          "description": "USD / shares / pure"},
+                "period_start": {"type": "string", "description": "期间末不早于（YYYY-MM-DD）"},
+                "period_end": {"type": "string", "description": "期间末不晚于（YYYY-MM-DD）"},
+                "limit": {"type": "integer", "description": "默认 120，最大 400"},
             },
             "required": ["ticker"],
         },
