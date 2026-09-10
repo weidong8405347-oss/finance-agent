@@ -59,7 +59,7 @@ tasks:
     key_questions:
       - 哪些公司已形成技术护城河且有商业爆发可能
       - 各候选的现金消耗与验证事件时间线
-    timeout_minutes: 120
+    timeout_minutes: 180  # 基线实测：F1-F5 全链约 137 分钟（6 票深研）
 
   - id: restatement-handling
     title: 财报更正与竞争版本

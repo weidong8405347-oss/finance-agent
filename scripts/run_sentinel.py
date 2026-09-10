@@ -234,13 +234,28 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool,
 
     done_payload = None
     deadline = t0 + timeout_s
-    while time.monotonic() < deadline:
+    # 宽限窗口（基线实测教训）：command 线程是 daemon，主进程退出会把进行中的 step
+    # 静默杀死（ai4s 首跑 120 分钟到点时 rank_report 正在写报告，F5 成果丢失）。
+    # 超时后不立即返回：再等宽限窗口内 command 自然完成，基准数据完整性优先于准时。
+    grace_s = 2700.0  # 45 分钟
+    grace_deadline = deadline + grace_s
+    timed_out = False
+    while True:
         rows = events.read(session)
         done = [e for e in rows if e.type == "command/done"
                 and e.payload.get("command_id") == command_id]
         if done:
             done_payload = done[0].payload
             break
+        now_m = time.monotonic()
+        if now_m >= deadline:
+            if not timed_out:
+                timed_out = True
+                print(f"   ⚠ {task_id} 超过题目时限 {timeout_s / 60:.0f} 分钟，"
+                      f"进入宽限窗口（{grace_s / 60:.0f} 分钟）等待进行中 step 完成——"
+                      "不杀 daemon 线程，避免丢失在飞成果")
+            if now_m >= grace_deadline:
+                break
         time.sleep(2.0)
     elapsed = time.monotonic() - t0
     stop_watch.set()
@@ -249,9 +264,12 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool,
 
     collected = _collect_events(events, since_seq)
     signals = _extract_signals(collected, session)
+    status = "completed" if done_payload and not timed_out else (
+        "completed_after_grace" if done_payload else "timeout")
     result.update({
-        "status": "completed" if done_payload else "timeout",
+        "status": status,
         "elapsed_seconds": round(elapsed, 1),
+        "grace_used": timed_out,
         "command_done": done_payload,
         "auto_approvals": auto_approvals,
         "signals": signals,
@@ -347,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
         verdict = (result.get("signals") or {}).get("assessment", {}).get("verdict")
         print(f"   → {status}" + (f"（verdict={verdict}）" if verdict else "")
               + f"  结果: {path}")
-        if status not in ("completed", "dry-run", "skipped"):
+        if status not in ("completed", "completed_after_grace", "dry-run", "skipped"):
             failures += 1
     print(f"\n完成：{len(selected) - failures}/{len(selected)}；结果目录 {out_dir}")
     return 1 if failures else 0
