@@ -329,6 +329,12 @@ def assess(
         1 for c in validated_claims
         if (c.get("verification") or {}).get("evidence_support", "unchecked") == "unchecked"
     )
+    # 内容级核验分布（P2-A）：unchecked/supported/partially_supported/contradicted/
+    # insufficient 逐档计数——核验覆盖率可见，不得用单一 validated 计数冒充
+    support_breakdown: dict[str, int] = {}
+    for c in claims:
+        state = str((c.get("verification") or {}).get("evidence_support", "unchecked"))
+        support_breakdown[state] = support_breakdown.get(state, 0) + 1
     evidence_quality = {
         "observations": len(observations),
         "pit_a_observations": pit_a,
@@ -341,6 +347,7 @@ def assess(
         + source_buckets.get("internal", 0) + source_buckets.get("eval_decoy", 0),
         "validated_claims": len(validated_claims),
         "validated_claims_content_unchecked": content_unchecked,
+        "claims_by_evidence_support": support_breakdown,
         "draft_claims": sum(1 for c in claims if c.get("status") == "draft"),
         "open_conflicts": open_conflicts,
         "stale_fields": list(stale_fields or []),

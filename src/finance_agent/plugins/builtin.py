@@ -199,12 +199,19 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
         id="research.core", kind="processing",
         tools=["register_evidence", "read_chunk", "propose_fact", "resolve_conflict",
                "calc", "propose_metric", "propose_claim", "answer_question",
-               "calculate_metric"],
+               "calculate_metric", "submit_question_result", "track_sub_question"],
         schemas={**s["research"]},
         capabilities=["evidence.binding", "facts.write", "metrics.write",
-                      "claims.write", "calculations.controlled"],
+                      "claims.write", "calculations.controlled", "questions.sub_tracking"],
         requires=["evidence.registry", "writers.single", "kb.bitemporal"],
         tests="tests/unit/test_p0_trust_remediation.py",
+    )
+    reg(
+        id="research.verifier", kind="processing",
+        tools=["verify_claim"], schemas={**s["research"]},
+        capabilities=["claims.content_verification", "claims.counter_evidence_loop"],
+        requires=["metrics.typed", "evidence.registry"],
+        tests="tests/unit/test_claim_verifier.py",
     )
     reg(
         id="profile.core", kind="processing",

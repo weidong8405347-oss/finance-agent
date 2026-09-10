@@ -5,6 +5,8 @@ Grounding 纪律（DESIGN.md §4.3 防线 3）：模型是证据的分析者，�
 
 from __future__ import annotations
 
+import json
+
 from ..knowledge.gaps import GapReport
 
 GROUNDING_CONTRACT = """\
@@ -62,11 +64,23 @@ def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | N
             lines.append(f"  当前结论：{q['conclusion']}")
         if q.get("unresolved"):
             lines.append(f"  未解决项：{'；'.join(q['unresolved'])}")
+        # 内部子问题（§8.1）：已登记的待查线索回流上下文，不丢线索不重复登记
+        for s in q.get("sub_questions") or []:
+            if s.get("status") != "open":
+                continue
+            line = f"  └ 子问题[{s.get('sub_id')}]（{s.get('priority')}）{s.get('text')}"
+            if s.get("exit_condition"):
+                line += f" —— 退出条件：{s['exit_condition']}"
+            lines.append(line)
     lines.append(
         "推进纪律：结构化数值用 propose_metric（原文值+期间+证据）；分析结论用 propose_claim；"
         "可重算关系用 calculate_metric；每完成一个问题立即 answer_question"
         "（answered 需结论+可解析引用；找不到数据标 unavailable 并记录尝试，"
         "不能以模型猜测完成事实采集）。"
+        "一个题的观测/论断/答案用 submit_question_result 一次提交（逐项门禁不变，"
+        "新接受引用自动并入 support_refs，减少机械往返）；研究中冒出的新线索用 "
+        "track_sub_question 登记（不扩大范围与预算）；关键结论用 verify_claim 做"
+        "内容级核验（附 counter_search 反证检索记录）。"
     )
     if str(plan_payload.get("entity_kind") or "") == "industry":
         # 基线发现 F6：行业级 typed 观测为零——行业配方的数值题同样入指标库，
@@ -103,11 +117,17 @@ PLAN_MODE_CONTRACT = """\
    数字必须能在摘录里逐字定位（带规模词与表头，裸数字会被拒）。
 2. 分析：把证据整理成 propose_metric（结构化数值）/ propose_claim（结论句），
    每条都要写清 question_id 归属。
-3. 反证：主动找削弱结论的证据；找不到反证要在 limitations 里写明「未检索到反证」。
-4. 提交：每题完成立即 answer_question(question_id, status, conclusion, support_refs)；
+3. 反证：主动找削弱结论的证据；找不到反证要在 limitations 里写明「未检索到反证」，
+   并把查过的查询与范围用 verify_claim(counter_search=…) 留痕——不制造反对意见凑数。
+4. 提交：每题完成立即 answer_question(question_id, status, conclusion, support_refs)，
+   或用 submit_question_result 把一题的观测/论断/答案一次提交（逐项门禁不变）；
    查不到就标 unavailable 并记 attempts，不许留空拖到下一轮。
+   研究中冒出的新线索用 track_sub_question 登记到所属问题下（带触发证据与退出条件；
+   不扩大冻结计划的范围与预算）。
    数值类结论交题前先 list_conflicts 查开放冲突：有则先 adjudicate_conflict 裁决
    （给 rationale）或在 unresolved 里显式注明冲突未决——不得留着竞争值交无条件答案。
+5. 核验：支撑关键结论的论断用 verify_claim 做内容级核验（原文是否真正支持整句结论）；
+   被核验 contradicted/insufficient 的论断会被降级 draft，修正后重验。
 旧档案字段（propose_fact）只在回答问题的顺带产出时写；不要为了刷字段完整度而
 消耗本轮预算——字段 100% 不等于研究充分。
 """
@@ -123,6 +143,7 @@ def build_round_brief(
     plan_payload: dict | None = None,
     typed_tools: bool = False,
     assigned_question_ids: list[str] | None = None,
+    state_card: dict | None = None,
 ) -> str:
     parts = [
         f"研究目标：{objective}",
@@ -154,11 +175,23 @@ def build_round_brief(
     if typed_tools:
         tools_line = (
             "可用工具：get_research_context / register_evidence / propose_fact / "
-            "propose_metric / propose_claim / answer_question / calculate_metric / "
+            "propose_metric / propose_claim / answer_question / submit_question_result / "
+            "track_sub_question / verify_claim / calculate_metric / "
             "query_observations / query_claims / query_calculations / read_evidence / "
             "list_conflicts / adjudicate_conflict / query_kb / 数据源查询工具。"
         )
     parts.append(tools_line)
+    if state_card:
+        # 语义压缩状态卡（§8.3）：上一轮的目标/问题状态/证据 ID/已存档文档/冲突/
+        # 下一步——投影裁剪丢的是旧工具结果全文，状态卡保证关键状态不被裁掉；
+        # 原事件日志可按 source_events 区间回放（不删除，可重建）
+        card_text = json.dumps(state_card, ensure_ascii=False, default=str)
+        if len(card_text) > 3000:
+            card_text = card_text[:3000] + "…（状态卡截断，全量见 research/context_compressed 事件）"
+        parts.append(
+            "上一轮状态卡（语义压缩；已存档文档与证据直接复用，不重新搜索重抓）："
+            + card_text
+        )
     if plan_payload:
         parts.append(PLAN_MODE_CONTRACT)
         parts.append(build_plan_brief(plan_payload, assigned_question_ids=assigned_question_ids,

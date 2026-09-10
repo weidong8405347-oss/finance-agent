@@ -14,11 +14,13 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from ..eventstore.events import (
     CONTEXT_INJECT,
     RESEARCH_ASSESSMENT,
     RESEARCH_BUDGET,
+    RESEARCH_CONTEXT_COMPRESSED,
     RESEARCH_PARTIAL_PUBLISHED,
     RESEARCH_PLAN_CREATED,
     RESEARCH_QUESTION_STALL,
@@ -180,6 +182,8 @@ class ResearchLoop:
         self.plan_payload: dict | None = None
         #: F11：连续 exploration-only 轮次计数（有界修复回环）
         self._exploration_rounds = 0
+        #: 语义压缩状态卡（§8.3）：上一轮末构建，回流下一轮 brief（跨轮保状态）
+        self._state_card: dict | None = None
 
     def run(
         self,
@@ -291,6 +295,8 @@ class ResearchLoop:
                 "gaps": gaps_before.model_dump(mode="json"),
                 "question_coverage": coverage,
             })
+            # 语义压缩的事件区间锚点（§8.3：状态卡必须可回源重建）
+            round_seq_from = self._events.global_head_seq()
 
             # 维度分组并行（P3 §4.2）：配置了 worker 池（>1）才启用——
             # 每组独立 child run / 独立 context / 独立步数预算；共享 ChunkStore（锁保护）。
@@ -338,7 +344,7 @@ class ResearchLoop:
                         self._run_group, entity_kind, entity_id, objective,
                         gaps_before, round_no, item,
                         workers[i % len(workers)], judge_feedback,
-                        playbook_text, chunk_store, doc_store,
+                        playbook_text, chunk_store, doc_store, self._state_card,
                     )
                     for i, item in enumerate(schedule.items)
                 }
@@ -387,6 +393,7 @@ class ResearchLoop:
                     plan_id=self._plan_id,
                     doc_store=doc_store,
                     fetch_paged=self._fetch_paged,
+                    verify_llm=self._judge_llm or self._llm,
                 )
                 for source_id in self._gateway_sources:
                     tools[f"query_{source_id}"] = make_gateway_tool(
@@ -415,6 +422,7 @@ class ResearchLoop:
                         judge_feedback=judge_feedback,
                         plan_payload=self.plan_payload,
                         typed_tools=typed and set(tools) >= {"propose_metric", "answer_question"},
+                        state_card=self._state_card,
                     )
                 )
                 trackers = [tracker]
@@ -473,6 +481,13 @@ class ResearchLoop:
                 entity_kind, entity_id, round_no, report, trackers, dispatched_qids
             )
             self._emit_partial(entity_kind, entity_id, round_no, report)
+            # 语义压缩（§8.3）：状态卡落事件（来源区间+hash，原日志不删可重建），
+            # 并回流下一轮 brief——投影裁剪丢的是旧工具结果，不丢问题状态与关键证据
+            self._state_card = self._build_state_card(
+                entity_kind, entity_id, objective, round_no, trackers,
+                doc_store, gaps_after, all_rejected, round_seq_from,
+            )
+            self._emit(RESEARCH_CONTEXT_COMPRESSED, self._state_card)
 
             coverage_ok_after = coverage_after is None or (
                 coverage_after >= target_coverage and not violations_after
@@ -625,6 +640,7 @@ class ResearchLoop:
         playbook_text: str,
         chunk_store,
         doc_store=None,
+        state_card: dict | None = None,
     ) -> tuple[str, object]:
         """单个 WorkItem 的一轮研究：独立 child run（context 隔离）+ 独立步数预算。
 
@@ -649,6 +665,7 @@ class ResearchLoop:
             allowed_question_ids=list(item.question_ids) or None,
             doc_store=doc_store,
             fetch_paged=self._fetch_paged,
+            verify_llm=self._judge_llm or self._llm,
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(
@@ -693,6 +710,7 @@ class ResearchLoop:
                 plan_payload=self._group_plan_view(group, fields, item.question_ids),
                 typed_tools="propose_metric" in tools,
                 assigned_question_ids=list(item.question_ids) or None,
+                state_card=state_card,
             )
             + f"\n\n你是「{group}」维度组的专职研究员。\n{playbook_text}"
             + _worker_discipline(
@@ -959,15 +977,20 @@ class ResearchLoop:
                             quotes.append(self._store.get_evidence(str(ref)).verbatim_quote[:400])
                         except Exception:  # noqa: BLE001 - 未登记引用本身就是评审信号
                             quotes.append(f"{ref}（不可解析）")
-                claim_entries.append({
+                entry = {
                     "claim_id": cid,
                     "statement": str(payload.get("statement") or "")[:400],
                     "kind": payload.get("kind"),
                     "status": payload.get("status"),
                     "question_id": payload.get("question_id"),
                     "limitations": (payload.get("limitations") or [])[:3],
+                    "verification": {
+                        k: (payload.get("verification") or {}).get(k)
+                        for k in ("references_valid", "evidence_support", "numeric_checks")
+                    },
                     "support_quotes": quotes,
-                })
+                }
+                claim_entries.append(entry)
             if claim_entries:
                 parts.append(
                     "本轮写入的论断（含支持证据原文摘录，评审其是否真正支持结论）："
@@ -987,6 +1010,86 @@ class ResearchLoop:
         if len(digest) > self._JUDGE_DIGEST_MAX_CHARS:
             digest = digest[: self._JUDGE_DIGEST_MAX_CHARS] + "\n…（digest 截断）"
         return digest
+
+    def _build_state_card(
+        self, entity_kind: str, entity_id: str, objective: str, round_no: int,
+        trackers: list, doc_store, gaps, all_rejected: list[dict], seq_from: int,
+    ) -> dict:
+        """语义压缩状态卡（方案 §8.3）：保留目标、问题状态、关键证据 ID 与定位、
+        已存档文档、未解决冲突、当前结论与下一步；压缩结果与来源事件区间/hash
+        记录为新事件——不删除原日志，确保可重建。确定性构建（不额外调 LLM，
+        语义选择按规则：最近证据/开放问题/未决冲突/最新论断）。
+
+        同时是 F13（重复窗口注册）的可见性基础：卡片列出已存档文档与证据 ID，
+        下一轮 worker 直接复用，不重新搜索/重抓。
+        """
+        now = datetime.now(UTC)
+        card: dict[str, Any] = {
+            "objective": objective, "round": round_no,
+            "entity": f"{entity_kind}:{entity_id}",
+        }
+        if self.plan_payload:
+            card["questions"] = [
+                {
+                    "question_id": q.get("question_id"), "status": q.get("status"),
+                    "conclusion": (str(q.get("conclusion") or "")[:200] or None),
+                    "open_subs": [str(s.get("text") or "")[:80]
+                                  for s in (q.get("sub_questions") or [])
+                                  if s.get("status") == "open"][:4],
+                }
+                for q in self.plan_payload.get("questions", [])
+            ]
+        ev_ids: list[str] = []
+        for tr in trackers:
+            ev_ids.extend(getattr(tr, "registered", []))
+        evidence_recent = []
+        for eid in ev_ids[-15:]:
+            try:
+                ev = self._store.get_evidence(eid)
+                evidence_recent.append({
+                    "evidence_id": eid, "source_id": ev.source_id,
+                    "locator": {k: str(v) for k, v in (ev.locator or {}).items()},
+                })
+            except Exception:  # noqa: BLE001 - 证据回读不到则状态卡跳过（原台账在事件日志）
+                continue
+        card["evidence_recent"] = evidence_recent
+        card["documents"] = doc_store.snapshot()[:10] if doc_store is not None else []
+        if self._metrics is not None:
+            try:
+                claims = self._metrics.claims_as_of(
+                    entity_kind, entity_id, now, namespace=self._namespace,
+                    statuses=("draft", "validated"),
+                )
+                card["claims"] = [
+                    {"claim_id": c.get("claim_id"), "status": c.get("status"),
+                     "statement": str(c.get("statement") or "")[:120],
+                     "evidence_support": (c.get("verification") or {}).get(
+                         "evidence_support", "unchecked")}
+                    for c in claims[-10:]
+                ]
+            except Exception:  # noqa: BLE001 - 论断投影失败不拖死状态卡（如实置空）
+                card["claims"] = []
+        else:
+            card["claims"] = []
+        card["open_conflicts"] = list(gaps.conflicts)[:10]
+        card["rejections_recent"] = [
+            str(r.get("reason") or "")[:120] for r in all_rejected[-5:]
+        ]
+        pending = pending_questions(self.plan_payload) if self.plan_payload else []
+        card["next_actions"] = [
+            f"回答 {q.get('question_id')}：{str(q.get('text') or '')[:60]}"
+            for q in pending[:6]
+        ]
+        seq_to = self._events.global_head_seq()
+        card["source_events"] = {
+            "run_id": self._manifest.run_id, "from_seq": seq_from, "to_seq": seq_to,
+        }
+        material = json.dumps(
+            {k: v for k, v in card.items() if k != "state_hash"},
+            ensure_ascii=False, sort_keys=True, default=str,
+        )
+        card["state_hash"] = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+        return card
 
     def _emit(self, type_: str, payload: dict) -> None:
         self._events.append(Event(run_id=self._manifest.run_id, type=type_, payload=payload))

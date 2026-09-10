@@ -2488,6 +2488,8 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
             "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
             "register_evidence / read_chunk",
             "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",
+            "submit_question_result（批量提交）/ track_sub_question（内部子问题）",
+            "verify_claim（内容级核验：硬检查+原文支持性+反证闭环）",
             "get_research_context / query_observations / query_claims / query_calculations / read_evidence",
             "list_conflicts / adjudicate_conflict（resolve_conflict 兼容别名）",
         ],

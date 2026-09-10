@@ -228,6 +228,8 @@ class ValidationIssue(BaseModel):
         "unresolved_calculation", "uninterpolated_metric", "bare_number_unverified",
         "empty_document", "unsourced_metric_cell", "unresolved_claim_ref",
         "claim_context_mismatch",
+        # 内容级核验（方案 §5.4）：发布规则读硬检查与核验结果，不得用总评分抵消
+        "contradicted_claim_ref", "claim_evidence_insufficient",
     ]
     block_index: int | None = None
     ref: str = ""
@@ -427,7 +429,8 @@ class ArtifactValidator:
         """论断的支持/反方引用逐条验证（review #5）：存在性 + 命名空间 + 实体上下文。
 
         只查 claim 存在无法阻止错误进入正式结论——validated 论断的两侧引用
-        都必须可在同一上下文解析。"""
+        都必须可在同一上下文解析。内容级核验状态（方案 §5.4）同样进发布规则：
+        contradicted 硬失败（不得进正式产物），insufficient 软问题（降级可见）。"""
         issues: list[ValidationIssue] = []
         ns = claim.get("namespace", "prod")
         kind, eid = claim.get("entity_kind"), claim.get("entity_id")
@@ -442,6 +445,29 @@ class ArtifactValidator:
                         f"（namespace={ns}, entity={kind}:{eid}）"
                     ),
                 ))
+        support_state = str(
+            (claim.get("verification") or {}).get("evidence_support", "unchecked")
+        )
+        if support_state == "contradicted":
+            issues.append(ValidationIssue(
+                code="contradicted_claim_ref", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 内容核验为 contradicted（原文与结论矛盾）"
+                    "——不得进入正式产物；修正论断或换证据后重新核验"
+                ),
+                hard=True,
+            ))
+        elif support_state == "insufficient":
+            issues.append(ValidationIssue(
+                code="claim_evidence_insufficient", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 内容核验为 insufficient（原文不足以支持"
+                    "整句结论）——建议补证或降级表述"
+                ),
+                hard=False,
+            ))
         return issues
 
     def _check_paragraph(

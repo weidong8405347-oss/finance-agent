@@ -48,6 +48,25 @@ MODE_QUESTION_RANGE: dict[ResearchMode, tuple[int, int]] = {
 }
 
 
+class SubQuestion(BaseModel):
+    """内部子问题/待查线索（方案 §8.1：冻结目标，允许内部研究路径演进）。
+
+    硬约束：子问题只追加到所属问题条目下，**不扩大投资范围或预算**；
+    带触发证据与退出条件（可审计的研究路径，不是自由发挥）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sub_id: str
+    parent_question_id: str
+    text: str
+    trigger_evidence: list[str] = Field(default_factory=list)  # 触发本子问题的证据/发现
+    priority: QuestionPriority = "medium"
+    exit_condition: str = ""  # 查到什么算完（防止无限发散）
+    status: Literal["open", "answered", "dropped"] = "open"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ResearchQuestion(BaseModel):
     """研究问题的最小结构（§7.3）。"""
 
@@ -68,6 +87,8 @@ class ResearchQuestion(BaseModel):
     cost: int = 0  # 已花费检索调用数（调度启发式）
     module: str = ""  # 关联档案模块（business_engine/financials/...）
     attempts: list[str] = Field(default_factory=list)  # disputed/unavailable 的尝试记录
+    #: 内部子问题（§8.1）：版本化追加；不改预算与范围，调度器不单独分发
+    sub_questions: list[SubQuestion] = Field(default_factory=list)
     #: 数值型问题（基线发现 F2）：answered 时 support_refs 必须含 typed 依据
     #: （obs-/calc-）——关键数字必须沉淀进指标库（可重算/可画图/受门禁），
     #: 不得只留在答案文本里。编译期冻结（模块/关键词判定），工具层执行。

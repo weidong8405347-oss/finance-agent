@@ -117,6 +117,20 @@ class DocumentStore:
         with self._lock:
             return self._docs.get(document_id)
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        """已存档文档清单（状态卡/诊断用：让 worker 知道哪些原件已可读，
+        不重复搜索/重抓——基线发现 F13 的可见性基础）。"""
+        with self._lock:
+            docs = list(self._docs.values())
+        return [
+            {"document_id": d.document_id, "url": d.url, "source_id": d.source_id,
+             "kind": d.kind, "total_pages": d.total_pages,
+             "parsed_pages": len(d.page_texts),
+             "completeness": d.completeness, "quality": d.quality,
+             "reuses": d.reuses}
+            for d in docs
+        ]
+
     def find_by_origin(
         self, url: str | None, source_id: str,
         available_at: datetime | None, pit_grade: PitGrade,

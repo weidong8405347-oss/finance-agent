@@ -732,6 +732,58 @@ class MetricStore:
             self._conn.commit()
             return dict(question)
 
+    def append_plan_subquestion(
+        self, plan_id: str, question_id: str, sub: dict[str, Any], *, namespace: str = "prod",
+    ) -> dict[str, Any] | None:
+        """追加内部子问题（方案 §8.1：冻结目标，允许内部研究路径演进）。
+
+        硬约束：只写 question.sub_questions，**不触碰 budgets/objective/questions 集合**
+        （不允许自动扩大投资范围或预算）；同文本幂等（返回已有条目）。
+        锁内读-改-写，与 update_plan_question 同纪律（并行 worker 不互盖）。
+        """
+        import uuid as _uuid
+
+        text = str(sub.get("text") or "").strip()
+        if not text:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM research_plans WHERE plan_id = ? AND namespace = ?",
+                (plan_id, namespace),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = json.loads(row[0])
+            question = next(
+                (q for q in payload.get("questions", [])
+                 if q.get("question_id") == question_id),
+                None,
+            )
+            if question is None:
+                return None
+            subs = question.setdefault("sub_questions", [])
+            existing = next((s for s in subs if str(s.get("text") or "").strip() == text), None)
+            if existing is not None:
+                return dict(existing)  # 幂等：同文本不重复追加
+            entry = {
+                "sub_id": f"sub-{_uuid.uuid4().hex[:8]}",
+                "parent_question_id": question_id,
+                "text": text,
+                "trigger_evidence": [str(r) for r in (sub.get("trigger_evidence") or [])][:8],
+                "priority": str(sub.get("priority") or "medium"),
+                "exit_condition": str(sub.get("exit_condition") or ""),
+                "status": "open",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            subs.append(entry)
+            payload["updated_at"] = datetime.now(UTC).isoformat()
+            self._conn.execute(
+                "UPDATE research_plans SET payload_json = ? WHERE plan_id = ? AND namespace = ?",
+                (json.dumps(payload, ensure_ascii=False), plan_id, namespace),
+            )
+            self._conn.commit()
+            return dict(entry)
+
     def set_plan_status(self, plan_id: str, status: str, *, namespace: str = "prod") -> None:
         """计划收尾状态（同样锁内读改写，不与问题更新互踩）。"""
         with self._lock:

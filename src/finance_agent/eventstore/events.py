@@ -58,6 +58,14 @@ METRIC_ASSERTED = "metric/asserted"                  # 完整观测 payload（�
 CALCULATION_COMPLETED = "calculation/completed"      # {calculation_id, formula, input_refs, result}
 RESEARCH_CLAIM_VALIDATED = "research/claim_validated"  # {claim_id, checks}
 RESEARCH_ASSESSMENT = "research/assessment"          # {plan_id, coverage, integrity, verdict, stop_reason}
+
+# ---- 证据核验与研究路径（tools-plugins 方案 §5.4/§8.1/§8.3，P2-A） ----
+# {claim_id, evidence_support, atomic verdicts, 反证检索记录}
+RESEARCH_CLAIM_VERIFIED = "research/claim_verified"
+# {plan_id, parent_question_id, sub}（子问题不扩预算/范围）
+RESEARCH_SUBQUESTION_ADDED = "research/subquestion_added"
+# {round, card, source_events, state_hash}（原日志不删，可重建）
+RESEARCH_CONTEXT_COMPRESSED = "research/context_compressed"
 RESEARCH_ARTIFACT_CREATED = "research/artifact_created"  # {artifact_id, status, sufficiency, refs}
 DOSSIER_PUBLISHED = "dossier/published"              # {snapshot_id, entity, changed_modules}
 DOSSIER_PUBLISH_FAILED = "dossier/publish_failed"    # {entity, reason}（失败可见，不静默）

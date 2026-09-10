@@ -143,6 +143,7 @@ def make_research_tools(
     allowed_question_ids: list[str] | None = None,  # 调度器下发的本 worker 问题集
     doc_store: Any | None = None,  # DocumentStore（run 级共享；缺省时内部自建）
     fetch_paged: Any | None = None,  # 分页抓取 f(url) -> FetchedDocument（Document Read v2）
+    verify_llm: Any | None = None,  # 内容级核验用 LLM（P2-A；缺省只做硬检查）
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -758,6 +759,131 @@ def make_research_tools(
             "propose_metric": propose_metric,
             "propose_claim": propose_claim,
             "answer_question": answer_question,
+        })
+
+        # ---------------- P2-A：批量提交 / 内部子问题 / 内容级核验（方案 §8.1/§5.4） ----
+
+        def _safe_json(content: str) -> dict[str, Any]:
+            try:
+                parsed = json.loads(content)
+                return parsed if isinstance(parsed, dict) else {"raw": content}
+            except json.JSONDecodeError:
+                return {"rejected": content}
+
+        def submit_question_result(args: dict[str, Any]) -> dict[str, Any]:
+            """批量提交（方案 §8.1）：观测/论断候选与答案一次往返；
+            内部仍逐项走现有门禁（不降低任何验证），逐项返回接受/拒绝与原因；
+            新接受的 obs/claim id 自动并入答案 support_refs（减少纯机械往返）。"""
+            out: dict[str, Any] = {"observations": [], "claims": [], "answer": None,
+                                   "accepted_refs": []}
+            provenance: list[dict[str, Any]] = []
+            for item in (args.get("observations") or [])[:20]:
+                if not isinstance(item, dict):
+                    out["observations"].append({"rejected": f"非法条目类型 {type(item).__name__}"})
+                    continue
+                res = propose_metric(item)
+                out["observations"].append(_safe_json(res["content"]))
+                provenance.extend(res.get("provenance") or [])
+                oid = _safe_json(res["content"]).get("observation_id")
+                if oid:
+                    out["accepted_refs"].append(str(oid))
+            for item in (args.get("claims") or [])[:10]:
+                if not isinstance(item, dict):
+                    out["claims"].append({"rejected": f"非法条目类型 {type(item).__name__}"})
+                    continue
+                res = propose_claim(item)
+                parsed = _safe_json(res["content"])
+                out["claims"].append(parsed)
+                if parsed.get("claim_id") and parsed.get("status") != "draft":
+                    out["accepted_refs"].append(str(parsed["claim_id"]))
+                elif parsed.get("claim_id"):
+                    # draft 论断也可作为答案支撑（引用可解析性由 answer 门禁复验）
+                    out["accepted_refs"].append(str(parsed["claim_id"]))
+            qid = args.get("question_id")
+            if qid:
+                support = list(dict.fromkeys([
+                    *out["accepted_refs"],
+                    *[str(r) for r in (args.get("support_refs") or [])],
+                ]))
+                answer_args = {k: v for k, v in args.items()
+                               if k in ("question_id", "status", "conclusion",
+                                        "counter_refs", "unresolved", "attempts")}
+                answer_args["support_refs"] = support
+                res = answer_question(answer_args)
+                out["answer"] = _safe_json(res["content"])
+                provenance.extend(res.get("provenance") or [])
+            return {"content": json.dumps(out, ensure_ascii=False), "provenance": provenance}
+
+        def track_sub_question(args: dict[str, Any]) -> dict[str, Any]:
+            """内部子问题（§8.1）：版本化追加到所属问题下；不扩大范围与预算。"""
+            from ..eventstore.events import RESEARCH_SUBQUESTION_ADDED
+
+            if not plan_id:
+                return {"content": "rejected: 本轮无冻结研究计划（plan 未装配）",
+                        "provenance": []}
+            parent = str(args.get("parent_question_id") or "")
+            text = str(args.get("text") or "").strip()
+            if not parent or not text:
+                return {"content": "rejected: parent_question_id 与 text 均必填",
+                        "provenance": []}
+            if allowed_question_ids is not None and parent not in allowed_question_ids:
+                return {"content": f"rejected: 问题 {parent} 未分配给本 worker",
+                        "provenance": []}
+            entry = metrics.append_plan_subquestion(plan_id, parent, {
+                "text": text,
+                "trigger_evidence": args.get("trigger_evidence") or [],
+                "priority": args.get("priority") or "medium",
+                "exit_condition": args.get("exit_condition") or "",
+            }, namespace=namespace)
+            if entry is None:
+                reason = f"问题不在冻结计划中: {parent}（计划范围不可扩展）"
+                tracker.rejected.append({"question": parent, "reason": reason})
+                return {"content": f"rejected: {reason}", "provenance": []}
+            if events is not None:
+                events.append(Event(
+                    run_id=manifest.run_id, type=RESEARCH_SUBQUESTION_ADDED,
+                    payload={"plan_id": plan_id, "parent_question_id": parent,
+                             "sub": entry, "entity": f"{entity_kind}:{entity_id}"},
+                ))
+            return {"content": json.dumps(
+                {"sub_question": entry,
+                 "note": "子问题不扩大预算与投资范围；退出条件达成即收敛"},
+                ensure_ascii=False), "provenance": []}
+
+        def verify_claim_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """内容级核验（§5.4）：硬检查（代码）+ 原文支持性审查（LLM 意见）。
+
+            结果是可审计核验意见不是绝对真值；contradicted/insufficient 的
+            validated 论断降级 draft；反证检索记录随核验落库。
+            """
+            from .verifier import verify_claim as verify_claim_service
+
+            claim_id = str(args.get("claim_id") or "")
+            if not claim_id:
+                return {"content": "rejected: claim_id 必填", "provenance": []}
+            counter_search = args.get("counter_search")
+            if counter_search is not None and not isinstance(counter_search, dict):
+                return {"content": "rejected: counter_search 必须是对象"
+                                       "{queries,sources,found,notes}", "provenance": []}
+            try:
+                result = verify_claim_service(
+                    store, metrics, claim_id=claim_id, llm=verify_llm,
+                    events=events, manifest=manifest, namespace=namespace,
+                    entity_kind=entity_kind,
+                    entity_id=normalize_entity_id(entity_kind, entity_id),
+                    counter_search=counter_search,
+                )
+            except ValueError as e:
+                tracker.rejected.append({"verify": claim_id, "reason": str(e)})
+                return {"content": f"rejected: {e}", "provenance": []}
+            return {"content": json.dumps(
+                result.model_dump(mode="json"), ensure_ascii=False, default=str
+            ), "provenance": []}
+
+        tools.update({
+            "submit_question_result": submit_question_result,
+            "track_sub_question": track_sub_question,
+            "verify_claim": verify_claim_tool,
         })
 
     if metrics is not None and calculations is not None:
@@ -1501,6 +1627,84 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "attempts": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["question_id", "status"],
+        },
+    },
+    "submit_question_result": {
+        "name": "submit_question_result",
+        "description": (
+            "批量提交一个问题的全部产出（减少机械工具往返）：observations（同 "
+            "propose_metric 参数）/ claims（同 propose_claim 参数）/ 答案字段"
+            "（question_id/status/conclusion/counter_refs/unresolved/attempts）。"
+            "内部逐项走现有门禁（不降低任何验证），逐项返回接受/拒绝与具体原因；"
+            "新接受的 observation/claim id 自动并入答案 support_refs。"
+            "被拒条目按拒绝提示修复后重提（只需重提被拒部分）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "observations": {"type": "array", "items": {"type": "object"},
+                                 "description": "propose_metric 参数对象列表（≤20）"},
+                "claims": {"type": "array", "items": {"type": "object"},
+                           "description": "propose_claim 参数对象列表（≤10）"},
+                "question_id": {"type": "string"},
+                "status": {"type": "string",
+                           "enum": ["gathering", "answered", "disputed", "unavailable",
+                                    "not_applicable"]},
+                "conclusion": {"type": "string"},
+                "support_refs": {"type": "array", "items": {"type": "string"},
+                                 "description": "额外引用（新提交的 obs/claim 自动并入）"},
+                "counter_refs": {"type": "array", "items": {"type": "string"}},
+                "unresolved": {"type": "array", "items": {"type": "string"}},
+                "attempts": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    "track_sub_question": {
+        "name": "track_sub_question",
+        "description": (
+            "登记一个内部子问题/待查线索（版本化追加到所属问题下）：研究中冒出的"
+            "新线索不必丢弃也不必等下一轮——记下触发证据与退出条件，按优先级推进。"
+            "硬约束：子问题不扩大冻结计划的范围与预算；必须挂在分配给你的问题下。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "parent_question_id": {"type": "string"},
+                "text": {"type": "string", "description": "子问题一句话"},
+                "trigger_evidence": {"type": "array", "items": {"type": "string"},
+                                     "description": "触发本子问题的证据/发现引用"},
+                "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+                "exit_condition": {"type": "string", "description": "查到什么算完（防发散）"},
+            },
+            "required": ["parent_question_id", "text"],
+        },
+    },
+    "verify_claim": {
+        "name": "verify_claim",
+        "description": (
+            "对一条论断做内容级核验（区别于 propose_claim 的引用校验）：服务端组装"
+            "证据包（原文/数值/反证/冲突）→ 硬检查（引用/数字逐字/主体期间/冲突）"
+            "→ 原文支持性审查（逐条原子论断 supported/partially_supported/"
+            "contradicted/insufficient）。结果写回 claim.verification 并落审计事件；"
+            "contradicted/insufficient 的 validated 论断降级 draft。关键结论发布前"
+            "应核验；反证检索记录用 counter_search 传入（找不到反证也要留痕）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claim_id": {"type": "string"},
+                "counter_search": {
+                    "type": "object",
+                    "description": "反证检索记录（可选但强烈建议）",
+                    "properties": {
+                        "queries": {"type": "array", "items": {"type": "string"}},
+                        "sources": {"type": "array", "items": {"type": "string"}},
+                        "found": {"type": "boolean"},
+                        "notes": {"type": "string"},
+                    },
+                },
+            },
+            "required": ["claim_id"],
         },
     },
     "calculate_metric": {
