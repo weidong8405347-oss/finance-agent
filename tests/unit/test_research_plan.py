@@ -66,7 +66,9 @@ class TestPlanBuilding:
         }
         assert MODE_BUDGETS["deep"]["retrieval_calls"] == 80
         assert MODE_BUDGETS["refresh"]["max_rounds"] == 2
-        assert MODE_BUDGETS["targeted"]["retrieval_calls"] == 12
+        # targeted 检索 12→20（基线发现 F9：文档工具时代 fetch/search 也扣检索预算，
+        # NVDA 题实测 12/12 打满；设计表的修订以哨兵基线数据为依据）
+        assert MODE_BUDGETS["targeted"]["retrieval_calls"] == 20
 
     def test_full_profile_with_new_objective_still_plans(self):
         """已有 100% 档案遇到新目标仍创建计划（不宣告「无需研究」，§7.1）。"""

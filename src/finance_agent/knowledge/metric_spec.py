@@ -273,6 +273,14 @@ def check_observation(
             f"{spec.value_kind} 类指标不得携带币种（收到 currency={currency}）——"
             "金额被当比例保存是本次事故形态之一"
         )
+    if u in _CURRENCY_UNITS and currency and u != currency:
+        # 基线发现 F3：同库出现 unit=USD + currency=CNY 自相矛盾的观测——
+        # 金额类的 unit 就是币种代码，两者必须一致；换算口径走显式 normalization
+        violations.append(
+            f"unit={u} 与 currency={currency} 冲突：金额类指标的 unit 即币种代码，"
+            "二者必须一致（currency 用报告币种；如经汇率换算，在 normalization 里"
+            "显式登记 fx_convert 步骤，原文量表写 unit_text）"
+        )
     if u in ("ratio", "percent", "x", "multiple", "bp", "ppt") and currency:
         violations.append(f"unit={u} 与 currency={currency} 冲突（比例不得带币种）")
     if spec.requires_currency and not currency and value is not None:

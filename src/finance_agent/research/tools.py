@@ -636,6 +636,10 @@ def make_research_tools(
                     tracker, qid,
                     f"问题 {qid} 未分配给本 worker（本组待答：{sorted(allowed_question_ids)}）",
                 )
+            # 数值题门禁（基线发现 F2）：编译期冻结的 expects_typed_evidence 问题，
+            # answered 必须带 typed 依据（obs-/calc-）——关键数字只留在答案文本里
+            # 会旁路指标库的全部门禁（可重算/图表/量级校验）
+            expects_typed = bool(question.get("expects_typed_evidence"))
             del question  # 门禁只用计划判存在性；更新走存储层原子入口（review #8）
             status = str(args.get("status") or "")
             if status not in ("gathering", "answered", "disputed", "unavailable", "not_applicable"):
@@ -660,6 +664,16 @@ def make_research_tools(
                 if bad:
                     return _reject_answer(
                         tracker, qid, f"支持引用不可解析或跨上下文: {bad}"
+                    )
+                if expects_typed and not any(
+                    r.startswith(("obs-", "calc-")) for r in support
+                ):
+                    return _reject_answer(
+                        tracker, qid,
+                        "数值题（expects_typed_evidence）的 answered 必须在 support_refs 含"
+                        "至少一个 obs-/calc- 引用：先用 propose_metric/calculate_metric 把"
+                        "关键数字沉淀进指标库再交题；数字确实无法结构化（乱码/无披露/"
+                        "原文不可得）时改用 disputed/unavailable 并记录原因与尝试",
                     )
             if counter:
                 bad_counter = [r for r in counter if not _ref_resolvable(store, metrics, r, **ctx)]

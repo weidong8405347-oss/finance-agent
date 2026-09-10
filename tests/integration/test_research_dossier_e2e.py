@@ -39,7 +39,10 @@ DOC_TEXT = (
     "Bloom Energy FY2024 10-K excerpt. Total revenue 1500 million for fiscal 2024. "
     "Firm backlog of 300 million announced. Acceptance terms: customer sign-off required."
 )
-FOCUS = "订单转化"
+# focus 用非数值表述：数值题（含「订单/收入」等关键词）编译为 expects_typed_evidence，
+# answered 需 obs-/calc- 引用（基线发现 F2 的门禁，专测见 test_baseline_findings_round2）；
+# 本用例验证管道全链路，题目用定性 focus 保持脚本可静态化（obs id 运行期才生成）
+FOCUS = "验收条款与客户签核"
 TARGETED_QID = "targeted-" + hashlib.sha256(f"BE:{FOCUS}".encode()).hexdigest()[:8]
 
 

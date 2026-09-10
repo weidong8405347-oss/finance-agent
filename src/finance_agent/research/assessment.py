@@ -46,13 +46,29 @@ SOURCE_ROLES: dict[str, str] = {
 #: 算作「一手」的角色：发行人/监管披露（权威原文）
 _FIRST_PARTY_ROLES = frozenset({"issuer_filing", "regulator"})
 
+#: 发行人/监管披露域（基线发现 F7）：直接 URL 抓取（web_fetch，无源级角色）但
+#: 域名属于官方披露库的原文，按域名归入 issuer_filing——NVDA 新闻稿从
+#: sec.gov 直拉却被归 secondary 的事故形态。只细化 unknown 档，媒体源不因
+#: 转载 URL 升档（转载族归并属 SearchBroker，P1-A 后续）。
+ISSUER_DISCLOSURE_DOMAINS = (
+    "sec.gov", "hkexnews.hk", "cninfo.com.cn", "sse.com.cn", "szse.cn",
+)
 
-def source_role(source_id: str) -> str:
-    """source_id → 来源角色；未知源 = unknown（诚实缺省，不默认一手）。"""
-    return SOURCE_ROLES.get(source_id, "unknown")
+
+def source_role(source_id: str, url: str | None = None) -> str:
+    """source_id（+可选 URL 域名）→ 来源角色；未知源 = unknown（诚实缺省）。"""
+    role = SOURCE_ROLES.get(source_id, "unknown")
+    if role == "unknown" and url:
+        low = url.lower()
+        if any(d in low for d in ISSUER_DISCLOSURE_DOMAINS):
+            return "issuer_filing"
+    return role
 
 
-def classify_observation_source(obs: Any, evidence_sources: dict[str, str] | None) -> str:
+def classify_observation_source(
+    obs: Any, evidence_sources: dict[str, str] | None,
+    evidence_urls: dict[str, str] | None = None,
+) -> str:
     """一条观测的来源档：first_party / secondary / vendor / derived / internal /
     market_data / unknown（方案 §2「时间可追溯与一手/权威来源被混用」的拆分）。
 
@@ -73,7 +89,10 @@ def classify_observation_source(obs: Any, evidence_sources: dict[str, str] | Non
     refs = list(getattr(obs, "evidence_refs", []) or [])
     if not refs or evidence_sources is None:
         return "unknown"
-    roles = {source_role(evidence_sources[r]) for r in refs if r in evidence_sources}
+    roles = {
+        source_role(evidence_sources[r], (evidence_urls or {}).get(r))
+        for r in refs if r in evidence_sources
+    }
     if not roles:
         return "unknown"
     if roles <= _FIRST_PARTY_ROLES:
@@ -170,6 +189,7 @@ def assess(
     namespace: str = "prod",
     now: datetime | None = None,
     evidence_sources: dict[str, str] | None = None,  # evidence_id → source_id（来源角色归类用）
+    evidence_urls: dict[str, str] | None = None,  # evidence_id → url（披露域细化，F7）
 ) -> ResearchAssessment:
     """确定性评估（硬门禁由代码运行）。LLM rubric 结果不进本函数的门禁判断。"""
     issues = list(validation_issues or [])
@@ -236,7 +256,7 @@ def assess(
     pit_a = sum(1 for o in observations if getattr(o.pit_grade, "value", o.pit_grade) == "A")
     source_buckets: dict[str, int] = {}
     for o in observations:
-        bucket = classify_observation_source(o, evidence_sources)
+        bucket = classify_observation_source(o, evidence_sources, evidence_urls)
         source_buckets[bucket] = source_buckets.get(bucket, 0) + 1
     # validated 论断的内容级核验状态（方案 §5.4）：引用校验过 ≠ 原文支持结论，
     # 未核验的数量必须可见，不得对外呈现为「事实已核验」。

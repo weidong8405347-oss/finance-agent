@@ -22,7 +22,8 @@ GROUNDING_CONTRACT = """\
 """
 
 
-def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | None = None) -> str:
+def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | None = None,
+                     round_no: int = 1) -> str:
     """冻结研究计划的问题队列投影（§7.3）：每轮 brief 附带，模型按问题推进。
 
     assigned_question_ids 给定时只投影本 worker 被分配的问题（调度器已下发，
@@ -43,6 +44,20 @@ def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | N
             lines.append(f"  为何影响判断：{q['why']}")
         if q.get("acceptance"):
             lines.append(f"  完成条件：{q['acceptance']}")
+        if q.get("expects_typed_evidence"):
+            # 基线发现 F2：数值题的关键数字必须进指标库，不得只留在答案文本里
+            lines.append(
+                "  ⚠ 数值题：answered 的 support_refs 必须含至少一个 obs-/calc- 引用"
+                "（先 propose_metric/calculate_metric 沉淀关键数字，再交题）"
+            )
+        qid = str(q.get("question_id") or "")
+        if "counter" in qid or "反" in str(q.get("text") or ""):
+            # 基线发现 F8：反证进了答案却没沉淀成带 counter_refs 的论断，
+            # 分析深度被低估且下游无法消费
+            lines.append(
+                "  反证题纪律：交题时把反方证据引用同时填入 counter_refs，"
+                "并沉淀一条带 counter_refs 的 propose_claim（kind=analysis）"
+            )
         if q.get("conclusion"):
             lines.append(f"  当前结论：{q['conclusion']}")
         if q.get("unresolved"):
@@ -53,6 +68,26 @@ def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | N
         "（answered 需结论+可解析引用；找不到数据标 unavailable 并记录尝试，"
         "不能以模型猜测完成事实采集）。"
     )
+    if str(plan_payload.get("entity_kind") or "") == "industry":
+        # 基线发现 F6：行业级 typed 观测为零——行业配方的数值题同样入指标库，
+        # 给出可用键与单位约定（公司财务指标写公司实体，行业总量写行业实体）
+        lines.append(
+            "行业级数值同样入 typed 库：market_size（金额：unit=规范币种代码+currency，"
+            "top-down/bottom-up 口径写 dimensions/note）、growth_rate（unit=percent，"
+            "行业主体合法）、capacity_supply（物理量 MW/GW…）；原文量表放 unit_text，"
+            "不要自造单位字符串（如 'RMB thousands' 会被拒）。"
+        )
+    if round_no > 1:
+        pending = [q for q in questions if q.get("status") in (None, "", "unanswered", "gathering")]
+        if pending:
+            # 基线发现 F5：deep 多轮场景提交率不稳（2228 只交 3/12）——后续轮次
+            # 明确「交题优先于新检索」，已登记证据直接支撑答案
+            lines.append(
+                f"⚠ 第 {round_no} 轮：仍有 {len(pending)} 题未交答案"
+                f"（{'、'.join(str(q.get('question_id')) for q in pending[:8])}）。"
+                "交题优先于新检索：已登记证据能支撑的直接 answer_question；"
+                "上轮被拒的提交按拒绝提示的修法示例修复后重交，不要换题重来。"
+            )
     return "\n".join(lines)
 
 
@@ -124,5 +159,6 @@ def build_round_brief(
     parts.append(tools_line)
     if plan_payload:
         parts.append(PLAN_MODE_CONTRACT)
-        parts.append(build_plan_brief(plan_payload, assigned_question_ids=assigned_question_ids))
+        parts.append(build_plan_brief(plan_payload, assigned_question_ids=assigned_question_ids,
+                                      round_no=round_no))
     return "\n".join(parts)

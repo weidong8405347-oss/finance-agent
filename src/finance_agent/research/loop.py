@@ -519,17 +519,21 @@ class ResearchLoop:
                 as_of=now, exclude_resolved=True,
             )
         )
-        # 来源角色归类需要 evidence_id → source_id（PIT 与一手分离，方案 §2 P0）；
-        # 解析不了的引用归 unknown 档（诚实缺省，不默认一手）
+        # 来源角色归类需要 evidence_id → source_id/url（PIT 与一手分离，方案 §2 P0；
+        # 披露域细化 F7）；解析不了的引用归 unknown 档（诚实缺省，不默认一手）
         evidence_sources: dict[str, str] = {}
+        evidence_urls: dict[str, str] = {}
         for obs in observations:
             for ref in getattr(obs, "evidence_refs", None) or []:
                 if ref in evidence_sources:
                     continue
                 try:
-                    evidence_sources[ref] = self._store.get_evidence(ref).source_id
+                    ev = self._store.get_evidence(ref)
                 except Exception:  # noqa: BLE001 - 不可解析本身由 assessment 计入 unknown 档
                     continue
+                evidence_sources[ref] = ev.source_id
+                if ev.url:
+                    evidence_urls[ref] = ev.url
         assessment = assess(
             plan,
             claims=claims,
@@ -541,6 +545,7 @@ class ResearchLoop:
             namespace=self._namespace,
             now=now,
             evidence_sources=evidence_sources,
+            evidence_urls=evidence_urls,
         )
         self.assessment = assessment
         self._emit(RESEARCH_ASSESSMENT, assessment.model_dump(mode="json"))
