@@ -291,10 +291,15 @@ F14（ai4s F1 行业 typed 回归 15→0）需消融对照运行（关闭状态�
 | F14 消融驱动 | ai4s F1 单步双跑（状态卡开/关）对照脚本（结果见 data/sentinel/ablate-f14/） | `scripts/ablate_f14.py` |
 | 盲评打包器 | A/C 产物按题匿名 X/Y（种子可复现）+ rubric 卡 + 评审后开封 key.json（600）；两人同 rubric 双评 | `scripts/package_blind_review.py` |
 | 供应商验收卡（电话会/一致预期） | FMP/Financial Datasets 验收卡线束（覆盖/字段/PIT/失败码如实进卡）；本机无 key → blocked 卡已生成（data/vendor-cards/），商务补齐后重跑同一线束即可 | `scripts/vendor_acceptance.py`；`test_vendor_acceptance.py` 6 例（离线假 transport） |
-| Docling 试点（重依赖决策） | 对照脚本（pypdf vs Docling+OCR，样本=B 组真实证据台账的乱码中文 PDF/411 页年报跨页表/文本型对照）；结果进 spike 记录 | `scripts/pilot_docling.py`（运行结果见下轮更新） |
+| Docling 试点（重依赖决策） | **决定性证据**（乱码中文 PDF garbled→ok；411 页年报分部附注还原 4 表结构；对照组无退化）——决策建议：Docling 按页路由走 OCR/表结构，pypdf 保留轻量路径 | `scripts/pilot_docling.py`；[试点记录](docling-pilot-spike-2026-09-11.md) |
+| F14 消融 | 双跑 n=2/变体：r1 on=0/off=5、r2 on=0/off=0——**状态卡挤压假设不成立**（差异不复现）；真实机制=写路径纪律（囤证据少写 + 形态拒写），对策=配方补「写数值的正确形态」 | `scripts/ablate_f14.py`；playbooks/industry_map.md、dimension_researcher.md；结果 data/sentinel/ablate-f14*/ |
 
 未做（如实）：24×3 全矩阵真实运行（按 repeat 需约 40+ 次付费运行，属排期任务而非一轮工作）；
-Unstructured 对照半边（先出 Docling 证据再定是否双装）；盲评的人工评审本身。
+Unstructured 对照半边（Docling 证据对目标失败类已决定性，双装留待新问题类出现时）；
+盲评的人工评审本身（打包器就绪，待 C 组完成后打包送评）。
+
+**C 组运行**：已启动（冻结 HEAD `460ecf8`，同 6 题同运行器，`data/sentinel/baseline-C/`）——
+完成后与 A/A′/B 对照（compare_sentinel.py），盲评打包走 package_blind_review.py。
 
 ### 7.8 第六轮追加（P2-A 二次独立核验 + P2-B 变化解释及重算）
 
@@ -312,12 +317,13 @@ Unstructured 对照半边（先出 Docling 证据再定是否双装）；盲评�
 > F16（dup_chunks 两极）/F17（runner 信号采集，已修）——详见
 > [B 组对照报告](sentinel-baseline-B-comparison-2026-09-11.md)。
 
-1. ~~跑 B 组对照~~ **已完成**（见上）；遗留 F14/F15/F16 按 B 报告 §6 推进；
-2. Docling 试点：基线实证中文 PDF garbled（2228 题 4/8 文档，A/B 两组一致）是
-   原文可得性最大缺口；extract_table 轻量路径已落（第四轮），Docling 对照待定；
-3. source.earnings 验收卡：发行人 IR + FMP 小样本对照（方案 §7.2），解锁 guidance
-   兑现时间线（NVDA 哨兵题的完整形态）；
-4. P3：24 题扩展与盲评（C vs A 胜率）、插件消融（关 verifier/关知识复用/关第二搜索源）；
-   C 组运行应冻结含第三/四轮整改的 HEAD；
+1. ~~跑 B 组对照~~ **已完成**；F15/F16 已整改（§7.9），F14 消融排除状态卡嫌疑、
+   配方纪律修复已落（§7.10）；
+2. ~~Docling 试点~~ **已完成**（决定性证据，决策建议见 spike 记录）；生产化接入
+   （parser_mode 路由 + parser extra + 解析器版本进文档元数据）是下一实现轮；
+3. source.earnings 验收卡线束已就绪（本机无 key，blocked 卡已生成）；
+   商务补齐后重跑 `scripts/vendor_acceptance.py` 即出探针证据；
+4. P3：24 题题集/留出预算门/消融开关/盲评打包器已就绪；C 组 6 题运行中；
+   全矩阵 24×3 与盲评送审属排期任务；
 5. claim_invalidations 的 UI 展示（读侧贯通与发布拦截第三轮已落，仅剩 dossier 页面
    「已失效」区块展示，随下轮页面升级）。
