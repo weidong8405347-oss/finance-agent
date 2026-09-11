@@ -9,6 +9,8 @@
 > **P1-A 表格/单元格定位轻量路径**（见 §7.7）。
 > 第六轮范围：review 剩余项继续——**P2-A 二次独立核验**（不同模型复核重大/数值型结论）
 > 与 **P2-B 完整变化解释及重算**（更正观测进失效闭包、依赖计算引用重映射重跑）（见 §7.8）。
+> 第七轮范围：**B 组对照新发现整改**——F15 核验覆盖率（合成定稿前服务端批量核验 +
+> 未核验软问题可见）与 F16 信号口径拆分（去重命中 vs 唯一 chunk 分列）（见 §7.9）。
 > 分支 `feat/research-profile-capability-upgrade`；基线 `c718a66`（main）。
 > 状态口径：**已落地** = 有代码与测试；**未做** = 本轮未实施（如实标注）。
 > 哨兵基线 A（6 题）与 A' 验证重跑（3 题 + ai4s 漏斗）为**真实付费运行**；未购买数据服务、未跑 ChatGPT Deep Research 同题对照。基线详情见 [sentinel-baseline-A-2026-09-10.md](sentinel-baseline-A-2026-09-10.md)。
@@ -64,7 +66,7 @@
 ## 4. 验收入口
 
 ```bash
-uv run pytest                                        # 1014 passed, 9 skipped（第六轮后）
+uv run pytest                                        # 1017 passed, 9 skipped（第七轮后）
 uv run ruff check src tests scripts
 
 # 第一轮专项回归
@@ -90,6 +92,11 @@ uv run pytest tests/unit/test_search_broker.py            # 双源主备/去重/
 # 第五轮专项回归（review 剩余项）
 uv run pytest tests/unit/test_source_independence.py      # 来源独立性归组/核验记录/评估披露
 uv run pytest tests/unit/test_tables.py                   # 表格候选抽取/定位/完整性纪律
+
+# 第六/七轮专项回归
+uv run pytest tests/unit/test_claim_verifier.py           # 含二次独立核验（TestSecondIndependentReview）
+uv run pytest tests/unit/test_profile_consolidator.py     # 含变化解释与重算（TestRecomputeCalculations）
+uv run pytest tests/unit/test_report_dependency_closure.py # 含合成批量核验（TestBatchVerificationAtSynthesize）
 
 # 哨兵题集（脚手架离线自检 → 真实付费运行需 LLM key + 网络）
 uv run python scripts/run_sentinel.py --list
@@ -264,6 +271,16 @@ review 指出「ToolExecutor 仅被测试调用；生产仍单独装配 handler�
 review 剩余项中仍需外部条件的（如实未做）：OCR 修复与 Docling/Unstructured 试点对照
 （重依赖决策点）、电话会/一致预期/授权披露供应商验收（商务/账号）、P3 效果验收
 （24 题/留出集/消融/盲评）、独立复核的人工抽样流程（§5.4 检查 4 的人工部分）。
+
+### 7.9 第七轮追加（B 组对照新发现 F15/F16 整改）
+
+| 发现 | 整改 | 代码落点 | 测试 |
+| --- | --- | --- | --- |
+| F15 核验覆盖率 3/106（工具在但模型不主动用） | 合成定稿前**服务端批量核验**：报告实际引用的 validated 未核验论断按 kind 优先 + 创建序取 top-8 直接核验（judge 一审 + research 二审）；结果落时态版本链；新发现 contradicted/数值失败被发布门禁硬拦（产物降 draft）；核验不可用诚实记 unavailable 不冒充；剩余未核验在产物校验备注逐条可见（`claim_content_unchecked` 软问题）；批量统计进 `research/artifact_created` 事件 | `commands/steps.py::_batch_verify_referenced_claims`；`research/artifacts.py` | `test_report_dependency_closure.py::TestBatchVerificationAtSynthesize`（3 例） |
+| F16 dup_chunks 口径混合（同页重读的去重命中与重复资料输入混为一谈） | 预算快照新增 `unique_chunks`（唯一 chunk 数）与去重命中分列；runner/compare 脚本透出；判读基准 = 唯一内容占比 | `research/loop.py`；`scripts/run_sentinel.py`、`scripts/compare_sentinel.py` | 随既有脚本测试 |
+
+F14（ai4s F1 行业 typed 回归 15→0）需消融对照运行（关闭状态卡/新工具面），
+属真实运行实验，不在本轮代码范围。
 
 ### 7.8 第六轮追加（P2-A 二次独立核验 + P2-B 变化解释及重算）
 

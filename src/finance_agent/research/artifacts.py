@@ -237,6 +237,8 @@ class ValidationIssue(BaseModel):
         # review R4：已被整合失效的论断不得进入正式产物
         "claim_numeric_check_failed", "claim_analysis_review_failed",
         "claim_evidence_partial", "invalidated_claim_ref",
+        # F15：报告引用的 validated 论断未经内容核验（可见性，不硬拦）
+        "claim_content_unchecked",
     ]
     block_index: int | None = None
     ref: str = ""
@@ -507,6 +509,19 @@ class ArtifactValidator:
                     "——不得进入正式产物"
                 ),
                 hard=True,
+            ))
+        # F15：validated 论断未经内容核验进正式产物 → 软问题逐条可见
+        #（覆盖推动由合成阶段的服务端批量核验执行；不硬拦——核验服务
+        # 不可用时不得把所有产物打成 draft）
+        if claim.get("status") == "validated" and support_state == "unchecked":
+            issues.append(ValidationIssue(
+                code="claim_content_unchecked", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} validated 但未经内容级核验"
+                    "（evidence_support=unchecked）——读者应按「只过引用校验」看待"
+                ),
+                hard=False,
             ))
         # review R4：失效语义贯通发布——已被 profile 整合失效的论断（claim_invalidations
         # 已生效）引用进报告 = 硬失败，失效记录不再只是台账

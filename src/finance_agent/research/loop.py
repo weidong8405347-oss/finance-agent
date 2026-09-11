@@ -555,6 +555,9 @@ class ResearchLoop:
             self.budget_snapshot = self._run_budget.snapshot().as_payload()
             # 台账级重复（同正文不同请求）与检索级重复（同请求）分开计数
             self.budget_snapshot["duplicate_chunks"] = chunk_store.duplicates
+            # F16 口径拆分：去重命中（同页/同文本重注册，良性）与唯一 chunk 数
+            # 分开呈现——重复资料率的判读基准是唯一内容占比，不是裸命中数
+            self.budget_snapshot["unique_chunks"] = len(chunk_store)
             # 文档级重复（同内容哈希/同来源 URL 被短路复用）：重复资料率可见
             self.budget_snapshot["duplicate_documents"] = doc_store.duplicates
             self.budget_snapshot["documents_stored"] = len(doc_store)

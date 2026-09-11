@@ -274,3 +274,66 @@ class TestFinalizeArtifact:
         assert "objective-technology_moat-abc123" in text
         assert "calc-1" in text
         assert "不自行制造百分比或总分" in text
+
+
+class TestBatchVerificationAtSynthesize:
+    """F15（B 组实测核验覆盖 3/106）：合成定稿前服务端批量核验报告引用的
+    validated 未核验论断——不再依赖模型主动调 verify_claim。"""
+
+    def _deps_with_judge(self, tmp_path, judge_payload):
+        script = submit_script()
+        deps, ctx, kb, metrics, events = make_env(tmp_path, script)
+        deps.judge_llm = MockLLM([AssistantReply(content=json.dumps({
+            "atomic_claims": judge_payload,
+            "reasoning_review": {"premises_explicit": True, "boundary_ok": True,
+                                 "alternative_explanations": []},
+            "next_actions": [],
+        }))])
+        deps.judge_llm.model_name = "judge-model"
+        seed_claims(metrics)
+        seed_calculation(metrics)
+        return deps, ctx, kb, metrics, events
+
+    def test_referenced_validated_claims_batch_verified(self, tmp_path):
+        deps, ctx, kb, metrics, events = self._deps_with_judge(
+            tmp_path, [{"text": "数据壁垒", "verdict": "supported",
+                        "supporting_refs": ["ev-1"]}])
+        result = step_synthesize(deps, ctx)
+        assert result.status == "completed"
+        claim = metrics.get_claim("claim-good")
+        assert claim["verification"]["evidence_support"] == "supported", \
+            "报告引用的 validated 论断在定稿前被服务端核验（不依赖模型主动调用）"
+        assert claim["verification"]["verified_by"].startswith("judge-model")
+        ev = [e for e in events.read(ctx.child_run_id)
+              if e.type == "research/artifact_created"][0]
+        batch = ev.payload["verification_batch"]
+        assert batch["attempted"] == 1 and batch["verified"] == 1
+
+    def test_contradicted_found_at_synthesize_blocks_validated(self, tmp_path):
+        """批量核验发现 contradicted → 论断降级 draft + 产物硬失败不得 validated。"""
+        deps, ctx, kb, metrics, events = self._deps_with_judge(
+            tmp_path, [{"text": "数据壁垒", "verdict": "contradicted",
+                        "supporting_refs": [], "notes": "原文不支持"}])
+        step_synthesize(deps, ctx)
+        claim = metrics.get_claim("claim-good")
+        assert claim["status"] == "draft", "contradicted 论断在定稿门禁前降级"
+        art = metrics.artifacts_as_of("industry", "ai-for-science", datetime.now(UTC))[0]
+        assert art["status"] == "draft"
+        assert any(i["code"] == "contradicted_claim_ref" and i["hard"]
+                   for i in art["validation_issues"])
+
+    def test_verifier_unavailable_keeps_soft_visibility(self, tmp_path):
+        """核验不可用（无 judge、脚本非 JSON）→ 论断保持 validated+unchecked，
+        产物不被打回（诚实降级），但软问题 claim_content_unchecked 逐条可见。"""
+        deps, ctx, kb, metrics, events = make_env(tmp_path, submit_script())
+        seed_claims(metrics)
+        seed_calculation(metrics)
+        step_synthesize(deps, ctx)
+        claim = metrics.get_claim("claim-good")
+        assert claim["verification"]["evidence_support"] == "unchecked"
+        art = metrics.artifacts_as_of("industry", "ai-for-science", datetime.now(UTC))[0]
+        assert any(i["code"] == "claim_content_unchecked" and not i["hard"]
+                   for i in art["validation_issues"])
+        ev = [e for e in events.read(ctx.child_run_id)
+              if e.type == "research/artifact_created"][0]
+        assert ev.payload["verification_batch"]["unavailable"] >= 1

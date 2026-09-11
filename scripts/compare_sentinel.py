@@ -54,6 +54,7 @@ def extract(result: dict) -> dict:
                              if not c.get("passed")] or None,
         "artifacts": [(x.get("status"), x.get("sufficiency")) for x in arts] or None,
         "duplicate_chunks": budget.get("duplicate_chunks"),
+        "unique_chunks": budget.get("unique_chunks"),
         "duplicate_documents": budget.get("duplicate_documents"),
         "documents_stored": budget.get("documents_stored"),
         "stop_reason": budget.get("stop_reason") or a.get("stop_reason"),
@@ -84,7 +85,7 @@ KEYS = [
     "observations", "first_party", "pit_a", "secondary",
     "validated_claims", "content_unchecked", "verified_non_unchecked",
     "scale_suspects", "counter_claims", "integrity_failed", "artifacts",
-    "duplicate_chunks", "duplicate_documents", "documents_stored",
+    "duplicate_chunks", "unique_chunks", "duplicate_documents", "documents_stored",
     "stop_reason", "stalls", "steps_failed", "gates_auto",
 ]
 

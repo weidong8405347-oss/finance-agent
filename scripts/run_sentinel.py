@@ -129,6 +129,7 @@ def _extract_signals(collected: list[dict], session: str) -> dict:
         signals["budget"] = {
             "stop_reason": b.get("stop_reason"), "exhausted": b.get("exhausted"),
             "duplicate_chunks": budget.get("duplicate_chunks"),
+            "unique_chunks": budget.get("unique_chunks"),
             "duplicate_documents": budget.get("duplicate_documents"),
             "documents_stored": budget.get("documents_stored"),
             "spent": budget.get("spent"),

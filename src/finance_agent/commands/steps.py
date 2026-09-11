@@ -1204,6 +1204,71 @@ def _report_dependencies(doc: Any, metrics: Any) -> dict[str, list[str]]:
     }
 
 
+#: 合成定稿前服务端批量核验的条数上限（F15）：超出上限的未核验论断在
+#: 产物校验备注中逐条可见（claim_content_unchecked 软问题），不为覆盖烧穿预算
+_SYNTHESIZE_VERIFY_CAP = 8
+
+
+def _batch_verify_referenced_claims(
+    deps: StepDeps, ctx: StepContext, claim_ids: list[str], now: datetime,
+) -> dict[str, int]:
+    """合成定稿前的服务端批量核验（B 组发现 F15：工具在但模型不主动用）。
+
+    报告实际引用的 validated 且内容未核验（evidence_support=unchecked）的论断，
+    按 kind 优先（fact_summary > inference > analysis > hypothesis）+ 创建序取 top-N
+    直接调 verify_claim（judge 优先；第二核验者 = research 主模型，
+    不同模型才算独立复核）；结果落库为时态修订并计入产物事件。
+    LLM 不可用/输出不可解析 → 诚实记 unavailable（不冒充已核验，不改状态）。
+    """
+    stats = {"attempted": 0, "verified": 0, "unavailable": 0,
+             "skipped_over_cap": 0, "already_checked": 0}
+    if not claim_ids or deps.metrics is None:
+        return stats
+    from ..research.verifier import verify_claim
+
+    candidates: list[dict[str, Any]] = []
+    for cid in claim_ids:
+        claim = deps.metrics.get_claim(cid)
+        if not claim or claim.get("status") != "validated":
+            continue
+        if (claim.get("verification") or {}).get("evidence_support", "unchecked") \
+                != "unchecked":
+            stats["already_checked"] += 1
+            continue
+        candidates.append(claim)
+    kind_rank = {"fact_summary": 0, "inference": 1, "analysis": 2, "hypothesis": 3}
+    candidates.sort(key=lambda c: (kind_rank.get(str(c.get("kind")), 4),
+                                   str(c.get("created_at") or ""),
+                                   str(c.get("claim_id") or "")))
+    if not candidates:
+        return stats
+    llm = deps.judge_llm or deps.llm_for("research")
+    second = deps.llm_for("research") if deps.judge_llm is not None else None
+    for claim in candidates[:_SYNTHESIZE_VERIFY_CAP]:
+        stats["attempted"] += 1
+        try:
+            result = verify_claim(
+                deps.kb, deps.metrics, claim_id=str(claim["claim_id"]), llm=llm,
+                second_llm=second, events=deps.events, namespace="prod",
+                entity_kind=ctx.entity_kind, entity_id=ctx.ticker, now=now,
+            )
+            if result.content_review_available:
+                stats["verified"] += 1
+            else:
+                stats["unavailable"] += 1
+        except Exception as e:  # noqa: BLE001 - 单条核验失败不阻断合成（记录可见）
+            stats["unavailable"] += 1
+            logger.warning("合成批量核验 %s 失败：%s", claim.get("claim_id"), e)
+    stats["skipped_over_cap"] = max(0, len(candidates) - _SYNTHESIZE_VERIFY_CAP)
+    if stats["attempted"]:
+        logger.info(
+            "合成批量核验：尝试 %d / 内容核验成功 %d / 不可用 %d / 超上限跳过 %d",
+            stats["attempted"], stats["verified"], stats["unavailable"],
+            stats["skipped_over_cap"],
+        )
+    return stats
+
+
 def _verified_claim_ids(
     deps: StepDeps, claim_ids: list[str], *, namespace: str = "prod",
 ) -> tuple[list[str], list[dict[str, Any]]]:
@@ -1287,6 +1352,10 @@ def _finalize_artifact_v2(
     # 依赖闭包（audit §3.9）：只纳入报告实际引用且经校验的论断/计算，
     # 未通过的草稿保留在缺口区（可见、可修正后重验），不靠关闭校验通过。
     referenced = _report_dependencies(doc, deps.metrics)
+    # F15（B 组实测核验覆盖 3/106：工具在但模型不主动用）→ 合成定稿前服务端
+    # 批量核验报告引用的 validated 未核验论断（top-N 有界；结果落库为时态修订，
+    # 新发现的 contradicted/数值失败会被下游 ArtifactValidator 硬拦）
+    verify_stats = _batch_verify_referenced_claims(deps, ctx, referenced["claims"], now)
     ok_claims, broken_claims = _verified_claim_ids(deps, referenced["claims"])
     if broken_claims:
         from ..research.artifacts import GapNoticeBlock
@@ -1352,6 +1421,7 @@ def _finalize_artifact_v2(
             "plan_id": plan_id,
             "claim_ids": artifact.claim_ids,
             "calculation_ids": artifact.calculation_ids,
+            "verification_batch": verify_stats,
             "excluded_claims": broken_claims,
             "structures": sorted((structures or {}).keys()),
             "referenced_observations": referenced["observations"],
