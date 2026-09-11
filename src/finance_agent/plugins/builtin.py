@@ -179,12 +179,14 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
 
     reg(
         id="documents.reader", kind="processing",
-        tools=["fetch_document", "read_document", "search_document", "read_edgar_filing"],
+        tools=["fetch_document", "read_document", "search_document", "read_edgar_filing",
+               "extract_table"],
         schemas={**s["research"]},
-        capabilities=["documents.fetch", "documents.paged_read", "documents.search"],
+        capabilities=["documents.fetch", "documents.paged_read", "documents.search",
+                      "documents.table_candidates"],
         requires=["documents.store", "evidence.registry"],
         network="document_fetch",
-        tests="tests/unit/test_document_read_v2.py",
+        tests="tests/unit/test_document_read_v2.py, tests/unit/test_tables.py",
     )
     reg(
         id="knowledge.context", kind="processing",

@@ -351,9 +351,15 @@ def assess(
     # 内容级核验分布（P2-A）：unchecked/supported/partially_supported/contradicted/
     # insufficient 逐档计数——核验覆盖率可见，不得用单一 validated 计数冒充
     support_breakdown: dict[str, int] = {}
+    single_source_supported = 0
     for c in claims:
-        state = str((c.get("verification") or {}).get("evidence_support", "unchecked"))
+        ver = c.get("verification") or {}
+        state = str(ver.get("evidence_support", "unchecked"))
         support_breakdown[state] = support_breakdown.get(state, 0) + 1
+        # 来源独立性（review P2-A）：核验过的论断仍只有一族来源 = 可见的薄弱支撑
+        if state in ("supported", "partially_supported") \
+                and ver.get("independent_sources") == 1:
+            single_source_supported += 1
     evidence_quality = {
         "observations": len(observations),
         "pit_a_observations": pit_a,
@@ -367,6 +373,7 @@ def assess(
         "validated_claims": len(validated_claims),
         "validated_claims_content_unchecked": content_unchecked,
         "claims_by_evidence_support": support_breakdown,
+        "single_source_supported_claims": single_source_supported,
         "draft_claims": sum(1 for c in claims if c.get("status") == "draft"),
         "open_conflicts": open_conflicts,
         "stale_fields": list(stale_fields or []),

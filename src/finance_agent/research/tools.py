@@ -1255,10 +1255,41 @@ def make_research_tools(
                 "provenance": _doc_provenance(doc),
             }
 
+        def extract_table_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """表格候选抽取（方案 §5.1 extract_table 轻量路径）：行/单元格/表头/
+            币种/期间候选 + 校验问题；数字不直接写成事实（typed 准入不变）。"""
+            from ..gateway.tables import extract_tables
+
+            doc = doc_store.get(str(args.get("document_id") or ""))
+            if doc is None:
+                return {"content": "error: 未知 document_id（先用 fetch_document 取得）",
+                        "provenance": []}
+            pages: list[int] | None = None
+            page_arg = args.get("page")
+            if page_arg is not None and str(page_arg).strip():
+                try:
+                    pages = [int(page_arg)]
+                except (TypeError, ValueError):
+                    return {"content": "error: page 必须是整数页码", "provenance": []}
+                # 惰性续解纪律与 read_document 一致：请求页未解析且有原件 → 现场补解
+                if doc.raw is not None and any(
+                    p not in doc.page_texts and p not in doc.failed_pages for p in pages
+                ):
+                    doc_store.ensure_pages(doc, pages)
+            out = extract_tables(doc, pages=pages)
+            if out["tables"]:
+                tracker.close_reads.append(f"{doc.document_id}#tables")  # F11 精读信号
+            return {
+                "content": json.dumps(out, ensure_ascii=False, default=str)
+                + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
         tools["fetch_document"] = _fetch_document_tool
         tools["read_document"] = read_document_tool
         tools["search_document"] = search_document_tool
         tools["read_edgar_filing"] = read_edgar_filing
+        tools["extract_table"] = extract_table_tool
 
     return tools, tracker
 
@@ -1422,6 +1453,24 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "page": {"type": "integer", "description": "读单页（1-based）"},
                 "page_range": {"type": "string", "description": "页区段，如 '85-100'"},
                 "query": {"type": "string", "description": "在指定页/全文内切命中窗口"},
+            },
+            "required": ["document_id"],
+        },
+    },
+    "extract_table": {
+        "name": "extract_table",
+        "description": (
+            "从已存档文档抽取候选表格（启发式，未经核验）：表头/行/单元格 + "
+            "币种/期间候选 + 校验问题（ragged_rows 等）与页/表/行/列定位。"
+            "数字不得直接写成观测——先 read_document 回读该页原文、"
+            "register_evidence 逐字绑定，再走 propose_metric。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "page": {"type": "integer",
+                         "description": "只抽某页（缺省扫全部已解析页；未解析页有原件时惰性补解）"},
             },
             "required": ["document_id"],
         },

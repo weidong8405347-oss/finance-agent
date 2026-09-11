@@ -1,10 +1,12 @@
-# Research / Profile 能力加强：实施记录（2026-09-10，两轮 + 第三/四轮）
+# Research / Profile 能力加强：实施记录（2026-09-10，两轮 + 第三/四/五轮）
 
 > 对应设计方案：[research-profile-tools-plugins-plan-2026-09-09.md](research-profile-tools-plugins-plan-2026-09-09.md)
 > 第一轮范围：方案 §11.2「最值得先做的范围」= **P0 + 统一知识读取 + Document Read v2 + SEC 财务工具 + 哨兵题集脚手架**。
 > 第二轮范围：哨兵基线 A/A' 真实运行 + 基线发现整改（R1–R8、F1–F13）+ **P1-C 薄插件层 + P2-A 证据核验与研究路径 + P2-B profile.consolidator**。
 > 第三轮范围：交付复核 code review 12 条正确性意见修复（发布门禁、时态修订、失效语义贯通、整合提交原子化、依赖闭包、证据血缘展开、文档版本/完整性、来源主机名识别，见 §6）。
-> 第四轮范围：review 建议的下一步——**P1-C 执行闭环收口**（插件编译结果实际决定工具执行：RuntimeBinder + ToolExecutor 进生产装配，实际执行面冻结，见 §7）。
+> 第四轮范围：review 建议的下一步——**P1-C 执行闭环收口** + SearchBroker（见 §7）。
+> 第五轮范围：review 剩余项中无外部依赖的两项——**P2-A 来源独立性判断** 与
+> **P1-A 表格/单元格定位轻量路径**（见 §7.7）。
 > 分支 `feat/research-profile-capability-upgrade`；基线 `c718a66`（main）。
 > 状态口径：**已落地** = 有代码与测试；**未做** = 本轮未实施（如实标注）。
 > 哨兵基线 A（6 题）与 A' 验证重跑（3 题 + ai4s 漏斗）为**真实付费运行**；未购买数据服务、未跑 ChatGPT Deep Research 同题对照。基线详情见 [sentinel-baseline-A-2026-09-10.md](sentinel-baseline-A-2026-09-10.md)。
@@ -60,7 +62,7 @@
 ## 4. 验收入口
 
 ```bash
-uv run pytest                                        # 984 passed, 9 skipped（第四轮后）
+uv run pytest                                        # 1005 passed, 9 skipped（第五轮后）
 uv run ruff check src tests scripts
 
 # 第一轮专项回归
@@ -82,6 +84,10 @@ uv run pytest tests/unit/test_review_fixes_round2.py      # 发布门禁/时态�
 # 第四轮专项回归（P1-C 执行闭环 + SearchBroker）
 uv run pytest tests/unit/test_plugin_registry.py          # 注册表/冻结/executor/运行期绑定
 uv run pytest tests/unit/test_search_broker.py            # 双源主备/去重/转载族/预算/trace
+
+# 第五轮专项回归（review 剩余项）
+uv run pytest tests/unit/test_source_independence.py      # 来源独立性归组/核验记录/评估披露
+uv run pytest tests/unit/test_tables.py                   # 表格候选抽取/定位/完整性纪律
 
 # 哨兵题集（脚手架离线自检 → 真实付费运行需 LLM key + 网络）
 uv run python scripts/run_sentinel.py --list
@@ -245,6 +251,17 @@ review 指出「ToolExecutor 仅被测试调用；生产仍单独装配 handler�
   fail-closed（无搜索源注册 → 不装配）。
 - 未做（方案后续）：双源合并的召回质量评估（题集驱动）、reranker/向量召回、
   Exa 新参数的 Novita 透传契约验证。
+
+### 7.7 第五轮追加（review 剩余项：来源独立性 + 表格定位轻量路径）
+
+| 项 | 交付 | 代码落点 | 测试 |
+| --- | --- | --- | --- |
+| P2-A 可靠来源独立性判断 | EvidencePack 按 文档→canonical URL→正文哈希 归组支持证据（`source_independence`：independent_sources/single_source/groups，compact 透出进核验 prompt）；verify_claim 记录 independent_sources（ClaimVerification/VerificationResult/事件三处），supported 但单族 → 显式标注「不构成独立佐证」（可见性纪律，不硬拦——单 filing 是合法事实源）；assessment 披露 `single_source_supported_claims` | `research/evidence_pack.py::compute_source_independence`；`research/verifier.py`；`research/artifacts.py::ClaimVerification`；`research/assessment.py` | `test_source_independence.py`（7 例） |
+| P1-A 表格/单元格定位（轻量路径） | `extract_table` 工具：启发式候选表抽取（表头/行/单元格 + 币种/期间候选 + ragged_rows 等校验问题 + page/table/row/col 定位）；只扫已解析页，缺页显式列出；数字不直接成事实（回读原文→证据绑定→typed 准入不变）；Docling 试点落地后退为轻量回退路径 | `gateway/tables.py`（新）；`research/tools.py`；`documents.reader` 插件声明 | `test_tables.py`（7 例） |
+
+review 剩余项中仍需外部条件的（如实未做）：OCR 修复与 Docling/Unstructured 试点对照
+（重依赖决策点）、电话会/一致预期/授权披露供应商验收（商务/账号）、P3 效果验收
+（24 题/留出集/消融/盲评）、独立复核的人工抽样流程（§5.4 检查 4 的人工部分）。
 
 ## 8. 下一步建议（按方案 §11.2 失败分布决策，第二轮后更新）
 

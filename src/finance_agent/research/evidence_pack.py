@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -63,6 +64,10 @@ class EvidencePack(BaseModel):
     observation_refs: list[str] = Field(default_factory=list)
     calculation_refs: list[str] = Field(default_factory=list)
     source_families: dict[str, int] = Field(default_factory=dict)
+    #: 来源独立性（review P2-A/方案 §5.4：两个引擎/转载同一材料不构成两个独立
+    #: 来源）：支持证据按 文档→canonical URL→正文哈希 归组；groups=独立来源数，
+    #: single_source=True 时核验意见必须显式标注（不硬拦——单 filing 是合法事实源）
+    source_independence: dict[str, Any] = Field(default_factory=dict)
     unresolved_refs: list[str] = Field(default_factory=list)
     unresolved_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
@@ -86,6 +91,10 @@ class EvidencePack(BaseModel):
             "counter": spans(self.counter_spans, 6, 700),
             "contextual": spans(self.contextual_spans, 6, 300),
             "source_families": self.source_families,
+            "source_independence": {
+                k: self.source_independence.get(k)
+                for k in ("independent_sources", "single_source")
+            },
             "unresolved_refs": self.unresolved_refs,
             "unresolved_conflicts": self.unresolved_conflicts[:6],
             "missing_evidence": self.missing_evidence[:8],
@@ -149,6 +158,36 @@ def resolve_span(kb: BitemporalStore, metrics: Any, ref: str, *, namespace: str)
     except Exception as e:  # noqa: BLE001 - 不可解析显式标记，不拖死整包
         return EvidenceSpan(ref=ref, kind="unresolved", meta={"error": f"{type(e).__name__}: {e}"})
     return EvidenceSpan(ref=ref, kind="unresolved")
+
+
+def compute_source_independence(spans: list[EvidenceSpan]) -> dict[str, Any]:
+    """支持证据的独立来源归组（review P2-A「可靠来源独立性判断」）。
+
+    归组键优先级：locator.document_id（同文档）→ canonical URL（同网址，
+    跟踪参数/www 归一）→ 正文哈希（同文不同址 = 转载族）。组数 = 独立来源数；
+    观测/计算 span 不进组（它们背后的证据已被血缘展开进 supporting）。
+    """
+    from ..gateway.search_broker import canonical_url
+
+    groups: dict[str, list[str]] = {}
+    for span in spans:
+        if span.kind != "evidence":
+            continue
+        doc_id = str((span.locator or {}).get("document_id") or "")
+        if doc_id:
+            key = f"doc:{doc_id}"
+        elif span.url:
+            key = f"url:{canonical_url(span.url)}"
+        else:
+            norm = re.sub(r"\s+", " ", span.text or "").strip().lower()
+            key = f"text:{hashlib.sha256(norm.encode('utf-8')).hexdigest()[:16]}" if norm \
+                else f"ref:{span.ref}"
+        groups.setdefault(key, []).append(span.ref)
+    return {
+        "independent_sources": len(groups),
+        "single_source": len(groups) <= 1,
+        "groups": {k: sorted(v) for k, v in sorted(groups.items())},
+    }
 
 
 def source_role_ref(kb: BitemporalStore, evidence_ref: str) -> str:
@@ -334,7 +373,9 @@ def build_evidence_pack(
         candidate_answer=candidate_answer,
         supporting_spans=supporting, counter_spans=counter, contextual_spans=contextual,
         observation_refs=sorted(set(obs_refs)), calculation_refs=sorted(set(calc_refs)),
-        source_families=families, unresolved_refs=unresolved,
+        source_families=families,
+        source_independence=compute_source_independence(supporting),
+        unresolved_refs=unresolved,
         unresolved_conflicts=conflicts, missing_evidence=missing,
     )
     return pack

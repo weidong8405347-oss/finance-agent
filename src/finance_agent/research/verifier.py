@@ -102,6 +102,8 @@ class VerificationResult(BaseModel):
     analysis_review: str = "unchecked"  # not_required/passed/failed/unchecked
     counter_evidence_search: bool = False
     content_review_available: bool = False
+    #: 独立来源族数（review P2-A）：同文档/同 canonical URL/同正文 = 一族
+    independent_sources: int = 0
     atomic: list[AtomicVerdict] = Field(default_factory=list)
     reasoning: ReasoningReview | None = None
     hard_issues: list[str] = Field(default_factory=list)
@@ -358,6 +360,15 @@ def verify_claim(
         notes_extra.append(
             f"{dropped_verdicts} 条原子核验的 verdict 非法已丢弃（未识别值不归为 supported）"
         )
+    # 来源独立性（review P2-A）：支持全部追溯至一族时显式标注——转载/同址
+    # 不构成独立佐证（不硬拦：单 filing 是合法事实源；可见性是核验意见的一部分）
+    independence = pack.source_independence or {}
+    independent_sources = int(independence.get("independent_sources") or 0)
+    if support in ("supported", "partially_supported") and independence.get("single_source"):
+        notes_extra.append(
+            "全部支持证据追溯至同一来源族（同文档/同址/转载不构成独立佐证）——"
+            "关键结论建议补独立来源"
+        )
     if counter_search:
         notes_extra.append(
             "反证检索记录：queries={q} sources={s} found={f}".format(
@@ -390,6 +401,7 @@ def verify_claim(
         numeric_checks=numeric_state,  # type: ignore[arg-type]
         analysis_review=analysis_state,  # type: ignore[arg-type]
         counter_evidence_search=counter_recorded,
+        independent_sources=independent_sources,
         verified_at=as_of,
         verified_by=(getattr(llm, "model_name", "") or "hard-checks-only")
         + ("+content-review" if content_ok else ""),
@@ -408,6 +420,7 @@ def verify_claim(
         references_valid=references_valid, evidence_support=support,
         numeric_checks=numeric_state, analysis_review=analysis_state,
         counter_evidence_search=counter_recorded, content_review_available=content_ok,
+        independent_sources=independent_sources,
         atomic=atomic, reasoning=reasoning, hard_issues=hard_issues,
         next_actions=next_actions[:8],
         reviewed_by=verification.verified_by, reviewed_at=as_of,
@@ -425,6 +438,7 @@ def verify_claim(
                 "evidence_support": support, "numeric_checks": numeric_state,
                 "analysis_review": analysis_state,
                 "content_review_available": content_ok,
+                "independent_sources": independent_sources,
                 "atomic_verdicts": [a.model_dump(mode="json") for a in atomic],
                 "hard_issues": hard_issues, "next_actions": result.next_actions,
                 "counter_search": counter_search or None,

@@ -2707,6 +2707,7 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
             "query_* 数据源（含 query_edgar_facts XBRL 结构化财务）",
             "search_sources（SearchBroker 双源代理：主备回退/去重/转载族归并，trace 可见）",
             "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
+            "extract_table（表格候选抽取：表头/单元格/币种期间候选 + 定位，不直接成事实）",
             "register_evidence / read_chunk",
             "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",
             "submit_question_result（批量提交）/ track_sub_question（内部子问题）",

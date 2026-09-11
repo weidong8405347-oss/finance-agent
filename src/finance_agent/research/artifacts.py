@@ -53,6 +53,9 @@ class ClaimVerification(BaseModel):
     analysis_review: AnalysisReviewState = "unchecked"
     #: 反证检索是否执行过（有记录即可，不要求必须找到反证）
     counter_evidence_search: bool = False
+    #: 支持证据追溯到的独立来源族数（review P2-A：同文档/同址/转载 = 一族；
+    #: None = 未计算/旧数据）。1 族不等于虚假，但核验意见必须显式标注
+    independent_sources: int | None = None
     verified_at: datetime | None = None
     verified_by: str = ""  # 核验者标识（工具/模型/人工），不是真值担保
     notes: list[str] = Field(default_factory=list)
