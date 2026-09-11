@@ -54,6 +54,8 @@ class CompiledSet:
     tools: dict[str, ToolDefinition]
     #: 全部声明工具的 schema（静态绑定 + 仅声明）：能力页/冻结/路由绑定的真相源
     declared_schemas: dict[str, dict]
+    #: 工具名 → 声明插件 id（运行期绑定的 trace 归属；重名已在注册期拒绝）
+    tool_owners: dict[str, str]
     adapters: tuple[Any, ...]
     statuses: tuple[PluginStatus, ...]
     config_hash: str
@@ -213,6 +215,7 @@ class PluginRegistry:
         # 工具与 adapter 汇总（按 role/stage 过滤；重名已在注册期拒绝）
         tools: dict[str, ToolDefinition] = {}
         declared: dict[str, dict] = {}
+        owners: dict[str, str] = {}
         adapters: list[Any] = []
         manifests: list[PluginManifest] = []
         for p in enabled.values():
@@ -222,6 +225,8 @@ class PluginRegistry:
                     tools[tool.name] = tool
             for name, schema in p.declared_schemas().items():
                 declared[name] = schema
+            for name in p.manifest.tools:
+                owners[name] = p.id
             # enabled 与 degraded 都供数（degraded 是可见性状态：限速/回退通道等，
             # 能力仍在）；unavailable/missing_config 已在 enabled 集合之外
             adapters.extend(p.adapters)
@@ -229,7 +234,8 @@ class PluginRegistry:
         return CompiledSet(
             stage=stage, market=market, role=role,
             plugins=tuple(sorted(manifests, key=lambda m: m.id)),
-            tools=tools, declared_schemas=declared, adapters=tuple(adapters),
+            tools=tools, declared_schemas=declared, tool_owners=owners,
+            adapters=tuple(adapters),
             statuses=tuple(statuses[p.id] for p in candidates),
             config_hash=config_hash,
         )

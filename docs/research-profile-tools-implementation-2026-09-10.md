@@ -1,8 +1,10 @@
-# Research / Profile 能力加强：实施记录（2026-09-10，两轮）
+# Research / Profile 能力加强：实施记录（2026-09-10，两轮 + 第三/四轮）
 
 > 对应设计方案：[research-profile-tools-plugins-plan-2026-09-09.md](research-profile-tools-plugins-plan-2026-09-09.md)
 > 第一轮范围：方案 §11.2「最值得先做的范围」= **P0 + 统一知识读取 + Document Read v2 + SEC 财务工具 + 哨兵题集脚手架**。
 > 第二轮范围：哨兵基线 A/A' 真实运行 + 基线发现整改（R1–R8、F1–F13）+ **P1-C 薄插件层 + P2-A 证据核验与研究路径 + P2-B profile.consolidator**。
+> 第三轮范围：交付复核 code review 12 条正确性意见修复（发布门禁、时态修订、失效语义贯通、整合提交原子化、依赖闭包、证据血缘展开、文档版本/完整性、来源主机名识别，见 §6）。
+> 第四轮范围：review 建议的下一步——**P1-C 执行闭环收口**（插件编译结果实际决定工具执行：RuntimeBinder + ToolExecutor 进生产装配，实际执行面冻结，见 §7）。
 > 分支 `feat/research-profile-capability-upgrade`；基线 `c718a66`（main）。
 > 状态口径：**已落地** = 有代码与测试；**未做** = 本轮未实施（如实标注）。
 > 哨兵基线 A（6 题）与 A' 验证重跑（3 题 + ai4s 漏斗）为**真实付费运行**；未购买数据服务、未跑 ChatGPT Deep Research 同题对照。基线详情见 [sentinel-baseline-A-2026-09-10.md](sentinel-baseline-A-2026-09-10.md)。
@@ -58,7 +60,7 @@
 ## 4. 验收入口
 
 ```bash
-uv run pytest                                        # 939 passed, 9 skipped（第二轮后）
+uv run pytest                                        # 984 passed, 9 skipped（第四轮后）
 uv run ruff check src tests scripts
 
 # 第一轮专项回归
@@ -72,6 +74,14 @@ uv run pytest tests/unit/test_baseline_findings_round3.py # F10 量表闸/F11 �
 uv run pytest tests/unit/test_plugin_registry.py          # P1-C 插件层（含迁移 parity）
 uv run pytest tests/unit/test_claim_verifier.py           # P2-A 核验/批量提交/子问题/状态卡
 uv run pytest tests/unit/test_profile_consolidator.py     # P2-B 整合/幂等/时态失效
+
+# 第三轮专项回归（交付复核 code review 12 条）
+uv run pytest tests/unit/test_review_fixes_round2.py      # 发布门禁/时态修订/失效贯通/原子提交/
+                                                          # 依赖闭包/血缘展开/文档版本/来源主机名
+
+# 第四轮专项回归（P1-C 执行闭环 + SearchBroker）
+uv run pytest tests/unit/test_plugin_registry.py          # 注册表/冻结/executor/运行期绑定
+uv run pytest tests/unit/test_search_broker.py            # 双源主备/去重/转载族/预算/trace
 
 # 哨兵题集（脚手架离线自检 → 真实付费运行需 LLM key + 网络）
 uv run python scripts/run_sentinel.py --list
@@ -156,14 +166,87 @@ uv run python scripts/run_sentinel.py --all --auto-approve-gates   # 真实运�
 | --- | --- |
 | source.earnings（电话会/指引）、source.consensus（一致预期） | 未接——依赖供应商验收与套餐权限（方案 §7.2 验收卡流程），guidance 观测契约已就绪 |
 | source.disclosures_hk/cn 授权接入（HKEX IIS/巨潮） | 未做——现有 hkex_news 公开通道保留，正式授权接口待商务 |
-| SearchBroker（Exa 主 + Tavily 备、转载族去重）、Exa 新参数 Novita 透传验证 | 未做（文档层内容哈希去重已落） |
+| SearchBroker（Exa 主 + Tavily 备、转载族去重） | **已落地**（第四轮，含预算/trace/台账纪律）；Exa 新参数 Novita 透传验证仍未做 |
 | Docling/OCR 结构解析试点、extract_table（表头/单元格定位） | 未做——基线实证 2228 题 4/8 中文 PDF garbled 是当前最大原文可得性缺口，B 组首选 |
 | engine.deep_research 外部研究引擎试点、MCP bridge | 未做（方案第三批） |
 | 重要结论第二次独立提取/抽样人工核对（§5.4 检查 4） | 未做（属 P3 评估/人工流程） |
 | 24 题扩展、消融、盲评（P3） | 未做（6 题哨兵 + A/A' 对照已跑通，扩展依失败分布决策） |
 | 定时监控/事件驱动刷新（§9.3 后续产品能力） | 未做（第一期用户触发 refresh，按计划） |
 
-## 6. 下一步建议（按方案 §11.2 失败分布决策，第二轮后更新）
+## 6. 第三轮：交付复核 code review 修复（12 条，tests/unit/test_review_fixes_round2.py 30 例）
+
+| review | 问题 | 修复 | 代码落点 |
+| --- | --- | --- | --- |
+| R1 [P1] | 数值硬检查失败（原文 300M/论断 950M）论断仍 validated、报告校验零问题 | verifier 对 numeric/analysis 失败、引用硬失败一律降级 validated→draft；ArtifactValidator 直接消费四项核验状态：`claim_numeric_check_failed`/`claim_analysis_review_failed` 硬失败、`claim_evidence_partial` 软可见 | `research/verifier.py`、`research/artifacts.py` |
+| R2 [P1] | read_evidence 按 ID 读 obs/calc/claim 不验主体/namespace/截止时间（2020 年 AAPL 评估上下文读到生产库 BE 后续资料） | typed 引用逐条过 get_ref_meta 校验 namespace+实体+登记时间；ev 按可知时间、fact 按 knowledge_time 守上下文截止；逐项返回拒绝原因 | `research/context_tools.py::_typed_meta_guard/_temporally_blocked` |
+| R3 [P1] | 核验直接覆盖原 claim，历史投影被改写 | 新增 `research_claim_versions` 版本链（save_claim 追加 recorded_at 版本行，旧库按 created_at 补基线迁移）；claims_as_of 按 recorded_at≤T 重建历史状态 | `knowledge/metric_store.py` |
+| R4 [P1] | claim_invalidations 落库但无人消费 | claims_as_of 默认排除失效论断（invalidated_at≤T，历史时点仍可见；include_invalidated=True 带标记审计）；发布门禁 `invalidated_claim_ref` 硬失败；read_evidence 回读带失效标记 | `knowledge/metric_store.py`、`research/artifacts.py`、`research/context_tools.py` |
+| R5 [P2] | prepare 默认取最新快照、commit 默认按无快照算哈希 → 误报基线已变化 | commit 缺省基线与 prepare 对齐（取最新快照），选定快照绑定进提交 payload；S2 schema/hint 引导回传 base_snapshot | `dossier/consolidator.py`、`commands/steps.py` |
+| R6 [P2] | 逐条校验逐条提交，第二条非法时第一条已落库 | 先全量校验再 `record_profile_update` 原子落库（失效记录+台账同事务，并发竞争整体回滚按重放），事件在落库后追加 | `dossier/consolidator.py`、`knowledge/metric_store.py` |
+| R7 [P2] | 失效预览只查观测的直接引用，漏 observation→calculation→claim 下游 | `refs_to` 泛化（任意 ref + 实体/时间过滤 + 派生观测桶），prepare 沿依赖闭包 BFS（200 条防御上限显式截断） | `knowledge/metric_store.py`、`dossier/consolidator.py` |
+| R8 [P2] | EvidencePack 只展开观测背后的原文，claim 引 claim 时核验看不到原始依据 | 血缘递归展开（claim→support_refs、calc→input_refs、obs→evidence_refs+calculation_ref），via/indirect 标记，深度 4/总量 24/循环截断；间接死端进 missing_evidence 不拖垮直接引用 | `research/evidence_pack.py` |
+| R9 [P2] | verdict 接受任意字符串，NOT_SUPPORTED 被聚合归为 supported | verdict 枚举约束（大小写/连字符规范化后严格匹配）；非法条目丢弃并计数留痕，全非法按核验不可用诚实降级 | `research/verifier.py` |
+| R10 [P2] | PDF 去重哈希只覆盖已解析文本，同前缀不同后续的 PDF 复用错原件 | 版本身份 = 原件 bytes 哈希（解析文本哈希降为信息性指纹）；同原件再登记并入新解析页，不同原件必为新文档 | `gateway/documents.py` |
+| R11 [P2] | 完整性按最大已解析页码，中间缺页被掩盖（1、3 页解析即报 full） | `missing_pages` 按实际页集合计算；有失败页 partial、有缺页 truncated；read_document 的 unread_pages 同步修正并附缺页清单 | `gateway/documents.py`、`research/tools.py` |
+| R12 [P2] | URL 子串包含 sec.gov 即归发行人披露 | urlparse 取真实 hostname，精确/合法子域匹配；userinfo/查询参数/仿冒域（sec.gov.evil.com）不再误判；媒体源不因此升档 | `research/assessment.py` |
+
+行为契约变化（第三轮，下游须知）：
+
+1. **validated 论断的核验硬失败会真降级**：numeric_checks/analysis_review 失败或引用失效
+   时 verify_claim 直接落 draft（此前仅 contradicted/insufficient 降级）；发布门禁同步硬拦。
+2. **claims_as_of 默认不含已失效论断**（时态合并：失效前的历史时点仍可见）；需要审计
+   视图时传 include_invalidated=True。档案投影/报告校验/导出随之自动生效。
+3. **read_evidence 上下文隔离**：跨实体/跨命名空间/晚于上下文截止的引用逐项拒绝
+   （此前只拦跨实体 fact）；同实体截止前引用不受影响。
+4. **DocumentStore 版本身份改为原件哈希**：同 URL 同解析前缀但原件不同的 PDF 不再
+   被误判同版本；completeness_payload 新增 missing_pages，read_document 新增
+   unread_page_list。
+
+## 7. 第四轮：P1-C 执行闭环收口 + SearchBroker 输入能力
+
+review 指出「ToolExecutor 仅被测试调用；生产仍单独装配 handler，尚未统一执行、
+预算与冻结实际能力集合」。本轮修复：
+
+| 项 | 修复 | 代码落点 |
+| --- | --- | --- |
+| 编译结果决定执行 | 新增 `RuntimeBinder`：执行面 = 编译声明 ∩ run 装配 handler；bound_undeclared（装配缺陷信号）/ declared_unbound（声明未装配）双清单显式可见不静默 | `plugins/runtime.py`（新） |
+| 统一执行纪律 | S1（串行+维度并行组）、S2、S3、行业研究、deep dive 的模型可见工具全部经 ToolExecutor：参数校验（required/顶层类型）、超时（慢工具 verify_claim/文档族放宽上限）、可重试错误有界重试（吃 RunBudget）、错误码封装（不包装成空结果）、`plugins/tool_trace`（plugin_id 归属声明插件，新增 `CompiledSet.tool_owners`） | `commands/steps.py::_bind_runtime_tools`；`research/loop.py`（plugin_set 入参）；`plugins/registry.py` |
+| 冻结实际能力集合 | `plugins/runtime_bound` 事件按 run 幂等落库（bound/undeclared/unbound 三清单 + config_hash 锚点），与 `plugins/manifest_frozen`（声明面）配对 | `plugins/runtime.py` |
+| 声明完整性补漏 | `propose_candidates`/`submit_card` 此前有 handler/schema 但无插件声明 → 新增 `research.industry` 插件（stages=["industry"]）补齐 | `plugins/builtin.py` |
+| 线程池治理 | ToolExecutor 支持注入共享池；生产经 binder 用进程级有界共享池（32 worker），serve 模式不随 run 数泄漏线程 | `plugins/executor.py`、`plugins/runtime.py` |
+
+行为契约变化（第四轮，下游须知）：
+
+1. **工具错误形态**：handler 抛异常/超时时，模型收到的内容从 kernel 的
+   `error: 工具 X 执行失败…` 文本变为结构化 envelope（`error_code/message/
+   retryable/tool/plugin_id`）；handler 自行返回的 rejected/error 文本不变。
+2. **未知工具参数在进 handler 前被拒**（invalid_arguments），handler 零调用。
+3. **无 registry 的旧装配/回放路径行为完全不变**（binder 不介入）。
+4. 事件新增 `plugins/runtime_bound`（实际执行面）与 `plugins/compile_failed`
+   （编译失败可见）；`plugins/tool_trace` 现在有生产流量。
+
+未接线（如实标注）：main_agent / decision loop / evaluation replay 的 kernel
+面向不同能力域，不经研究插件编译集；行业漏斗 F1/F3a kernel 的绑定待下轮
+（`research.industry` 声明已就位，stage="industry" 编译即可接入）。
+
+### 7.6 SearchBroker（方案 §5.1，P1-A 输入能力；tests/unit/test_search_broker.py 14 例）
+
+- `gateway/search_broker.py`：Exa 主 / Tavily 备双源代理——默认只打主源；
+  主源报错/零召回/低召回（<3）回退合并备源（回退原因进 trace）；mode=dual 强制双源；
+  canonical URL 去重（www/跟踪参数/尾斜杠/大小写归一）+ 转载族归并（同文不同 URL
+  只算一个原始来源，family_size/family_urls 可见）；主源命中保原序，备源新增附加。
+- 纪律：每个实际调用的引擎真实扣一次检索预算（双源合并 = 双份成本不账外运行）；
+  逐条记录保留各自 source_id/available_at/pit_grade（时间准入仍在 DataGateway）；
+  结果逐条落 ChunkStore（chunk_id 可引证据），`_broker` 元数据只在传输层可见、
+  不进台账正文（canonical_record_text 排除 `_` 前缀键）；缓存命中不重复扣预算；
+  参数/回退/去重统计落 `gateway/search_broker` 事件。
+- 装配：S1（串行+并行组）、行业 F1/F2/F3a 步进工具面；`research.web` 插件声明
+  `search_sources`（能力 `web.search_broker`）；`maybe_make_search_broker`
+  fail-closed（无搜索源注册 → 不装配）。
+- 未做（方案后续）：双源合并的召回质量评估（题集驱动）、reranker/向量召回、
+  Exa 新参数的 Novita 透传契约验证。
+
+## 8. 下一步建议（按方案 §11.2 失败分布决策，第二轮后更新）
 
 1. 跑 B 组对照：在当前代码（F10–F13 + P1-C + P2-A/B 全部落地）上重跑哨兵 6 题，
    与基线 A/A' 对照（重点：2228 提交率与量表、BE typed 观测稳定性、ai4s F1–F5 全链、
@@ -173,4 +256,5 @@ uv run python scripts/run_sentinel.py --all --auto-approve-gates   # 真实运�
 3. source.earnings 验收卡：发行人 IR + FMP 小样本对照（方案 §7.2），解锁 guidance
    兑现时间线（NVDA 哨兵题的完整形态）。
 4. P3：24 题扩展与盲评（C vs A 胜率）、插件消融（关 verifier/关知识复用/关第二搜索源）。
-5. 投影层消费 claim_invalidations 的 UI 展示（随下轮 dossier 页面升级）。
+5. claim_invalidations 的 UI 展示（读侧贯通与发布拦截第三轮已落，仅剩 dossier 页面
+   「已失效」区块展示，随下轮页面升级）。

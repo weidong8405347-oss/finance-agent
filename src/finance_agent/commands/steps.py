@@ -30,7 +30,11 @@ from ..eventstore.events import (
 )
 from ..eventstore.store import EventStore
 from ..gateway.gateway import DataGateway
-from ..gateway.tools import make_gateway_tool
+from ..gateway.tools import (
+    make_gateway_tool,
+    make_search_broker_tool,
+    maybe_make_search_broker,
+)
 from ..harness.approvals import ApprovalService
 from ..harness.manifest import RunManifest, RunMode
 from ..knowledge.gaps import GapAnalyzer
@@ -131,8 +135,10 @@ PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
         "name": "commit_profile_update",
         "description": (
             "幂等提交档案整合（宿主规则校验）：expected_base_hash 与当前状态不符"
-            "则拒绝（基线过期，重新 prepare）；invalidate_claims 逐条验归属后追加"
-            "失效记录（旧快照与历史投影不变，按时态合并）；同 change_set_id 重放"
+            "则拒绝（基线过期，重新 prepare）；base_snapshot 回传 prepare 返回的 "
+            "base_snapshot.snapshot_id（缺省取最新快照，与 prepare 默认一致）；"
+            "invalidate_claims 先全量校验再原子落库（任一非法整体拒绝，"
+            "旧快照与历史投影不变，按时态合并）；同 change_set_id 重放"
             "返回首次结果。note（变化说明）必填，进审计事件。"
         ),
         "parameters": {
@@ -154,7 +160,11 @@ PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
                         "required": ["claim_id", "reason"],
                     },
                 },
-                "base_snapshot": {"type": "string"},
+                "base_snapshot": {
+                    "type": "string",
+                    "description": "基线快照 id（回传 prepare 的 base_snapshot.snapshot_id；"
+                                   "缺省取最新快照）",
+                },
             },
             "required": ["change_set_id", "expected_base_hash", "note"],
         },
@@ -247,8 +257,27 @@ def _cancelled(ctx: StepContext) -> StepResult:
     return StepResult(status="cancelled", summary="已被用户停止")
 
 
+def _compile_plugin_set(deps: StepDeps, ctx: StepContext, stage: str):
+    """编译本 step 场景的能力集（无 registry → None，旧装配/回放路径）。
+
+    编译失败不阻断研究（partial_with_reason）但必须可见：事件 + 日志双通道。
+    """
+    if deps.plugin_registry is None:
+        return None
+    try:
+        return deps.plugin_registry.compile(stage=stage, env=deps.plugin_env or {})
+    except Exception as e:  # noqa: BLE001 - 编译失败可见，不静默跳过
+        logger.warning("插件编译失败（%s/%s）：%s", stage, ctx.child_run_id, e)
+        deps.events.append(Event(
+            run_id=ctx.child_run_id, type="plugins/compile_failed",
+            payload={"stage": stage, "error": f"{type(e).__name__}: {e}"},
+        ))
+        return None
+
+
 def _freeze_plugin_manifest(
     deps: StepDeps, ctx: StepContext, stage: str, extra: dict[str, Any] | None = None,
+    compiled: Any | None = None,
 ) -> None:
     """manifest 冻结（tools-plugins 方案 §6.2）：同一 run 不静默切换能力面。
 
@@ -261,7 +290,9 @@ def _freeze_plugin_manifest(
     from ..plugins.freezing import freeze_manifest
 
     try:
-        compiled = deps.plugin_registry.compile(stage=stage, env=deps.plugin_env or {})
+        compiled = compiled or _compile_plugin_set(deps, ctx, stage)
+        if compiled is None:
+            return
         freeze_manifest(
             compiled, run_id=ctx.child_run_id, events=deps.events,
             extra={"entity": f"{ctx.entity_kind}:{ctx.ticker}", **(extra or {})},
@@ -274,6 +305,28 @@ def _freeze_plugin_manifest(
         ))
 
 
+def _bind_runtime_tools(
+    deps: StepDeps, ctx: StepContext, stage: str,
+    tools: dict[str, Any], *, budget: Any | None = None, compiled: Any | None = None,
+) -> dict[str, Any]:
+    """执行闭环（P1-C 收口，交付复核整改）：让插件编译结果实际决定工具执行。
+
+    有 registry 时，run 装配的 handler 绑进编译能力集：执行面 = 声明 ∩ 装配，
+    全部模型可见调用经 ToolExecutor（参数校验/超时/重试吃预算/错误码/trace），
+    实际执行面冻结进 plugins/runtime_bound 事件；装配了未声明的工具记 warning。
+    无 registry 的旧装配/回放路径原样返回（行为不变）。
+    """
+    if deps.plugin_registry is None or not tools:
+        return tools
+    compiled = compiled or _compile_plugin_set(deps, ctx, stage)
+    if compiled is None:
+        return tools
+    from ..plugins.runtime import RuntimeBinder
+
+    binder = RuntimeBinder(compiled, events=deps.events, budget=budget)
+    return binder.bind(tools, run_id=ctx.child_run_id).tools
+
+
 # ---------------- S1 研究 ----------------
 
 
@@ -284,7 +337,10 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
     # 问题驱动研究（§7）：冻结 ResearchPlan 后，终止由问题覆盖+字段覆盖+预算共同决定；
     # 已有 100% 档案遇到新目标仍创建计划（只复用有效证据，不宣告「无需研究」）
     plan_id = _prepare_research_plan(deps, ctx)
-    _freeze_plugin_manifest(deps, ctx, "research", extra={"plan_id": plan_id})
+    # 编译一次两用：manifest 冻结（声明面）+ ResearchLoop 运行期绑定（执行面，P1-C 收口）
+    plugin_set = _compile_plugin_set(deps, ctx, "research")
+    _freeze_plugin_manifest(deps, ctx, "research", extra={"plan_id": plan_id},
+                            compiled=plugin_set)
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -306,6 +362,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         metric_writer=deps.metric_writer,
         calculations=deps.calculations,
         max_record_chars=deps.max_record_chars,
+        plugin_set=plugin_set,
     )
     reports = loop.run(
         ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
@@ -864,6 +921,8 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             payload={"role": "system", "content": contract},
         )
     )
+    # 执行闭环（P1-C）：合成阶段工具同样经编译集绑定 + ToolExecutor 执行
+    tools = _bind_runtime_tools(deps, ctx, "synthesize", tools)
     kernel = AgentKernel(
         store=deps.events,
         llm=deps.llm_for("research"),
@@ -1568,12 +1627,17 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
             payload={"role": "system", "content": _PROFILE_CONTRACT},
         )
     )
+    # 执行闭环（P1-C）：S2 工具经编译集绑定 + ToolExecutor 执行（含核验/提交）
+    s2_tools = _bind_runtime_tools(
+        deps, ctx, "profile",
+        {"query_kb": query_kb, "propose_thesis": propose_thesis,
+         **context_tools, **consolidator_tools},
+    )
     kernel = AgentKernel(
         store=deps.events,
         llm=deps.llm_for("research"),
         manifest=manifest,
-        tools={"query_kb": query_kb, "propose_thesis": propose_thesis,
-               **context_tools, **consolidator_tools},
+        tools=s2_tools,
         # 6 → 12 步：整合需要读上下文/预览变化集/核证据/裁决冲突/提交的余量（§9.1）
         max_steps=12,
     )
@@ -1750,6 +1814,8 @@ def _industry_loop(
         objective_override=step_objective,
         entity_kind_override="industry",
     )
+    # 执行闭环（P1-C）：行业研究同样经编译集绑定（research 阶段工具面）
+    plugin_set = _compile_plugin_set(deps, ctx, "research")
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -1768,6 +1834,7 @@ def _industry_loop(
         plan_id=plan_id,
         metrics=deps.metrics,
         metric_writer=deps.metric_writer,
+        plugin_set=plugin_set,
         calculations=deps.calculations,
         max_record_chars=deps.max_record_chars,
     )
@@ -1858,6 +1925,11 @@ def step_candidate_pool(deps: StepDeps, ctx: StepContext) -> StepResult:
         )
         for source_id in deps.gateway.source_ids():
             tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
+        # SearchBroker（方案 §5.1）：双源代理搜索可用时一并装配
+        _broker = maybe_make_search_broker(
+            deps.gateway, events=deps.events, run_id=ctx.child_run_id)
+        if _broker is not None:
+            tools["search_sources"] = make_search_broker_tool(_broker, chunk_store)
 
         def propose_candidates(args: dict[str, Any]) -> dict[str, Any]:
             cands = args.get("candidates") or []
@@ -1982,6 +2054,11 @@ def step_thesis(deps: StepDeps, ctx: StepContext) -> StepResult:
     )
     for source_id in deps.gateway.source_ids():
         tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
+    # SearchBroker（方案 §5.1）：双源代理搜索可用时一并装配
+    _broker = maybe_make_search_broker(
+        deps.gateway, events=deps.events, run_id=ctx.child_run_id)
+    if _broker is not None:
+        tools["search_sources"] = make_search_broker_tool(_broker, chunk_store)
     tools["calc"] = calc_tool
     deps.events.append(
         Event(run_id=ctx.child_run_id, type=CONTEXT_INJECT,
@@ -2176,6 +2253,11 @@ def _screen_one_candidate(deps: StepDeps, ctx: StepContext, cand: dict, llm: LLM
     )
     for source_id in deps.gateway.source_ids():
         tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
+    # SearchBroker（方案 §5.1）：双源代理搜索可用时一并装配
+    _broker = maybe_make_search_broker(
+        deps.gateway, events=deps.events, run_id=ctx.child_run_id)
+    if _broker is not None:
+        tools["search_sources"] = make_search_broker_tool(_broker, chunk_store)
     tools["calc"] = calc_tool
     card: dict[str, Any] = {}
 
@@ -2383,6 +2465,9 @@ def step_deep_dive(deps: StepDeps, ctx: StepContext) -> StepResult:
 
     results: dict[str, str] = {}
 
+    # 执行闭环（P1-C）：deep dive 与主研究同一执行面（编译一次，逐票复用）
+    plugin_set = _compile_plugin_set(deps, ctx, "research")
+
     def dive(ticker: str) -> None:
         manifest = RunManifest(
             run_id=f"{ctx.child_run_id}--{ticker}", mode=RunMode.LIVE,
@@ -2404,6 +2489,7 @@ def step_deep_dive(deps: StepDeps, ctx: StepContext) -> StepResult:
                 fetch_document=deps.fetch_document,
                 fetch_document_paged=deps.fetch_document_paged,
                 worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
+                plugin_set=plugin_set,
             )
             loop.run("stock", ticker, f"深度研究 {ticker}（赛道：{ctx.objective}）")
             if loop.stop_reason == "stalled":
@@ -2619,6 +2705,7 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
         "model_role": "research + research-worker ×4",
         "tools": [
             "query_* 数据源（含 query_edgar_facts XBRL 结构化财务）",
+            "search_sources（SearchBroker 双源代理：主备回退/去重/转载族归并，trace 可见）",
             "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
             "register_evidence / read_chunk",
             "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",

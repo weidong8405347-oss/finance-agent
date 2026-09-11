@@ -21,6 +21,7 @@ import json
 import sys
 from pathlib import Path
 
+
 #: 对照的信号抽取（从 run_sentinel 结果 JSON 的 signals 里取）
 def extract(result: dict) -> dict:
     sig = result.get("signals") or {}

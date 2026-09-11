@@ -39,12 +39,16 @@ class ToolExecutor:
     def __init__(
         self, *, events: EventStore | None = None, budget: Any | None = None,
         run_id: str = "", max_retries: int = 1,
+        pool: ThreadPoolExecutor | None = None,
     ):
         self._events = events
         self._budget = budget
         self._run_id = run_id
         self._max_retries = max_retries
-        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plugin-tool")
+        # 缺省自建小池（测试/独立使用）；生产经 RuntimeBinder 传进程级共享池
+        # （有界 32 worker，serve 模式不随 run 数泄漏线程）
+        self._pool = pool or ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="plugin-tool")
 
     # ---------------- 校验 ----------------
 

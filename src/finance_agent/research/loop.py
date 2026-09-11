@@ -136,6 +136,9 @@ class ResearchLoop:
         #: 只保留最近 N 条工具结果全文，更早的裁到 max_tool_chars（只动投影不动日志）
         max_tool_chars: int | None = DEFAULT_MAX_TOOL_CHARS,
         keep_recent_tools: int | None = DEFAULT_KEEP_RECENT_TOOLS,
+        #: 插件编译能力集（P1-C 执行闭环）：非 None 时 worker 工具经
+        #: RuntimeBinder 绑定（执行面=声明∩装配，ToolExecutor 统一执行纪律）
+        plugin_set: object | None = None,
     ):
         self._store = store
         self._events = events
@@ -162,6 +165,9 @@ class ResearchLoop:
         self._max_record_chars = max_record_chars
         self._max_tool_chars = max_tool_chars
         self._keep_recent_tools = keep_recent_tools
+        self._plugin_set = plugin_set
+        #: 运行期绑定器（run() 内预算就绪后创建；None = 旧装配路径不变）
+        self._binder: Any | None = None
         self.stop_reason: str | None = None
         #: 预算终止的具体维度（wall_clock/tokens/retrieval_calls/...）——可归因，不笼统
         self.budget_exhausted: list[str] = []
@@ -248,6 +254,13 @@ class ResearchLoop:
             run_budget.start()
             self._emit(RESEARCH_BUDGET, {"action": "start", "run_id": self._manifest.run_id,
                                          "budget": run_budget.snapshot().as_payload()})
+        # 执行闭环（P1-C）：预算就绪后创建运行期绑定器——worker 工具的全部
+        # 模型可见调用经 ToolExecutor（校验/超时/重试吃预算/错误码/trace）
+        if self._plugin_set is not None:
+            from ..plugins.runtime import RuntimeBinder
+
+            self._binder = RuntimeBinder(
+                self._plugin_set, events=self._events, budget=run_budget)
         #: 同 run 检索去重（重复资料既是成本也是上下文膨胀的主因）
         retrieval_cache: dict = self._retrieval_cache
         while True:
@@ -401,6 +414,20 @@ class ResearchLoop:
                         budget=run_budget, cache=retrieval_cache,
                         max_record_chars=self._max_record_chars,
                     )
+                # SearchBroker（方案 §5.1）：双源代理搜索（主备/去重/转载族归并）
+                from ..gateway.tools import make_search_broker_tool, maybe_make_search_broker
+
+                broker = maybe_make_search_broker(
+                    self._gateway, events=self._events,
+                    run_id=self._manifest.run_id, budget=run_budget)
+                if broker is not None:
+                    tools["search_sources"] = make_search_broker_tool(
+                        broker, chunk_store, cache=retrieval_cache,
+                        max_record_chars=self._max_record_chars)
+                if self._binder is not None:
+                    # P1-C：执行面 = 编译声明 ∩ run 装配（经 ToolExecutor）
+                    tools = self._binder.bind(
+                        tools, run_id=self._manifest.run_id).tools
 
                 if round_no == 1:  # system 契约只注入一次（稳定前缀）
                     self._emit(CONTEXT_INJECT, {"role": "system", "content": GROUNDING_CONTRACT})
@@ -673,7 +700,19 @@ class ResearchLoop:
                 budget=self._run_budget, cache=self._retrieval_cache,
                 max_record_chars=self._max_record_chars,
             )
+        from ..gateway.tools import make_search_broker_tool, maybe_make_search_broker
+
         group_run_id = f"{self._manifest.run_id}--r{round_no}-{group}"
+        broker = maybe_make_search_broker(
+            self._gateway, events=self._events, run_id=group_run_id,
+            budget=self._run_budget)
+        if broker is not None:
+            tools["search_sources"] = make_search_broker_tool(
+                broker, chunk_store, cache=self._retrieval_cache,
+                max_record_chars=self._max_record_chars)
+        if self._binder is not None:
+            # P1-C：并行组同样经编译集绑定（trace 归属到组 run）
+            tools = self._binder.bind(tools, run_id=group_run_id).tools
         self._events.append(
             Event(
                 run_id=group_run_id,

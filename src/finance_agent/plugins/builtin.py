@@ -118,10 +118,11 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
     )
     reg(
         id="research.web", kind="source",
-        tools=["query_web_search"], schemas=s["gateway"],
-        capabilities=["web.search"], temporal="per_record_verified",
+        tools=["query_web_search", "search_sources"], schemas=s["gateway"],
+        capabilities=["web.search", "web.search_broker"],
+        temporal="per_record_verified",
         auth="api_key:NOVITA_API_KEY|EXA_API_KEY", network="exa_api_via_gateway",
-        tests="tests/unit/test_data_sources_p2.py",
+        tests="tests/unit/test_search_broker.py",
         adapters=(ExaSearchAdapter(
             novita_api_key=environ.get("NOVITA_API_KEY") or None,
             api_key=environ.get("EXA_API_KEY") or None,
@@ -228,6 +229,14 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
         stages=["profile"],
         requires=["metrics.typed", "kb.bitemporal", "snapshot.isolation"],
         tests="tests/unit/test_profile_consolidator.py",
+    )
+    reg(
+        id="research.industry", kind="processing",
+        tools=["propose_candidates", "submit_card"], schemas={**s["research"]},
+        capabilities=["industry.candidates", "industry.screening_cards"],
+        stages=["industry"],
+        requires=["evidence.registry", "writers.single"],
+        tests="tests/unit/test_industry_funnel.py",
     )
     reg(
         id="synthesize.core", kind="processing",

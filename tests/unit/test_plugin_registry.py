@@ -394,3 +394,242 @@ class TestBuiltinParity:
         assert "plugins" in caps and caps["plugins"].get("plugins")
         assert "edgar_facts" in caps["gateway_sources"]
         assert orch["plugin_registry"] is not None
+
+
+# ---------------- 运行期绑定（P1-C 执行闭环收口，交付复核整改） ----------------
+
+
+class TestRuntimeBinding:
+    """让插件编译结果实际决定工具执行：执行面=声明∩装配，全部调用过 ToolExecutor，
+    实际执行面冻结进 plugins/runtime_bound（与 manifest_frozen 的声明面配对）。"""
+
+    FULL_ENV = {"NOVITA_API_KEY": "n", "TAVILY_API_KEY": "t"}
+
+    def _mini_registry(self) -> PluginRegistry:
+        r = PluginRegistry()
+        r.register(plugin("research.demo", tools=("t1",)))
+        return r
+
+    def test_bind_routes_through_executor_with_plugin_attribution(self, tmp_path):
+        from finance_agent.plugins.runtime import PLUGINS_RUNTIME_BOUND, RuntimeBinder
+
+        events = EventStore(tmp_path / "e.db")
+        compiled = build_builtin_registry(env=self.FULL_ENV).compile(
+            stage="research", env=self.FULL_ENV)
+        binder = RuntimeBinder(compiled, events=events)
+        calls = {"n": 0}
+
+        def handler(args):
+            calls["n"] += 1
+            return {"content": "kb-ok", "provenance": []}
+
+        binding = binder.bind({"query_kb": handler}, run_id="run-b1")
+        out = binding.tools["query_kb"]({})
+        assert out["content"] == "kb-ok" and calls["n"] == 1
+        # executor trace：plugin_id 归属到声明插件（不是笼统的 run 级台账）
+        traces = [e for e in events.read("run-b1") if e.type == PLUGIN_TOOL_TRACE]
+        assert traces and traces[0].payload["plugin_id"] == "knowledge.context"
+        assert traces[0].payload["outcome"] == "ok" and traces[0].payload["rw"] == "read"
+        # 实际执行面冻结：bound/declared_unbound/bound_undeclared 三清单
+        bound_evs = [e for e in events.read("run-b1") if e.type == PLUGINS_RUNTIME_BOUND]
+        assert len(bound_evs) == 1
+        payload = bound_evs[0].payload
+        assert payload["bound"] == ["query_kb"]
+        assert payload["bound_undeclared"] == []
+        assert "propose_claim" in payload["declared_unbound"]
+        assert payload["config_hash"] == compiled.config_hash
+
+    def test_bound_undeclared_visible_not_silent(self, tmp_path):
+        from finance_agent.plugins.runtime import PLUGINS_RUNTIME_BOUND, RuntimeBinder
+
+        events = EventStore(tmp_path / "e.db")
+        compiled = self._mini_registry().compile(stage="research")
+        binder = RuntimeBinder(compiled, events=events)
+        binding = binder.bind(
+            {"t1": lambda a: {"content": "ok", "provenance": []},
+             "rogue_tool": lambda a: {"content": "rogue", "provenance": []}},
+            run_id="run-b2")
+        assert binding.bound == ["t1"]
+        assert binding.bound_undeclared == ["rogue_tool"]
+        payload = [e for e in events.read("run-b2")
+                   if e.type == PLUGINS_RUNTIME_BOUND][0].payload
+        assert payload["bound_undeclared"] == ["rogue_tool"]
+        # 未声明工具仍经 executor（执行纪律统一：校验/超时/trace 不漏）
+        out = binding.tools["rogue_tool"]({})
+        assert out["content"] == "rogue"
+        trace = [e for e in events.read("run-b2") if e.type == PLUGIN_TOOL_TRACE
+                 and e.payload["tool"] == "rogue_tool"][0]
+        assert trace.payload["plugin_id"] == "host.unbound"
+
+    def test_validation_rejects_before_handler(self, tmp_path):
+        from finance_agent.plugins.runtime import RuntimeBinder
+
+        events = EventStore(tmp_path / "e.db")
+        compiled = build_builtin_registry(env=self.FULL_ENV).compile(
+            stage="research", env=self.FULL_ENV)
+        binder = RuntimeBinder(compiled, events=events)
+        calls = {"n": 0}
+
+        def handler(args):
+            calls["n"] += 1
+            return {"content": "ok", "provenance": []}
+
+        binding = binder.bind({"answer_question": handler}, run_id="run-b3")
+        out = binding.tools["answer_question"]({})  # 缺 required question_id/status
+        assert json.loads(out["content"])["error_code"] == "invalid_arguments"
+        assert calls["n"] == 0, "参数校验失败不得进入 handler"
+
+    def test_runtime_bound_idempotent_per_run(self, tmp_path):
+        from finance_agent.plugins.runtime import PLUGINS_RUNTIME_BOUND, RuntimeBinder
+
+        events = EventStore(tmp_path / "e.db")
+        binder = RuntimeBinder(self._mini_registry().compile(stage="research"),
+                               events=events)
+        binder.bind({"t1": lambda a: {"content": "ok", "provenance": []}}, run_id="run-b4")
+        binder.bind({"t1": lambda a: {"content": "ok", "provenance": []}}, run_id="run-b4")
+        assert len([e for e in events.read("run-b4")
+                    if e.type == PLUGINS_RUNTIME_BOUND]) == 1
+
+    def test_research_loop_executes_through_compiled_set(self, tmp_path):
+        """S1 真实装配：loop 带 plugin_set → 工具调用经 executor（trace 落组），
+        执行面冻结落 run；行为不变（观测照常写库）。"""
+        from datetime import UTC, datetime
+
+        from finance_agent.gateway.adapters.fixture import FixtureAdapter
+        from finance_agent.gateway.gateway import DataGateway
+        from finance_agent.gateway.models import DataRecord, SourceCapability
+        from finance_agent.harness.manifest import RunManifest, RunMode
+        from finance_agent.knowledge.metric_store import MetricStore
+        from finance_agent.knowledge.metric_writer import TypedMetricWriter
+        from finance_agent.knowledge.models import PitGrade
+        from finance_agent.knowledge.store import BitemporalStore
+        from finance_agent.knowledge.writer import ProfileWriter
+        from finance_agent.llm.base import AssistantReply, ToolCall
+        from finance_agent.llm.mock import MockLLM
+        from finance_agent.plugins.runtime import PLUGINS_RUNTIME_BOUND
+        from finance_agent.research.loop import ResearchLoop
+
+        kb = BitemporalStore(tmp_path / "kb.db")
+        metrics = MetricStore(tmp_path / "m.db")
+        events = EventStore(tmp_path / "e.db")
+        writer = ProfileWriter(store=kb, events=events)
+        mw = TypedMetricWriter(store=metrics, kb=kb, events=events)
+        gateway = DataGateway(mode="live", events=events, run_id="live-pl")
+        gateway.register(FixtureAdapter(
+            SourceCapability(source_id="demo", pit_grade=PitGrade.A,
+                             server_side_asof=False, description="夹具源"),
+            records=[DataRecord(source_id="demo", payload={"t": "x"},
+                                url="demo://f", available_at=datetime.now(UTC))],
+        ))
+        script = [
+            AssistantReply(content="", tool_calls=[
+                ToolCall(call_id="c0", name="query_kb", arguments={})]),
+            AssistantReply(content="done"),
+        ]
+        compiled = build_builtin_registry(env=self.FULL_ENV).compile(
+            stage="research", env=self.FULL_ENV)
+        loop = ResearchLoop(
+            store=kb, events=events, writer=writer, gateway=gateway,
+            llm=MockLLM(script),
+            manifest=RunManifest(run_id="live-pl", mode=RunMode.LIVE),
+            gateway_sources=gateway.source_ids(),
+            fetch_document=lambda url: "doc text",
+            metrics=metrics, metric_writer=mw,
+            max_rounds=1, plugin_set=compiled,
+        )
+        loop.run("stock", "BE", "验证")
+        traces = [e for e in events.read("live-pl") if e.type == PLUGIN_TOOL_TRACE]
+        assert any(t.payload["tool"] == "query_kb" for t in traces), \
+            "S1 模型可见工具调用必须经过 ToolExecutor（trace 为证）"
+        # 夹具源 query_demo 无插件声明 → bound_undeclared 显式可见（不静默）
+        bound_ev = [e for e in events.read("live-pl")
+                    if e.type == PLUGINS_RUNTIME_BOUND]
+        assert bound_ev and "query_kb" in bound_ev[0].payload["bound"]
+        assert "query_demo" in bound_ev[0].payload["bound_undeclared"]
+
+    def test_s2_profile_update_binds_via_step(self, tmp_path):
+        """S2 真实装配：step_profile_update 带 plugin_registry → 工具过 executor。"""
+        from datetime import UTC, datetime
+
+        from finance_agent.commands.steps import StepContext, StepDeps, step_profile_update
+        from finance_agent.decision.service import DecisionService
+        from finance_agent.decision.store import DecisionStore
+        from finance_agent.gateway.gateway import DataGateway
+        from finance_agent.harness.approvals import ApprovalService
+        from finance_agent.knowledge.metric_store import MetricStore
+        from finance_agent.knowledge.metric_writer import TypedMetricWriter
+        from finance_agent.knowledge.models import Evidence, Fact, PitGrade
+        from finance_agent.knowledge.store import BitemporalStore
+        from finance_agent.knowledge.writer import ProfileWriter
+        from finance_agent.llm.base import AssistantReply, ToolCall
+        from finance_agent.llm.mock import MockLLM
+        from finance_agent.plugins.runtime import PLUGINS_RUNTIME_BOUND
+
+        kb = BitemporalStore(tmp_path / "kb.db")
+        metrics = MetricStore(tmp_path / "m.db")
+        events = EventStore(tmp_path / "e.db")
+        writer = ProfileWriter(store=kb, events=events)
+        mw = TypedMetricWriter(store=metrics, kb=kb, events=events)
+        kb.add_evidence(Evidence(
+            evidence_id="ev-s2", source_id="edgar", verbatim_quote="revenue 100 million",
+            retrieved_at=datetime.now(UTC), available_at=datetime.now(UTC),
+            pit_grade=PitGrade.A,
+        ))
+        kb.assert_fact(Fact(entity_kind="stock", entity_id="BE", field="business_model",
+                            value="燃料电池", knowledge_time=datetime.now(UTC),
+                            evidence_ids=["ev-s2"]))
+        script = [
+            AssistantReply(content="", tool_calls=[
+                ToolCall(call_id="c0", name="get_research_context", arguments={})]),
+            AssistantReply(content="", tool_calls=[
+                ToolCall(call_id="c1", name="propose_thesis", arguments={
+                    "thesis": "订单口径已核实。", "evidence_ids": ["ev-s2"]})]),
+            AssistantReply(content="done"),
+        ]
+        deps = StepDeps(
+            events=events, kb=kb, writer=writer,
+            gateway=DataGateway(mode="live", events=events, run_id="live-s2p"),
+            decisions=DecisionService(kb=kb, decisions=DecisionStore(tmp_path / "d.db"),
+                                      events=events),
+            llm_for=lambda role: MockLLM(script),
+            approvals=ApprovalService(events),
+            evals_dir=tmp_path / "evals", reports_dir=tmp_path / "reports",
+            knowledge_dir=tmp_path / "knowledge",
+            metrics=metrics, metric_writer=mw,
+            plugin_registry=build_builtin_registry(env=self.FULL_ENV),
+            plugin_env=dict(self.FULL_ENV),
+        )
+        ctx = StepContext(
+            command_id="cmd-p", session_run_id="live-s2p",
+            child_run_id="live-s2p--cmd-p-2", ticker="BE", objective="", config="",
+            should_cancel=lambda: False, entity_kind="stock",
+        )
+        result = step_profile_update(deps, ctx)
+        assert result.status == "completed"
+        traces = [e for e in events.read(ctx.child_run_id)
+                  if e.type == PLUGIN_TOOL_TRACE]
+        tools_traced = {t.payload["tool"] for t in traces}
+        assert {"get_research_context", "propose_thesis"} <= tools_traced, \
+            "S2 工具调用必须经过 ToolExecutor（trace 为证）"
+        owners = {t.payload["tool"]: t.payload["plugin_id"] for t in traces}
+        assert owners["propose_thesis"] == "profile.core"
+        # 声明面 + 执行面双双冻结（配对可归因）
+        assert [e for e in events.read(ctx.child_run_id)
+                if e.type == PLUGINS_MANIFEST_FROZEN]
+        bound_ev = [e for e in events.read(ctx.child_run_id)
+                    if e.type == PLUGINS_RUNTIME_BOUND]
+        assert bound_ev and bound_ev[0].payload["bound_undeclared"] == []
+        assert "verify_claim" in bound_ev[0].payload["bound"]
+
+    def test_legacy_assembly_without_registry_unchanged(self, tmp_path):
+        """无 registry 的旧装配/回放路径：helper 原样返回，不产事件。"""
+        from types import SimpleNamespace
+
+        from finance_agent.commands.steps import _bind_runtime_tools
+
+        events = EventStore(tmp_path / "e.db")
+        deps = SimpleNamespace(plugin_registry=None, plugin_env=None, events=events)
+        ctx = SimpleNamespace(child_run_id="child-x", entity_kind="stock", ticker="BE")
+        tools = {"query_kb": lambda a: {"content": "ok", "provenance": []}}
+        assert _bind_runtime_tools(deps, ctx, "research", tools) is tools
+        assert events.read("child-x") == []
