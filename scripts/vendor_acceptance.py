@@ -24,9 +24,10 @@ import argparse
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 #: 探针定义：端点 + 期望字段（方案验收卡逐项）
 #: 期望字段缺失 ≠ 拒绝，但必须进卡（「服务有出处不等于其所有字段具备 PIT」）

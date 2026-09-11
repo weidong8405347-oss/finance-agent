@@ -34,6 +34,10 @@
   read_document/read_edgar_filing/read_chunk 拿到全文与关键位置，
   搜索摘录不足以支撑结论）→ 登记证据 → propose_metric/propose_claim
   → 完成一题立即 answer_question；
+- 数值形态纪律（拒写即返工）：value_text 只写证据里逐字出现的数字原文
+  （如 "28.9%"），不拼标签/期间；摘录多数字时 value_span 选定原句；
+  nature=consensus 必须给 snapshot_at（没有快照日期就退化 reported 或不写）；
+  submit_question_result 的 arguments 必须是合法 JSON（先小批量验证形态）；
 - 禁止连续登记超过 3 条证据而不产出观测/论断/答案——登记本身不是产出；
 - 查不到就标 unavailable 并记录 attempts，不烧预算空转；
 - 旧字段（propose_fact）只在回答问题的顺带产出时写，不为刷字段完整度消耗预算。

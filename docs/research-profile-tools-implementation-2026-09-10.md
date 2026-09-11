@@ -282,6 +282,20 @@ review 剩余项中仍需外部条件的（如实未做）：OCR 修复与 Docli
 F14（ai4s F1 行业 typed 回归 15→0）需消融对照运行（关闭状态卡/新工具面），
 属真实运行实验，不在本轮代码范围。
 
+### 7.10 第八轮追加（P3 基建 + 重依赖/商务前置项）
+
+| 项 | 交付 | 落点 |
+| --- | --- | --- |
+| P3 题集与留出保护 | 24 题冻结（12 单股/8 行业比较/4 增量刷新链式题；16 iter + 8 holdout；关键任务 repeat=3）；运行器 --tasks-file/--group/链式执行/holdout 预算门（--allow-holdout + HoldoutLedger 扣减） | `evals/sentinel_tasks_24.yaml`；`scripts/run_sentinel.py`；`test_sentinel_tasks.py` +4 例 |
+| 消融开关（方案 §10.2 + F14） | 五组件环境变量开关（state_card/verifier/broker/knowledge_context/second_search），仅评估运行用，生产默认空集；接线 S1/S2/合成/网关注册，关闭留痕可归因 | `harness/ablation.py`；loop/steps/cli 接线；`test_ablation.py` 6 例 |
+| F14 消融驱动 | ai4s F1 单步双跑（状态卡开/关）对照脚本（结果见 data/sentinel/ablate-f14/） | `scripts/ablate_f14.py` |
+| 盲评打包器 | A/C 产物按题匿名 X/Y（种子可复现）+ rubric 卡 + 评审后开封 key.json（600）；两人同 rubric 双评 | `scripts/package_blind_review.py` |
+| 供应商验收卡（电话会/一致预期） | FMP/Financial Datasets 验收卡线束（覆盖/字段/PIT/失败码如实进卡）；本机无 key → blocked 卡已生成（data/vendor-cards/），商务补齐后重跑同一线束即可 | `scripts/vendor_acceptance.py`；`test_vendor_acceptance.py` 6 例（离线假 transport） |
+| Docling 试点（重依赖决策） | 对照脚本（pypdf vs Docling+OCR，样本=B 组真实证据台账的乱码中文 PDF/411 页年报跨页表/文本型对照）；结果进 spike 记录 | `scripts/pilot_docling.py`（运行结果见下轮更新） |
+
+未做（如实）：24×3 全矩阵真实运行（按 repeat 需约 40+ 次付费运行，属排期任务而非一轮工作）；
+Unstructured 对照半边（先出 Docling 证据再定是否双装）；盲评的人工评审本身。
+
 ### 7.8 第六轮追加（P2-A 二次独立核验 + P2-B 变化解释及重算）
 
 | 项 | 交付 | 代码落点 | 测试 |
