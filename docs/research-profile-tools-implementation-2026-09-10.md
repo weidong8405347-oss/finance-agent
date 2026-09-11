@@ -1,4 +1,4 @@
-# Research / Profile 能力加强：实施记录（2026-09-10，两轮 + 第三/四/五轮）
+# Research / Profile 能力加强：实施记录（2026-09-10，两轮 + 第三/四/五/六轮）
 
 > 对应设计方案：[research-profile-tools-plugins-plan-2026-09-09.md](research-profile-tools-plugins-plan-2026-09-09.md)
 > 第一轮范围：方案 §11.2「最值得先做的范围」= **P0 + 统一知识读取 + Document Read v2 + SEC 财务工具 + 哨兵题集脚手架**。
@@ -7,6 +7,8 @@
 > 第四轮范围：review 建议的下一步——**P1-C 执行闭环收口** + SearchBroker（见 §7）。
 > 第五轮范围：review 剩余项中无外部依赖的两项——**P2-A 来源独立性判断** 与
 > **P1-A 表格/单元格定位轻量路径**（见 §7.7）。
+> 第六轮范围：review 剩余项继续——**P2-A 二次独立核验**（不同模型复核重大/数值型结论）
+> 与 **P2-B 完整变化解释及重算**（更正观测进失效闭包、依赖计算引用重映射重跑）（见 §7.8）。
 > 分支 `feat/research-profile-capability-upgrade`；基线 `c718a66`（main）。
 > 状态口径：**已落地** = 有代码与测试；**未做** = 本轮未实施（如实标注）。
 > 哨兵基线 A（6 题）与 A' 验证重跑（3 题 + ai4s 漏斗）为**真实付费运行**；未购买数据服务、未跑 ChatGPT Deep Research 同题对照。基线详情见 [sentinel-baseline-A-2026-09-10.md](sentinel-baseline-A-2026-09-10.md)。
@@ -62,7 +64,7 @@
 ## 4. 验收入口
 
 ```bash
-uv run pytest                                        # 1005 passed, 9 skipped（第五轮后）
+uv run pytest                                        # 1014 passed, 9 skipped（第六轮后）
 uv run ruff check src tests scripts
 
 # 第一轮专项回归
@@ -262,6 +264,13 @@ review 指出「ToolExecutor 仅被测试调用；生产仍单独装配 handler�
 review 剩余项中仍需外部条件的（如实未做）：OCR 修复与 Docling/Unstructured 试点对照
 （重依赖决策点）、电话会/一致预期/授权披露供应商验收（商务/账号）、P3 效果验收
 （24 题/留出集/消融/盲评）、独立复核的人工抽样流程（§5.4 检查 4 的人工部分）。
+
+### 7.8 第六轮追加（P2-A 二次独立核验 + P2-B 变化解释及重算）
+
+| 项 | 交付 | 代码落点 | 测试 |
+| --- | --- | --- | --- |
+| P2-A 独立复核（自动化部分，§5.4 检查 4） | verify_claim 二次独立核验：触发=数值型结论一审 supported 或 double_check=true；**必须是不同模型**（同模型/缺省 → 跳过并留痕，不制造复核表象）；两审不一致 → 审慎封顶 partially_supported；second_review 进结果/事件/verified_by | `research/verifier.py`；S1/S2 装配第二核验者（judge 核验、research 复核） | `test_claim_verifier.py::TestSecondIndependentReview`（5 例） |
+| P2-B 完整变化解释及重算 | 失效闭包根补上**已更正**观测（corrected_observation_ids，时态一致）；commit 可选 recompute_calculations：依赖计算引用值剥离 + 失效引用重映射替代版本 + 同批 calc→calc 链式重映射后重跑（input_hash 幂等不重复建行）；无替代版本显式拒绝；重算明细 + 残留依赖进 commit 响应与事件（完整变化解释）；闭包遍历收敛为单一 `_dependency_closure`（prepare/重算/变化解释同源） | `dossier/consolidator.py`；`knowledge/metric_store.py`；S2 工具 schema/装配 | `test_profile_consolidator.py::TestRecomputeCalculations`（4 例） |
 
 ## 8. 下一步建议（按方案 §11.2 失败分布决策；2026-09-11 B 组完成后更新）
 

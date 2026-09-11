@@ -517,3 +517,97 @@ class TestStateCard:
             m["content"] for call in llm.received for m in call if m.get("role") == "user"
         )
         assert "状态卡" in briefs and "ev-round1" in briefs
+
+
+# ---------------- 二次独立核验（方案 §5.4 检查 4，review P2-A 剩余项） ----------------
+
+
+def _named_llm(atomic, *, name: str) -> MockLLM:
+    llm = review_llm(atomic)
+    llm.model_name = name  # 实例级覆盖类属性（独立性判定靠模型名区分）
+    return llm
+
+
+class TestSecondIndependentReview:
+    def test_agreeing_second_pass_recorded(self, tmp_path):
+        kb, metrics, events, writer, mw, obs_id = make_env(tmp_path)
+        save_claim(metrics, "claim-2nd", statement="在手订单 300 million 创纪录",
+                   support=[obs_id])
+        first = _named_llm([{"text": "订单 300 million", "verdict": "supported",
+                             "supporting_refs": [obs_id]}], name="judge-model")
+        second = _named_llm([{"text": "订单 300 million", "verdict": "supported",
+                              "supporting_refs": [obs_id]}], name="research-model")
+        result = verify_claim(kb, metrics, claim_id="claim-2nd", llm=first,
+                              second_llm=second, events=events,
+                              manifest=RunManifest(run_id="r-2nd", mode=RunMode.LIVE),
+                              entity_kind="stock", entity_id="BE")
+        assert result.second_review is not None
+        assert result.second_review["agrees"] is True
+        assert result.second_review["by"] == "research-model"
+        assert result.evidence_support == "supported"
+        assert "+2nd:research-model" in result.reviewed_by
+
+    def test_disagreement_caps_at_partially_supported(self, tmp_path):
+        """一审 supported / 二审 contradicted → 审慎收敛为 partially_supported 并留痕。"""
+        kb, metrics, events, writer, mw, obs_id = make_env(tmp_path)
+        save_claim(metrics, "claim-2dis", statement="在手订单 300 million 已全部锁定",
+                   support=[obs_id])
+        first = _named_llm([{"text": "订单 300 million", "verdict": "supported",
+                             "supporting_refs": [obs_id]}], name="judge-model")
+        second = _named_llm([{"text": "已全部锁定", "verdict": "contradicted",
+                              "supporting_refs": [],
+                              "notes": "原文只说余额，未说锁定"}], name="research-model")
+        result = verify_claim(kb, metrics, claim_id="claim-2dis", llm=first,
+                              second_llm=second, events=events,
+                              manifest=RunManifest(run_id="r-2dis", mode=RunMode.LIVE),
+                              entity_kind="stock", entity_id="BE")
+        assert result.evidence_support == "partially_supported"
+        assert result.second_review["agrees"] is False
+        notes = metrics.get_claim("claim-2dis")["verification"]["notes"]
+        assert any("二次独立核验不一致" in n for n in notes)
+
+    def test_same_model_is_not_independent(self, tmp_path):
+        """同模型重问不构成独立复核：跳过并留痕（不制造复核表象）。"""
+        kb, metrics, events, writer, mw, obs_id = make_env(tmp_path)
+        save_claim(metrics, "claim-2same", statement="在手订单 300 million",
+                   support=[obs_id])
+        first = _named_llm([{"text": "订单 300 million", "verdict": "supported",
+                             "supporting_refs": [obs_id]}], name="same-model")
+        second = _named_llm([], name="same-model")  # 同模型——不应被消费
+        result = verify_claim(kb, metrics, claim_id="claim-2same", llm=first,
+                              second_llm=second, events=events,
+                              manifest=RunManifest(run_id="r-2same", mode=RunMode.LIVE),
+                              entity_kind="stock", entity_id="BE")
+        assert result.second_review is None
+        notes = metrics.get_claim("claim-2same")["verification"]["notes"]
+        assert any("不构成独立复核" in n for n in notes)
+
+    def test_no_trigger_for_non_numeric_statement(self, tmp_path):
+        """无数值、非强制 → 不触发二审（成本控制：二审留给重大/数值型结论）。"""
+        kb, metrics, events, writer, mw, obs_id = make_env(tmp_path)
+        save_claim(metrics, "claim-2skip", statement="业务模式以系统集成为主",
+                   support=[obs_id])
+        first = _named_llm([{"text": "业务模式", "verdict": "supported",
+                             "supporting_refs": [obs_id]}], name="judge-model")
+        second = _named_llm([], name="research-model")
+        result = verify_claim(kb, metrics, claim_id="claim-2skip", llm=first,
+                              second_llm=second, events=events,
+                              manifest=RunManifest(run_id="r-2skip", mode=RunMode.LIVE),
+                              entity_kind="stock", entity_id="BE")
+        assert result.second_review is None
+
+    def test_double_check_forces_second_pass(self, tmp_path):
+        kb, metrics, events, writer, mw, obs_id = make_env(tmp_path)
+        save_claim(metrics, "claim-2force", statement="业务模式以系统集成为主",
+                   support=[obs_id])
+        first = _named_llm([{"text": "业务模式", "verdict": "supported",
+                             "supporting_refs": [obs_id]}], name="judge-model")
+        second = _named_llm([{"text": "业务模式", "verdict": "partially_supported",
+                              "supporting_refs": [obs_id],
+                              "notes": "零部件占比未覆盖"}], name="research-model")
+        result = verify_claim(kb, metrics, claim_id="claim-2force", llm=first,
+                              second_llm=second, double_check=True, events=events,
+                              manifest=RunManifest(run_id="r-2force", mode=RunMode.LIVE),
+                              entity_kind="stock", entity_id="BE")
+        assert result.second_review is not None
+        assert result.evidence_support == "partially_supported"

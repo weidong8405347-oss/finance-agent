@@ -408,3 +408,128 @@ class TestS2ConsolidationWiring:
         assert tool_results[0].payload["content"].startswith("rejected:")
         assert "基线已变化" in tool_results[0].payload["content"]
         assert metrics.get_profile_update_commit(preview["change_set_id"]) is None
+
+
+# ---------------- 变化解释与重算（review P2-B 剩余项） ----------------
+
+
+class TestRecomputeCalculations:
+    def _with_calc(self, env):
+        """obs → calc（unit_conversion 恒等换算）；返回带计算服务的 consolidator。"""
+        from finance_agent.research.calculations import CalculationService, InputRef
+
+        kb, metrics, events, writer, mw, cons, obs_id = env
+        calc_service = CalculationService(metrics, events=events)
+        result = calc_service.calculate(
+            entity_kind="stock", entity_id="BE", formula_id="unit_conversion",
+            inputs=[InputRef(kind="observation", label="value", ref_id=obs_id)],
+            assumptions={"steps": "[]", "target_unit": "USD"}, run_id="r-cons",
+        )
+        cons2 = ProfileConsolidator(kb=kb, metrics=metrics, events=events,
+                                    calculations=calc_service)
+        return kb, metrics, events, mw, cons2, obs_id, result.calculation_id
+
+    def test_corrected_observation_recomputes_dependent(self, env):
+        """更正（带替代版本）→ commit 重算：引用重映射到替代观测，新值进计算，
+        旧计算行保留（append-only），变化解释含新旧结果对照。"""
+        kb, metrics, events, mw, cons, obs_id, calc_id = self._with_calc(env)
+        # 更正：300 million → 600 million（同语义键新版本 + corrected 修订记录）
+        new_id, _ = metrics.assert_observation(ReportedObservation(
+            entity_kind="stock", entity_id="BE", metric_key="backlog", period=FY2023,
+            value="600000000", unit="USD", currency="USD",
+            raw=RawValue(value_text="600 million", unit_text="USD", quote_ref="ev-1"),
+            evidence_refs=["ev-1"], knowledge_time=T1, source_available_at=T1,
+            retrieved_at=T1, created_at=T1, pit_grade=PitGrade.A,
+        ))
+        mw.revise_observation(obs_id, action="corrected", reason="口径更正",
+                              replacement_observation_id=new_id, run=RUN)
+        # prepare：更正的观测也触发依赖闭包（calc 待重审可见）
+        out = cons.prepare_update("stock", "BE")
+        stale = {d["ref"] for d in out["invalidated_dependencies"]["stale_dependents"]}
+        assert calc_id in stale, "更正观测的下游计算必须进闭包"
+        assert out["invalidated_dependencies"]["corrected_observations"] == {
+            obs_id: new_id}
+
+        committed = cons.commit_update(
+            "stock", "BE", change_set_id=out["change_set_id"],
+            expected_base_hash=out["expected_base_hash"],
+            note="口径更正后重算依赖计算", manifest=RUN,
+            recompute_calculations=True,
+        )
+        assert committed["committed"] is True
+        rec = committed["recomputations"]
+        assert len(rec) == 1 and rec[0]["calculation_id"] == calc_id
+        assert rec[0]["old_result"] == "300000000"
+        assert rec[0]["new_result"] == "600000000"
+        assert rec[0]["changed"] is True
+        assert rec[0]["new_calculation_id"] != calc_id
+        assert committed["dependency_resolution"]["calculations_recomputed"] == 1
+        # 旧计算行保留（重算是新版本，不是原位改写）
+        assert metrics.get_calculation(calc_id) is not None
+        # 事件携带完整变化解释
+        evs = [e for e in events.read("r-cons") if e.type == "profile/update_committed"]
+        assert evs and evs[0].payload["recomputations"]
+
+    def test_invalidated_without_replacement_refused_visibly(self, env):
+        """失效且无替代版本 → 重算显式拒绝（不拿已失效值重跑）。"""
+        kb, metrics, events, mw, cons, obs_id, calc_id = self._with_calc(env)
+        mw.revise_observation(obs_id, action="invalidated", reason="口径作废",
+                              run=RUN)
+        out = cons.prepare_update("stock", "BE")
+        committed = cons.commit_update(
+            "stock", "BE", change_set_id=out["change_set_id"],
+            expected_base_hash=out["expected_base_hash"],
+            note="失效无替代", manifest=RUN, recompute_calculations=True,
+        )
+        rec = committed["recomputations"]
+        assert len(rec) == 1 and "重算拒绝" in rec[0]["error"]
+        assert committed["dependency_resolution"]["calculations_recompute_failed"]
+
+    def test_replay_does_not_recompute_twice(self, env):
+        kb, metrics, events, mw, cons, obs_id, calc_id = self._with_calc(env)
+        new_id, _ = metrics.assert_observation(ReportedObservation(
+            entity_kind="stock", entity_id="BE", metric_key="backlog", period=FY2023,
+            value="600000000", unit="USD", currency="USD",
+            raw=RawValue(value_text="600 million", unit_text="USD", quote_ref="ev-1"),
+            evidence_refs=["ev-1"], knowledge_time=T1, source_available_at=T1,
+            retrieved_at=T1, created_at=T1, pit_grade=PitGrade.A,
+        ))
+        mw.revise_observation(obs_id, action="corrected", reason="口径更正",
+                              replacement_observation_id=new_id, run=RUN)
+        out = cons.prepare_update("stock", "BE")
+        cons.commit_update(
+            "stock", "BE", change_set_id=out["change_set_id"],
+            expected_base_hash=out["expected_base_hash"],
+            note="首提", manifest=RUN, recompute_calculations=True,
+        )
+        n_calcs = len(metrics.list_calculation_ids(
+            "stock", "BE", datetime.now(UTC)))
+        replay = cons.commit_update(
+            "stock", "BE", change_set_id=out["change_set_id"],
+            expected_base_hash=out["expected_base_hash"],
+            note="重放", manifest=RUN, recompute_calculations=True,
+        )
+        assert replay["idempotent_replay"] is True
+        assert len(metrics.list_calculation_ids(
+            "stock", "BE", datetime.now(UTC))) == n_calcs, "重放不得重复重算建行"
+
+    def test_recompute_without_service_is_explicit_error(self, env):
+        """未装配 CalculationService：重算请求被显式拒绝（不静默跳过）。"""
+        kb, metrics, events, writer, mw, cons, obs_id = env  # cons 无 calculations
+        from finance_agent.research.calculations import CalculationService, InputRef
+
+        calc_service = CalculationService(metrics, events=events)
+        calc_service.calculate(
+            entity_kind="stock", entity_id="BE", formula_id="unit_conversion",
+            inputs=[InputRef(kind="observation", label="value", ref_id=obs_id)],
+            assumptions={"steps": "[]", "target_unit": "USD"}, run_id="r-cons",
+        )
+        mw.revise_observation(obs_id, action="corrected", reason="x",
+                              replacement_observation_id=obs_id, run=RUN)
+        out = cons.prepare_update("stock", "BE")
+        committed = cons.commit_update(
+            "stock", "BE", change_set_id=out["change_set_id"],
+            expected_base_hash=out["expected_base_hash"],
+            note="无计算服务", manifest=RUN, recompute_calculations=True,
+        )
+        assert committed["recomputations"][0]["error"].startswith("未装配")

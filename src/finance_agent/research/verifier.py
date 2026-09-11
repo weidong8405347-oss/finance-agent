@@ -104,6 +104,9 @@ class VerificationResult(BaseModel):
     content_review_available: bool = False
     #: 独立来源族数（review P2-A）：同文档/同 canonical URL/同正文 = 一族
     independent_sources: int = 0
+    #: 二次独立核验（方案 §5.4 检查 4）：{by, support, agrees, atomic}；
+    #: None = 未触发/不可用（原因在 notes）
+    second_review: dict[str, Any] | None = None
     atomic: list[AtomicVerdict] = Field(default_factory=list)
     reasoning: ReasoningReview | None = None
     hard_issues: list[str] = Field(default_factory=list)
@@ -218,6 +221,34 @@ def _parse_review(text: str) -> dict | None:
     return data
 
 
+def _parse_atomic_verdicts(review: dict) -> tuple[list[AtomicVerdict], int]:
+    """核验输出的原子论断解析（两审共用）：verdict 枚举约束（review R9）——
+    未识别值丢弃并计数，畸形条目不拖死整体。"""
+    atomic: list[AtomicVerdict] = []
+    dropped = 0
+    for item in review.get("atomic_claims") or []:
+        if not isinstance(item, dict):
+            dropped += 1
+            continue  # 畸形条目不拖死整体（按不可用方向收敛）
+        verdict = _normalize_verdict(item.get("verdict"))
+        if verdict is None:
+            dropped += 1
+            continue  # 未识别 verdict（NOT_SUPPORTED 等）：丢弃，绝不归为 supported
+        try:
+            atomic.append(AtomicVerdict.model_validate({
+                "text": str(item.get("text") or "")[:400],
+                "verdict": verdict,
+                "supporting_refs": [str(r) for r in (item.get("supporting_refs") or [])],
+                "missing_conditions": [str(x) for x in (item.get("missing_conditions") or [])],
+                "mismatches": [str(x) for x in (item.get("mismatches") or [])],
+                "notes": str(item.get("notes") or "")[:300],
+            }))
+        except ValidationError:
+            dropped += 1
+            continue
+    return atomic, dropped
+
+
 # ---------------- 3. 聚合 + 落库 ----------------
 
 
@@ -251,6 +282,8 @@ def verify_claim(
     entity_id: str = "",
     counter_search: dict[str, Any] | None = None,
     now: datetime | None = None,
+    second_llm: LLM | None = None,
+    double_check: bool = False,
 ) -> VerificationResult:
     """核验一条论断并把结果写回 claim.verification（幂等：可重复核验，最新为准）。
 
@@ -294,26 +327,7 @@ def verify_claim(
         review_error = str(review["_error"])
     elif review is not None:
         content_ok = True
-        for item in review.get("atomic_claims") or []:
-            if not isinstance(item, dict):
-                dropped_verdicts += 1
-                continue  # 畸形条目不拖死整体（按不可用方向收敛）
-            verdict = _normalize_verdict(item.get("verdict"))
-            if verdict is None:
-                dropped_verdicts += 1
-                continue  # 未识别 verdict（NOT_SUPPORTED 等）：丢弃，绝不归为 supported
-            try:
-                atomic.append(AtomicVerdict.model_validate({
-                    "text": str(item.get("text") or "")[:400],
-                    "verdict": verdict,
-                    "supporting_refs": [str(r) for r in (item.get("supporting_refs") or [])],
-                    "missing_conditions": [str(x) for x in (item.get("missing_conditions") or [])],
-                    "mismatches": [str(x) for x in (item.get("mismatches") or [])],
-                    "notes": str(item.get("notes") or "")[:300],
-                }))
-            except ValidationError:
-                dropped_verdicts += 1
-                continue  # 单条畸形不拖死整体；下面按缺失处理
+        atomic, dropped_verdicts = _parse_atomic_verdicts(review)
         if not atomic:
             content_ok = False  # 解析出 0 条原子核验 = 内容核验不可用（诚实降级）
         rr = review.get("reasoning_review")
@@ -347,6 +361,9 @@ def verify_claim(
     if not counter_recorded:
         next_actions.append("补充反证检索并记录范围（queries/sources）——未找到反证也要留痕")
 
+    # 二次独立核验的初始支撑态（二审在 notes_extra 初始化后执行）
+    support_before_second = support
+
     status_before = str(payload.get("status") or "draft")
     status_after = status_before
     notes_extra: list[str] = []
@@ -377,6 +394,56 @@ def verify_claim(
                 f=bool(counter_search.get("found")),
             )
         )
+    # 二次独立核验（方案 §5.4 检查 4，review P2-A 剩余项）：重大/数值型结论的
+    # 第二次独立内容核验——必须是**不同模型**（同模型重问不构成独立复核）；
+    # 两审不一致 → 降级封顶 partially_supported 并留痕（不制造一致凑数）。
+    second_review: dict[str, Any] | None = None
+    first_name = getattr(llm, "model_name", "") or ""
+    second_name = (getattr(second_llm, "model_name", "") or "") if second_llm else ""
+    independent_reviewer = bool(second_llm) and bool(second_name) \
+        and second_name != first_name
+    statement_text = str(payload.get("statement") or "")
+    want_second = double_check or (
+        content_ok and support == "supported"
+        and any(not _is_year_like(n) for n in _numbers(statement_text))
+    )
+    if want_second:
+        if not independent_reviewer:
+            notes_extra.append(
+                "二次独立核验跳过：无第二核验者或两审同模型（同模型不构成独立复核）"
+            )
+        else:
+            second_raw = content_review(second_llm, pack, payload)
+            if isinstance(second_raw, dict) and "_error" not in second_raw:
+                second_atomic, _second_dropped = _parse_atomic_verdicts(second_raw)
+                if second_atomic:
+                    support2 = _aggregate_support(second_atomic, numeric_state)
+                    agrees = support2 == support_before_second
+                    second_review = {
+                        "by": second_name, "support": support2, "agrees": agrees,
+                        "atomic": [a.model_dump(mode="json") for a in second_atomic],
+                    }
+                    if not agrees:
+                        if support == "supported" and support2 in (
+                            "contradicted", "insufficient", "partially_supported"
+                        ):
+                            support = "partially_supported"
+                        notes_extra.append(
+                            f"二次独立核验不一致（一审 {support_before_second} / "
+                            f"二审 {support2}，复核者 {second_name}）：按审慎方向收敛，"
+                            "待人工或补证复核"
+                        )
+                    else:
+                        notes_extra.append(
+                            f"二次独立核验一致（复核者 {second_name}）"
+                        )
+                else:
+                    notes_extra.append("二次独立核验输出不可解析（结果以一审为准，已留痕）")
+            else:
+                err2 = (second_raw or {}).get("_error") if isinstance(second_raw, dict) else None
+                notes_extra.append(
+                    f"二次独立核验不可用：{err2 or '无输出'}（结果以一审为准，已留痕）"
+                )
     # 发布规则联动（review R1）：validated 论断被内容核验推翻，或数值/引用/推理
     # 任一硬检查失败 → 降级 draft（不留在正式产物里；未核验 unchecked 不算推翻）
     if status_before == "validated":
@@ -404,7 +471,8 @@ def verify_claim(
         independent_sources=independent_sources,
         verified_at=as_of,
         verified_by=(getattr(llm, "model_name", "") or "hard-checks-only")
-        + ("+content-review" if content_ok else ""),
+        + ("+content-review" if content_ok else "")
+        + (f"+2nd:{second_name}" if second_review else ""),
         notes=notes_extra,
     )
     updated = dict(payload)
@@ -420,7 +488,7 @@ def verify_claim(
         references_valid=references_valid, evidence_support=support,
         numeric_checks=numeric_state, analysis_review=analysis_state,
         counter_evidence_search=counter_recorded, content_review_available=content_ok,
-        independent_sources=independent_sources,
+        independent_sources=independent_sources, second_review=second_review,
         atomic=atomic, reasoning=reasoning, hard_issues=hard_issues,
         next_actions=next_actions[:8],
         reviewed_by=verification.verified_by, reviewed_at=as_of,
@@ -439,6 +507,10 @@ def verify_claim(
                 "analysis_review": analysis_state,
                 "content_review_available": content_ok,
                 "independent_sources": independent_sources,
+                "second_review": ({"by": second_review["by"],
+                                   "support": second_review["support"],
+                                   "agrees": second_review["agrees"]}
+                                  if second_review else None),
                 "atomic_verdicts": [a.model_dump(mode="json") for a in atomic],
                 "hard_issues": hard_issues, "next_actions": result.next_actions,
                 "counter_search": counter_search or None,
@@ -461,11 +533,13 @@ def make_verify_claim_tool(
     *, kb: BitemporalStore, metrics: Any, events: EventStore | None,
     manifest: RunManifest | None, namespace: str, entity_kind: str, entity_id: str,
     llm: LLM | None,
+    second_llm: LLM | None = None,
     on_reject: Any | None = None,
 ) -> Any:
     """verify_claim 工具工厂（S1 worker 与 S2 整合共用同一实现）。
 
-    on_reject(claim_id, reason)：拒绝记账回调（S1 的 tracker；可选）。
+    second_llm：二次独立核验者（方案 §5.4 检查 4；必须与 llm 不同模型才算独立，
+    同模型/缺省 → 跳过并留痕）。on_reject(claim_id, reason)：拒绝记账回调（可选）。
     """
     import json as _json
 
@@ -487,6 +561,8 @@ def make_verify_claim_tool(
                 events=events, manifest=manifest, namespace=namespace,
                 entity_kind=entity_kind, entity_id=canonical_id,
                 counter_search=counter_search,
+                second_llm=second_llm,
+                double_check=bool(args.get("double_check")),
             )
         except ValueError as e:
             if on_reject is not None:

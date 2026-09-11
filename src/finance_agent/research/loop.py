@@ -693,6 +693,7 @@ class ResearchLoop:
             doc_store=doc_store,
             fetch_paged=self._fetch_paged,
             verify_llm=self._judge_llm or self._llm,
+            second_verify_llm=(self._llm if self._judge_llm is not None else None),
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(

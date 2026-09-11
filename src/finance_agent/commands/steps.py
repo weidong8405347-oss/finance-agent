@@ -165,6 +165,11 @@ PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
                     "description": "基线快照 id（回传 prepare 的 base_snapshot.snapshot_id；"
                                    "缺省取最新快照）",
                 },
+                "recompute_calculations": {
+                    "type": "boolean",
+                    "description": "失效依赖中的计算是否随提交重算（引用解析取当前值，"
+                                   "input_hash 幂等；结果明细进变化解释）",
+                },
             },
             "required": ["change_set_id", "expected_base_hash", "note"],
         },
@@ -1516,7 +1521,8 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         from ..research.verifier import make_verify_claim_tool
 
         consolidator = ProfileConsolidator(
-            kb=deps.kb, metrics=deps.metrics, events=deps.events)
+            kb=deps.kb, metrics=deps.metrics, events=deps.events,
+            calculations=deps.calculations)
 
         # verify_claim（§5.4）：S2 整合时对关键论断做内容级核验（与 S1 同一实现）；
         # judge_llm 优先（独立于主研究模型），缺省惰性取 research 角色
@@ -1524,6 +1530,8 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
             kb=deps.kb, metrics=deps.metrics, events=deps.events, manifest=manifest,
             namespace="prod", entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
             llm=deps.judge_llm or _LazyResearchLLM(deps),
+            # 二次独立核验（§5.4 检查 4）：judge 核验、research 复核（不同模型才独立）
+            second_llm=(_LazyResearchLLM(deps) if deps.judge_llm is not None else None),
         )
 
         def prepare_profile_update(args: dict[str, Any]) -> dict[str, Any]:
@@ -1549,6 +1557,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
                     invalidate_claims=args.get("invalidate_claims") or [],
                     base_snapshot_id=(str(args["base_snapshot"])
                                       if args.get("base_snapshot") else None),
+                    recompute_calculations=bool(args.get("recompute_calculations")),
                     manifest=manifest,
                 )
             except Exception as e:  # noqa: BLE001 - 基线过期/非法失效条目都拒绝可见

@@ -144,6 +144,9 @@ def make_research_tools(
     doc_store: Any | None = None,  # DocumentStore（run 级共享；缺省时内部自建）
     fetch_paged: Any | None = None,  # 分页抓取 f(url) -> FetchedDocument（Document Read v2）
     verify_llm: Any | None = None,  # 内容级核验用 LLM（P2-A；缺省只做硬检查）
+    #: 二次独立核验者（§5.4 检查 4）：必须与 verify_llm 不同模型；缺省/同模型 →
+    #: 重大结论的二审跳过并留痕（同模型重问不构成独立复核）
+    second_verify_llm: Any | None = None,
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -857,6 +860,8 @@ def make_research_tools(
             kb=store, metrics=metrics, events=events, manifest=manifest,
             namespace=namespace, entity_kind=entity_kind, entity_id=entity_id,
             llm=verify_llm,
+            # 二次独立核验者（§5.4 检查 4）：主研究模型与核验模型不同才算独立
+            second_llm=second_verify_llm,
             on_reject=lambda cid, reason: tracker.rejected.append(
                 {"verify": cid, "reason": reason}),
         )
@@ -1721,11 +1726,15 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "contradicted/insufficient）。结果写回 claim.verification 并落审计事件；"
             "contradicted/insufficient 的 validated 论断降级 draft。关键结论发布前"
             "应核验；反证检索记录用 counter_search 传入（找不到反证也要留痕）。"
+            "数值型/重大结论自动触发第二模型独立复核（double_check=true 可强制）；"
+            "两审不一致按审慎方向收敛并留痕。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "claim_id": {"type": "string"},
+                "double_check": {"type": "boolean",
+                                 "description": "强制二次独立核验（重大结论建议）"},
                 "counter_search": {
                     "type": "object",
                     "description": "反证检索记录（可选但强烈建议）",

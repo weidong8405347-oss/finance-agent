@@ -655,6 +655,26 @@ class MetricStore:
             args.append(as_of.isoformat())
         return {r[0] for r in self._conn.execute(sql, args).fetchall()}
 
+    def corrected_observation_ids(
+        self, *, namespace: str = "prod", as_of: datetime | None = None
+    ) -> dict[str, str]:
+        """已更正观测 → 替代版本（action='corrected' 且带 replacement，revised_at ≤ as_of）。
+
+        更正不逐出当前投影（同语义键新版本链自然竞争），但依赖闭包/重算必须把
+        它当失效起点——下游计算仍引用旧版值时需要重算（review P2-B）。
+        """
+        sql = ("SELECT observation_id, replacement_observation_id FROM metric_revisions"
+               " WHERE namespace = ? AND action = 'corrected'"
+               " AND replacement_observation_id IS NOT NULL")
+        args: list[Any] = [namespace]
+        if as_of is not None:
+            sql += " AND revised_at <= ?"
+            args.append(as_of.isoformat())
+        out: dict[str, str] = {}
+        for oid, repl in self._conn.execute(sql + " ORDER BY revised_at", args).fetchall():
+            out[str(oid)] = str(repl)  # 多次更正取最新（按 revised_at 序覆盖）
+        return out
+
     def refs_to(
         self, ref_id: str, *, namespace: str = "prod",
         entity_kind: str | None = None, entity_id: str | None = None,
