@@ -30,6 +30,10 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
 @dataclass
 class StoredDocument:
     """一份文档的一个版本（内容哈希标识；run 内只读共享）。"""
@@ -38,7 +42,11 @@ class StoredDocument:
     url: str | None
     source_id: str
     kind: str  # pdf / html / text
+    #: 已解析正文的指纹（诊断/展示用；随惰性续解推进，不作版本身份）
     content_hash: str
+    #: 原件 bytes 哈希（review R10：PDF 版本身份用它——两份解析前缀相同但后续
+    #: 内容不同的 PDF 不得复用同一份原件；HTML/text 无原件时为 None）
+    raw_hash: str | None = None
     #: 页码 → 页文本（1-based；已解析的页）
     page_texts: dict[int, str] = field(default_factory=dict)
     failed_pages: list[int] = field(default_factory=list)
@@ -67,23 +75,40 @@ class StoredDocument:
         return max(self.page_texts) if self.page_texts else 0
 
     @property
+    def missing_pages(self) -> list[int]:
+        """未解析且未失败的页（review R11：按实际页集合计算——惰性跳页读取
+        留下的中间缺页不得被「最大已解析页码」掩盖）。"""
+        if self.total_pages <= 0:
+            return []
+        parsed = set(self.page_texts)
+        failed = set(self.failed_pages)
+        return [p for p in range(1, self.total_pages + 1)
+                if p not in parsed and p not in failed]
+
+    @property
     def completeness(self) -> str:
-        """full / partial / truncated / failed（方案 §4.1 读取完整性）。"""
+        """full / partial / truncated / failed（方案 §4.1 读取完整性）。
+
+        partial = 有失败页；truncated = 存在未解析页（可惰性续解）；
+        两者皆有时报 partial（失败优先可见）。
+        """
         if not self.page_texts or not any(t.strip() for t in self.page_texts.values()):
             return "failed"
         if self.failed_pages:
             return "partial"
-        if self.total_pages > self.max_parsed_page:
+        if self.missing_pages:
             return "truncated"
         return "full"
 
     def completeness_payload(self) -> dict[str, Any]:
+        missing = self.missing_pages
         return {
             "status": self.completeness,
             "total_pages": self.total_pages,
             "parsed_pages": len(self.page_texts),
             "failed_pages": list(self.failed_pages),
-            "unparsed_pages": max(0, self.total_pages - self.max_parsed_page),
+            "unparsed_pages": len(missing),
+            "missing_pages": missing[:50],
         }
 
     def merged_text(self, pages: list[int] | None = None) -> str:
@@ -127,6 +152,7 @@ class DocumentStore:
              "kind": d.kind, "total_pages": d.total_pages,
              "parsed_pages": len(d.page_texts),
              "completeness": d.completeness, "quality": d.quality,
+             "raw_hash": d.raw_hash,
              "reuses": d.reuses}
             for d in docs
         ]
@@ -153,15 +179,32 @@ class DocumentStore:
         available_at: datetime | None, pit_grade: PitGrade,
         locator: dict[str, str] | None = None, parser: str = "",
     ) -> StoredDocument:
-        """登记一个抓取结果；同内容哈希 + 同来源上下文 → 复用已有版本。"""
+        """登记一个抓取结果；同版本（原件哈希）+ 同来源上下文 → 复用已有版本。
+
+        review R10：PDF 版本身份是**原件 bytes 哈希**而非已解析文本哈希——
+        两份已解析部分相同、后续内容不同的 PDF 不得复用同一份原件与页数；
+        解析文本哈希仅作信息性指纹（content_hash）。同原件的再次抓取若带来
+        新解析的页（更大 parse_cap），并入已有版本而不重建文档。
+        """
         page_texts = dict(fetched.page_texts)
         content_hash = _hash_text(fetched.merged_text)
+        raw_hash = _hash_bytes(fetched.raw) if fetched.raw else None
+        identity = raw_hash or content_hash  # 版本身份：原件优先，纯文本退化到正文
         origin_key = (url, source_id,
                       available_at.isoformat() if available_at else None, pit_grade.value)
         with self._lock:
-            existing_id = self._by_hash.get(content_hash)
+            existing_id = self._by_hash.get(identity)
             if existing_id is not None:
                 existing = self._docs[existing_id]
+                # 同原件：并入本次新解析的页与失败页（惰性续解之外的补齐路径）
+                for p, t in page_texts.items():
+                    if p not in existing.page_texts:
+                        existing.page_texts[p] = t
+                for p in fetched.failed_pages:
+                    if p not in existing.page_texts and p not in existing.failed_pages:
+                        existing.failed_pages.append(p)
+                existing.failed_pages.sort()
+                existing.total_pages = max(existing.total_pages, fetched.total_pages)
                 if origin_key in self._by_origin:
                     existing.reuses += 1
                     self._duplicates += 1
@@ -175,6 +218,7 @@ class DocumentStore:
                 document_id=f"doc-{self._n:04d}",
                 url=url, source_id=source_id, kind=fetched.kind,
                 content_hash=content_hash,
+                raw_hash=raw_hash or (existing.raw_hash if existing else None),
                 page_texts=dict(existing.page_texts) if existing else page_texts,
                 failed_pages=list(existing.failed_pages if existing else fetched.failed_pages),
                 total_pages=fetched.total_pages if not existing else existing.total_pages,
@@ -184,10 +228,11 @@ class DocumentStore:
                 available_at=available_at, pit_grade=pit_grade,
                 locator=dict(locator or {}),
                 parser=parser or ("pypdf" if fetched.kind == "pdf" else "html_strip"),
-                raw=fetched.raw if not existing else existing.raw,
+                raw=(existing.raw if existing and existing.raw is not None
+                     else fetched.raw),
             )
             self._docs[doc.document_id] = doc
-            self._by_hash.setdefault(content_hash, doc.document_id)
+            self._by_hash.setdefault(identity, doc.document_id)
             self._by_origin[origin_key] = doc.document_id
             return doc
 

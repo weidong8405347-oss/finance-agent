@@ -17,6 +17,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,21 +48,39 @@ SOURCE_ROLES: dict[str, str] = {
 _FIRST_PARTY_ROLES = frozenset({"issuer_filing", "regulator"})
 
 #: 发行人/监管披露域（基线发现 F7）：直接 URL 抓取（web_fetch，无源级角色）但
-#: 域名属于官方披露库的原文，按域名归入 issuer_filing——NVDA 新闻稿从
-#: sec.gov 直拉却被归 secondary 的事故形态。只细化 unknown 档，媒体源不因
-#: 转载 URL 升档（转载族归并属 SearchBroker，P1-A 后续）。
+#: 真实主机名属于官方披露库的原文，按主机名归入 issuer_filing——NVDA 新闻稿从
+#: sec.gov 直拉却被归 secondary 的事故形态。匹配走 urlparse hostname（review R12），
+#: 只细化 unknown 档，媒体源不因转载 URL 升档（转载族归并属 SearchBroker，P1-A 后续）。
 ISSUER_DISCLOSURE_DOMAINS = (
     "sec.gov", "hkexnews.hk", "cninfo.com.cn", "sse.com.cn", "szse.cn",
 )
 
 
+def _url_hostname(url: str) -> str:
+    """URL 的真实主机名（小写、去尾点；scheme-less 也能解析）；解析失败 → ""。"""
+    text = url.strip().lower()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "//" + text  # 让 urlparse 把首段当 netloc
+    try:
+        return (urlparse(text).hostname or "").rstrip(".")
+    except ValueError:
+        return ""
+
+
+def is_issuer_disclosure_url(url: str) -> bool:
+    """主机名等于官方披露域或其合法子域（review R12：按真实 hostname 匹配——
+    查询参数/路径/userinfo 里出现 'sec.gov' 的媒体网页不得归为发行人披露）。"""
+    host = _url_hostname(url)
+    return any(host == d or host.endswith("." + d) for d in ISSUER_DISCLOSURE_DOMAINS)
+
+
 def source_role(source_id: str, url: str | None = None) -> str:
     """source_id（+可选 URL 域名）→ 来源角色；未知源 = unknown（诚实缺省）。"""
     role = SOURCE_ROLES.get(source_id, "unknown")
-    if role == "unknown" and url:
-        low = url.lower()
-        if any(d in low for d in ISSUER_DISCLOSURE_DOMAINS):
-            return "issuer_filing"
+    if role == "unknown" and url and is_issuer_disclosure_url(url):
+        return "issuer_filing"
     return role
 
 

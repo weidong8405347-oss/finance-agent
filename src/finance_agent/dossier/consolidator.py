@@ -209,7 +209,10 @@ class ProfileConsolidator:
         legacy_conflicts = sorted({r.field for r in self._kb.open_conflicts(
             entity_kind, entity_id, namespace=namespace)})
 
-        # 依赖失效（§9.3）：已失效观测的下游计算/论断/产物 = 待重审
+        # 依赖失效（§9.3 + review R7）：沿完整依赖闭包传播——
+        # observation → calculation →（派生 observation）→ claim → artifact，
+        # 只查直接引用会漏掉「观测 underpinning 计算 underpinning 论断」的下游论断。
+        # 遍历限本主体与 as_of 之前登记的记录（不跨实体、不泄露未来）。
         invalidated_obs = sorted(
             self._metrics.invalidated_observation_ids(namespace=namespace, as_of=now))
         stale_dependents: list[dict[str, Any]] = []
@@ -218,12 +221,32 @@ class ProfileConsolidator:
             for i in self._metrics.invalidations_as_of(
                 entity_kind, entity_id, now, namespace=namespace)
         }
-        for oid in invalidated_obs:
-            refs = self._metrics.refs_to(oid, namespace=namespace)
-            for kind in ("calculations", "claims", "artifacts"):
+        seen: set[str] = set()
+        root_of: dict[str, str] = {oid: oid for oid in invalidated_obs}
+        queue = list(invalidated_obs)
+        closure_truncated = False
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            refs = self._metrics.refs_to(
+                current, namespace=namespace,
+                entity_kind=entity_kind, entity_id=entity_id, as_of=now)
+            for kind in ("observations", "calculations", "claims", "artifacts"):
                 for rid in refs.get(kind, []):
+                    if rid in seen:
+                        continue
+                    root = root_of.get(current, current)
+                    root_of.setdefault(rid, root)
+                    queue.append(rid)
+                    if len(stale_dependents) >= 200:
+                        closure_truncated = True  # 防御性上限：闭包爆炸时显式截断
+                        continue
                     stale_dependents.append({
-                        "ref": rid, "kind": kind[:-1], "via_observation": oid,
+                        "ref": rid, "kind": kind[:-1],
+                        "via_observation": root,
+                        "via_ref": current,
                         "already_invalidated": (kind == "claims" and rid in already),
                     })
 
@@ -285,12 +308,15 @@ class ProfileConsolidator:
             "invalidated_dependencies": {
                 "observations": invalidated_obs,
                 "stale_dependents": stale_dependents[:50],
+                "closure_truncated": closure_truncated,
             },
             "candidates": candidates,
             "expected_diff": expected_diff,
-            "hint": ("整合后 commit_profile_update(change_set_id, expected_base_hash) 幂等提交；"
-                     "冲突先 adjudicate_conflict；需要作废的依赖论断在 commit 的 "
-                     "invalidate_claims 里给 claim_id+reason（追加记录，旧快照不变）"),
+            "hint": ("整合后 commit_profile_update(change_set_id, expected_base_hash, "
+                     "base_snapshot=base_snapshot.snapshot_id) 幂等提交（基线快照绑定到"
+                     "变化集，缺省取最新快照）；冲突先 adjudicate_conflict；需要作废的"
+                     "依赖论断在 commit 的 invalidate_claims 里给 claim_id+reason"
+                     "（先全量校验再原子落库，旧快照不变）"),
         }
 
     def _ref_exists(self, ref: str, namespace: str) -> bool:
@@ -300,6 +326,18 @@ class ProfileConsolidator:
 
     # ---------------- commit（幂等提交） ----------------
 
+    def _default_base_snapshot_id(
+        self, entity_kind: str, entity_id: str, namespace: str,
+    ) -> str | None:
+        """commit 的缺省基线与 prepare 对齐（review R5）：未显式给 base_snapshot
+        时取最新快照——prepare 默认选最新快照而 commit 默认按无快照算哈希，
+        导致已有快照时误报「基线已变化」。选定快照随提交 payload 绑定留痕。"""
+        latest = self._metrics.latest_snapshot(entity_kind, entity_id, namespace=namespace)
+        if not latest:
+            return None
+        sid = str((latest.get("context") or {}).get("snapshot_id") or "")
+        return sid or None
+
     def commit_update(
         self, entity_kind: str, entity_id: str, *,
         change_set_id: str, expected_base_hash: str,
@@ -308,12 +346,14 @@ class ProfileConsolidator:
         manifest: RunManifest | None = None, namespace: str = "prod",
         now: datetime | None = None,
     ) -> dict[str, Any]:
-        """幂等提交整合：校验基线哈希 → 追加失效记录 → 落提交台账与事件。
+        """幂等提交整合：校验基线哈希 → 完整校验失效条目 → 同事务落库与事件。
 
         - 同 change_set_id 重放：返回首次结果（不重复落失效记录）；
         - expected_base_hash 与当前状态不符：拒绝（基线过期，重新 prepare）；
-        - invalidate_claims: [{claim_id, reason, source_refs?}]——逐条校验归属后
-          追加 claim_invalidations（时态记录，旧快照不变）。
+        - base_snapshot_id 缺省时与 prepare 取同一默认（最新快照，review R5），
+          并绑定进提交 payload（变化集与基线的对应关系可追溯）；
+        - invalidate_claims 先**全部**校验通过再原子落库（review R6：任一非法
+          整体拒绝，不落半截失效记录，重试不重复追加）。
         """
         ts = now or datetime.now(UTC)
         if not str(change_set_id or "").strip():
@@ -326,6 +366,9 @@ class ProfileConsolidator:
             return {"idempotent_replay": True, **existing}
         if not str(note or "").strip():
             raise ConsolidationError("commit 必须给 note（变化说明进审计与档案历史）")
+        if base_snapshot_id is None:
+            base_snapshot_id = self._default_base_snapshot_id(
+                entity_kind, entity_id, namespace)
         current = self.state_hash(
             entity_kind, entity_id, namespace=namespace, as_of=ts,
             base_snapshot_id=base_snapshot_id,
@@ -336,7 +379,8 @@ class ProfileConsolidator:
                 "有并发写入或数据更新；重新 prepare_profile_update 后再提交"
                 "（不允许拿过期基线盖新数据）"
             )
-        invalidations: list[dict[str, Any]] = []
+        # 第一阶段：完整校验全部失效条目（不落库，任一非法整体拒绝）
+        validated_invs: list[dict[str, Any]] = []
         for item in invalidate_claims or []:
             claim_id = str(item.get("claim_id") or "")
             reason = str(item.get("reason") or "").strip()
@@ -350,51 +394,60 @@ class ProfileConsolidator:
                 raise ConsolidationError(
                     f"论断 {claim_id} 不存在或不属于 {entity_kind}:{entity_id}"
                     "（跨上下文失效拒绝）")
-            invalidation_id = f"inval-{uuid.uuid4().hex[:10]}"
-            self._metrics.save_claim_invalidation(
-                invalidation_id=invalidation_id, namespace=namespace,
-                entity_kind=entity_kind, entity_id=entity_id,
-                claim_id=claim_id, reason=reason,
-                source_refs=[str(r) for r in (item.get("source_refs") or [])],
-                invalidated_at=ts,
-                run_id=manifest.run_id if manifest else None,
-            )
-            invalidations.append({"invalidation_id": invalidation_id,
-                                  "claim_id": claim_id, "reason": reason})
-            if self._events is not None:
-                self._events.append(Event(
-                    run_id=manifest.run_id if manifest else "consolidator",
-                    type=CLAIM_INVALIDATED,
-                    payload={
-                        "invalidation_id": invalidation_id,
-                        "entity": f"{entity_kind}:{entity_id}",
-                        "claim_id": claim_id, "reason": reason,
-                        "source_refs": [str(r) for r in (item.get("source_refs") or [])],
-                        "namespace": namespace,
-                    },
-                ))
+            validated_invs.append({
+                "invalidation_id": f"inval-{uuid.uuid4().hex[:10]}",
+                "claim_id": claim_id, "reason": reason,
+                "source_refs": [str(r) for r in (item.get("source_refs") or [])],
+                "invalidated_at": ts.isoformat(),
+                "run_id": manifest.run_id if manifest else None,
+            })
+        invalidations = [
+            {"invalidation_id": v["invalidation_id"], "claim_id": v["claim_id"],
+             "reason": v["reason"]}
+            for v in validated_invs
+        ]
         payload = {
             "change_set_id": change_set_id,
             "entity": f"{entity_kind}:{entity_id}",
             "namespace": namespace,
             "expected_base_hash": expected_base_hash,
+            "base_snapshot_id": base_snapshot_id,
             "committed_at": ts.isoformat(),
             "note": note,
             "invalidations": invalidations,
             "run_id": manifest.run_id if manifest else None,
         }
-        created = self._metrics.save_profile_update_commit(
-            change_set_id=change_set_id, namespace=namespace,
-            entity_kind=entity_kind, entity_id=entity_id,
-            expected_base_hash=expected_base_hash, committed_at=ts,
-            run_id=manifest.run_id if manifest else None, payload=payload,
+        # 第二阶段：原子落库（失效记录 + 提交台账同事务，review R6）
+        created = self._metrics.record_profile_update(
+            commit={
+                "change_set_id": change_set_id, "namespace": namespace,
+                "entity_kind": entity_kind, "entity_id": entity_id,
+                "expected_base_hash": expected_base_hash,
+                "committed_at": ts.isoformat(),
+                "run_id": manifest.run_id if manifest else None,
+                "payload": payload,
+            },
+            invalidations=validated_invs,
         )
         if not created:
-            # 并发窗口：另一提交先落——读回首次结果（幂等语义不变）
+            # 并发窗口：另一提交先落——读回首次结果（幂等语义不变，本次零写入）
             first = self._metrics.get_profile_update_commit(
                 change_set_id, namespace=namespace)
             return {"idempotent_replay": True, **(first or payload)}
+        # 第三阶段：审计事件（落库成功后追加；事件存储独立，顺序保证先库后事件）
         if self._events is not None:
+            for v in validated_invs:
+                self._events.append(Event(
+                    run_id=manifest.run_id if manifest else "consolidator",
+                    type=CLAIM_INVALIDATED,
+                    payload={
+                        "invalidation_id": v["invalidation_id"],
+                        "entity": f"{entity_kind}:{entity_id}",
+                        "claim_id": v["claim_id"], "reason": v["reason"],
+                        "source_refs": v["source_refs"],
+                        "namespace": namespace,
+                    },
+                ))
             self._events.append(Event(
                 run_id=manifest.run_id if manifest else "consolidator",
                 type=PROFILE_UPDATE_COMMITTED,

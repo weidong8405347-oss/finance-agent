@@ -230,6 +230,10 @@ class ValidationIssue(BaseModel):
         "claim_context_mismatch",
         # 内容级核验（方案 §5.4）：发布规则读硬检查与核验结果，不得用总评分抵消
         "contradicted_claim_ref", "claim_evidence_insufficient",
+        # review R1：发布门禁直接消费数值/推理硬检查结果（不仅 evidence_support）；
+        # review R4：已被整合失效的论断不得进入正式产物
+        "claim_numeric_check_failed", "claim_analysis_review_failed",
+        "claim_evidence_partial", "invalidated_claim_ref",
     ]
     block_index: int | None = None
     ref: str = ""
@@ -430,7 +434,9 @@ class ArtifactValidator:
 
         只查 claim 存在无法阻止错误进入正式结论——validated 论断的两侧引用
         都必须可在同一上下文解析。内容级核验状态（方案 §5.4）同样进发布规则：
-        contradicted 硬失败（不得进正式产物），insufficient 软问题（降级可见）。"""
+        contradicted 硬失败（不得进正式产物），insufficient/partially_supported 软问题
+        （降级可见）；review R1：数值/推理硬检查失败独立于 evidence_support 硬拦发布；
+        review R4：已被整合失效的论断引用硬失败（失效语义贯通到发布门禁）。"""
         issues: list[ValidationIssue] = []
         ns = claim.get("namespace", "prod")
         kind, eid = claim.get("entity_kind"), claim.get("entity_id")
@@ -445,9 +451,8 @@ class ArtifactValidator:
                         f"（namespace={ns}, entity={kind}:{eid}）"
                     ),
                 ))
-        support_state = str(
-            (claim.get("verification") or {}).get("evidence_support", "unchecked")
-        )
+        verification = claim.get("verification") or {}
+        support_state = str(verification.get("evidence_support", "unchecked"))
         if support_state == "contradicted":
             issues.append(ValidationIssue(
                 code="contradicted_claim_ref", block_index=block_index,
@@ -467,6 +472,52 @@ class ArtifactValidator:
                     "整句结论）——建议补证或降级表述"
                 ),
                 hard=False,
+            ))
+        elif support_state == "partially_supported":
+            issues.append(ValidationIssue(
+                code="claim_evidence_partial", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 内容核验为 partially_supported"
+                    "（部分原子论断未获充分支持）——结论不得超出已支持范围"
+                ),
+                hard=False,
+            ))
+        # review R1：数值/推理硬检查是独立发布门禁——即使 evidence_support 非
+        # contradicted（如内容审查不可用、模型误判 supported），硬失败也直接拦发布
+        if str(verification.get("numeric_checks", "unchecked")) == "failed":
+            issues.append(ValidationIssue(
+                code="claim_numeric_check_failed", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 数值硬检查失败（论断数字与引用原文/"
+                    "观测不一致）——修正数字或换证据后重新核验，不得进入正式产物"
+                ),
+                hard=True,
+            ))
+        if str(verification.get("analysis_review", "unchecked")) == "failed":
+            issues.append(ValidationIssue(
+                code="claim_analysis_review_failed", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 推理审查失败（前提/推理边界不成立）"
+                    "——不得进入正式产物"
+                ),
+                hard=True,
+            ))
+        # review R4：失效语义贯通发布——已被 profile 整合失效的论断（claim_invalidations
+        # 已生效）引用进报告 = 硬失败，失效记录不再只是台账
+        claim_id = str(claim.get("claim_id") or "")
+        if claim_id and self._store.is_claim_invalidated(claim_id, namespace=ns):
+            inv = self._store.claim_invalidation(claim_id, namespace=ns) or {}
+            issues.append(ValidationIssue(
+                code="invalidated_claim_ref", block_index=block_index,
+                ref=claim_id,
+                message=(
+                    f"claim {claim_id} 已于 {inv.get('invalidated_at', '?')} 被整合失效"
+                    f"（{inv.get('reason', '')}）——失效论断不得进入正式产物"
+                ),
+                hard=True,
             ))
         return issues
 

@@ -230,7 +230,11 @@ class TestContentVerification:
         assert result.numeric_checks == "failed"
         assert result.evidence_support == "partially_supported", \
             "模型说 supported 也压不过数字硬检查（不得用软评分抵消硬失败）"
-        assert result.status_after == "validated"  # partially 不降级，但记录在案
+        # review R1：数值硬检查失败的论断不得保持 validated（门禁直接消费检查结果，
+        # 不能仅检查 evidence_support）；修正数字后重新核验才能回到 validated
+        assert result.status_after == "draft"
+        assert any("数值硬检查失败" in n for n in
+                   metrics.get_claim("claim-v3")["verification"]["notes"])
 
     def test_llm_unavailable_honest_degradation(self, tmp_path):
         """LLM 输出不可解析 → 只做硬检查，evidence_support 保持 unchecked（不冒充核验）。"""

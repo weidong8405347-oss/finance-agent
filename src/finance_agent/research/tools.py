@@ -1144,7 +1144,10 @@ def make_research_tools(
             payload = {
                 "document_id": doc.document_id, **body,
                 "completeness": doc.completeness_payload(),
-                "unread_pages": max(0, doc.total_pages - doc.max_parsed_page),
+                # review R11：按实际页集合——惰性跳页留下的中间缺页不得被
+                # 「最大已解析页码」掩盖（3 页文档只读 1、3 页 ≠ 已读完）
+                "unread_pages": len(doc.missing_pages),
+                "unread_page_list": doc.missing_pages[:20],
                 "next": ("还有未读页时用 page_range 继续；定位关键词用 query 参数"
                          "或 search_document"),
             }

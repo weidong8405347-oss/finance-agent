@@ -52,6 +52,11 @@ def _iso(dt: Any) -> str | None:
     return dt.isoformat() if isinstance(dt, datetime) else (str(dt) if dt else None)
 
 
+def _as_aware(dt: datetime) -> datetime:
+    """naive datetime 按 UTC 处理（时态比较不产生 TypeError/语义漂移）。"""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
 def _limit_of(args: dict[str, Any], default_limits: dict[str, int] | None, tool: str) -> int:
     raw = args.get("limit")
     default = (default_limits or {}).get(tool, DEFAULT_LIMIT)
@@ -287,9 +292,46 @@ def make_context_tools(
 
     # ---------------- 证据批量读取 ----------------
 
+    def _temporally_blocked(known_at: datetime | None) -> str | None:
+        """时态隔离（review R2）：资料可知时间晚于本上下文截止 → 拒绝读取。
+
+        历史评估/回放上下文的 as_of 固定在过去时点，生产库中后续登记的资料
+        不得泄入（复现：2020 年评估上下文读到了后来才登记的记录）。
+        """
+        if known_at is not None and _as_aware(known_at) > _now():
+            return (
+                f"资料可知/登记时间 {known_at.isoformat()} 晚于本上下文截止 "
+                f"{_iso(_now())}（时态隔离：未来资料不得进入历史上下文）"
+            )
+        return None
+
+    def _typed_meta_guard(ref: str) -> dict[str, Any] | None:
+        """typed 引用的上下文隔离（review R2）：namespace + 主体 + 登记时间。
+
+        返回 None = 通过；否则返回带 error 的拒绝条目。
+        """
+        meta = metrics.get_ref_meta(ref)  # type: ignore[union-attr]
+        if meta is None or meta["namespace"] != namespace:
+            return {"ref": ref, "error": "引用不存在或跨命名空间（上下文隔离）"}
+        if (meta["entity_kind"], meta["entity_id"]) != (entity_kind, entity_id):
+            return {"ref": ref, "error": (
+                f"引用属于其他实体 {meta['entity_kind']}:{meta['entity_id']}（跨上下文拒绝）"
+            )}
+        known = meta.get("knowledge_time")
+        if known:
+            blocked = _temporally_blocked(_as_aware(datetime.fromisoformat(str(known))))
+            if blocked:
+                return {"ref": ref, "error": blocked}
+        return None
+
     def _read_one(ref: str) -> dict[str, Any]:
         if ref.startswith("ev-"):
             ev = kb.get_evidence(ref)  # MissingEvidenceError → 调用方逐项记错
+            # 证据库全局（不绑实体），但必须守时态隔离：可知时间（缺失时退取
+            # 登记时间）晚于上下文截止的证据不得进入历史研究输入
+            blocked = _temporally_blocked(ev.available_at or ev.retrieved_at)
+            if blocked:
+                return {"ref": ref, "error": blocked}
             quote = ev.verbatim_quote
             return {
                 "ref": ref, "kind": "evidence", "source_id": ev.source_id, "url": ev.url,
@@ -304,6 +346,9 @@ def make_context_tools(
         if ref.startswith("obs-"):
             if metrics is None:
                 return {"ref": ref, "error": "typed 存储未装配"}
+            denied = _typed_meta_guard(ref)
+            if denied is not None:
+                return denied
             obs = metrics.get_observation(ref)
             if obs is None:
                 return {"ref": ref, "error": "观测不存在或不在本命名空间"}
@@ -311,6 +356,9 @@ def make_context_tools(
         if ref.startswith("calc-"):
             if metrics is None:
                 return {"ref": ref, "error": "typed 存储未装配"}
+            denied = _typed_meta_guard(ref)
+            if denied is not None:
+                return denied
             stored = metrics.get_calculation(ref)
             if stored is None:
                 return {"ref": ref, "error": "计算不存在"}
@@ -318,10 +366,23 @@ def make_context_tools(
         if ref.startswith("claim-"):
             if metrics is None:
                 return {"ref": ref, "error": "typed 存储未装配"}
+            denied = _typed_meta_guard(ref)
+            if denied is not None:
+                return denied
             payload = metrics.get_claim(ref)
             if payload is None:
                 return {"ref": ref, "error": "论断不存在"}
-            return {"ref": ref, "kind": "claim", **payload}
+            out = {"ref": ref, "kind": "claim", **payload}
+            # 失效可见性（review R4）：按 id 回读已失效论断是合法审计行为，
+            # 但必须带失效标记与原因（不得看上去仍是有效结论）
+            inv = metrics.claim_invalidation(ref, namespace=namespace)
+            if inv is not None:
+                out["invalidated"] = True
+                out["invalidation"] = {
+                    "reason": inv.get("reason"),
+                    "invalidated_at": inv.get("invalidated_at"),
+                }
+            return out
         if ref.startswith("fact-"):
             row = kb._conn.execute(  # noqa: SLF001 - 只读存在性+上下文（同 ref_resolvable）
                 "SELECT namespace, entity_kind, entity_id, field, value_json, knowledge_time,"
@@ -331,6 +392,10 @@ def make_context_tools(
                 return {"ref": ref, "error": "事实不存在或跨命名空间"}
             if (row[1], row[2]) != (entity_kind, entity_id):
                 return {"ref": ref, "error": f"事实属于其他实体 {row[1]}:{row[2]}（跨上下文拒绝）"}
+            if row[5]:
+                blocked = _temporally_blocked(_as_aware(datetime.fromisoformat(row[5])))
+                if blocked:
+                    return {"ref": ref, "error": blocked}
             return {
                 "ref": ref, "kind": "fact", "field": row[3], "value": json.loads(row[4]),
                 "knowledge_time": row[5], "evidence_ids": json.loads(row[6]),
@@ -687,6 +752,7 @@ CONTEXT_TOOL_SCHEMAS: dict[str, dict] = {
             "批量读取已登记引用的原文与定位：ev-（证据摘录+来源+质量+locator）/ "
             "obs-（观测完整投影）/ calc-（计算 payload）/ claim-（论断全文）/ "
             "fact-（字段值+证据）。逐项返回成功/失败，未知引用显式报错不静默。"
+            "上下文隔离：跨实体/跨命名空间/晚于本上下文截止时间的引用逐项拒绝。"
         ),
         "parameters": {
             "type": "object",

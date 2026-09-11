@@ -22,7 +22,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -56,15 +56,28 @@ VERIFY_PROMPT = """\
 """
 
 
+#: 合法核验 verdict（review R9）：枚举约束——任意字符串（如 NOT_SUPPORTED）
+#: 不再被聚合分支默默归为 supported；未识别值整条丢弃，全非法按核验不可用处理。
+AtomicVerdictState = Literal["supported", "partially_supported", "contradicted", "insufficient"]
+
+
 class AtomicVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str
-    verdict: str  # supported/partially_supported/contradicted/insufficient
+    verdict: AtomicVerdictState
     supporting_refs: list[str] = Field(default_factory=list)
     missing_conditions: list[str] = Field(default_factory=list)
     mismatches: list[str] = Field(default_factory=list)
     notes: str = ""
+
+
+def _normalize_verdict(raw: Any) -> AtomicVerdictState | None:
+    """verdict 规范化（大小写/连字符宽容，值域严格）：无法识别 → None（丢弃）。"""
+    text = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in ("supported", "partially_supported", "contradicted", "insufficient"):
+        return text  # type: ignore[return-value]
+    return None
 
 
 class ReasoningReview(BaseModel):
@@ -274,21 +287,30 @@ def verify_claim(
     reasoning: ReasoningReview | None = None
     next_actions: list[str] = list(pack.next_actions)
     content_ok = False
+    dropped_verdicts = 0  # verdict 非法被丢弃的原子核验条数（review R9，可见不静默）
     if isinstance(review, dict) and "_error" in review:
         review_error = str(review["_error"])
     elif review is not None:
         content_ok = True
         for item in review.get("atomic_claims") or []:
+            if not isinstance(item, dict):
+                dropped_verdicts += 1
+                continue  # 畸形条目不拖死整体（按不可用方向收敛）
+            verdict = _normalize_verdict(item.get("verdict"))
+            if verdict is None:
+                dropped_verdicts += 1
+                continue  # 未识别 verdict（NOT_SUPPORTED 等）：丢弃，绝不归为 supported
             try:
                 atomic.append(AtomicVerdict.model_validate({
                     "text": str(item.get("text") or "")[:400],
-                    "verdict": str(item.get("verdict") or "insufficient"),
+                    "verdict": verdict,
                     "supporting_refs": [str(r) for r in (item.get("supporting_refs") or [])],
                     "missing_conditions": [str(x) for x in (item.get("missing_conditions") or [])],
                     "mismatches": [str(x) for x in (item.get("mismatches") or [])],
                     "notes": str(item.get("notes") or "")[:300],
                 }))
             except ValidationError:
+                dropped_verdicts += 1
                 continue  # 单条畸形不拖死整体；下面按缺失处理
         if not atomic:
             content_ok = False  # 解析出 0 条原子核验 = 内容核验不可用（诚实降级）
@@ -332,6 +354,10 @@ def verify_claim(
         notes_extra.append(f"内容审查不可用：{review_error}")
     if not content_ok and not review_error and llm is not None:
         notes_extra.append("内容审查输出不可解析（仅硬检查结果有效）")
+    if dropped_verdicts:
+        notes_extra.append(
+            f"{dropped_verdicts} 条原子核验的 verdict 非法已丢弃（未识别值不归为 supported）"
+        )
     if counter_search:
         notes_extra.append(
             "反证检索记录：queries={q} sources={s} found={f}".format(
@@ -340,10 +366,23 @@ def verify_claim(
                 f=bool(counter_search.get("found")),
             )
         )
-    # 发布规则联动：validated 论断被内容核验推翻 → 降级 draft（不留在正式产物里）
-    if status_before == "validated" and support in ("contradicted", "insufficient"):
-        status_after = "draft"
-        notes_extra.append(f"内容核验 {support}：validated 降级 draft（修正后重新核验）")
+    # 发布规则联动（review R1）：validated 论断被内容核验推翻，或数值/引用/推理
+    # 任一硬检查失败 → 降级 draft（不留在正式产物里；未核验 unchecked 不算推翻）
+    if status_before == "validated":
+        downgrade_reasons: list[str] = []
+        if support in ("contradicted", "insufficient"):
+            downgrade_reasons.append(f"内容核验 {support}")
+        if not references_valid:
+            downgrade_reasons.append("引用硬检查失败")
+        if numeric_state == "failed":
+            downgrade_reasons.append("数值硬检查失败")
+        if analysis_state == "failed":
+            downgrade_reasons.append("推理审查失败")
+        if downgrade_reasons:
+            status_after = "draft"
+            notes_extra.append(
+                "、".join(downgrade_reasons) + "：validated 降级 draft（修正后重新核验）"
+            )
 
     verification = ClaimVerification(
         references_valid=references_valid,
@@ -359,7 +398,10 @@ def verify_claim(
     updated = dict(payload)
     updated["verification"] = verification.model_dump(mode="json")
     updated["status"] = status_after
-    metrics.save_claim(claim_id=claim_id, namespace=namespace, payload=updated)
+    # 时态修订（review R3）：写新版本（recorded_at=本次核验的逻辑时刻），
+    # 不原位改写历史——claims_as_of(过去时点) 仍返回当时的状态与核验结论
+    metrics.save_claim(claim_id=claim_id, namespace=namespace, payload=updated,
+                       recorded_at=as_of)
 
     result = VerificationResult(
         claim_id=claim_id, pack_id=pack.pack_id, input_hash=pack.input_hash,

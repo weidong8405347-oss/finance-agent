@@ -115,6 +115,22 @@ CREATE TABLE IF NOT EXISTS research_claims (
 CREATE INDEX IF NOT EXISTS idx_claims_entity
     ON research_claims(namespace, entity_kind, entity_id, created_at);
 
+-- 论断版本链（review R3：核验/降级等修订必须是时态修订而非原位覆盖）：
+-- save_claim 每次写入追加一行（recorded_at = 系统获知的逻辑时刻）；
+-- research_claims 仍是「当前指针」，claims_as_of 按版本链取 recorded_at ≤ T 的
+-- 最新版本重建历史状态——今天降级一条论断，不再改写过去时点的查询结果。
+CREATE TABLE IF NOT EXISTS research_claim_versions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_claim_versions
+    ON research_claim_versions(namespace, claim_id, recorded_at, seq);
+
 CREATE TABLE IF NOT EXISTS research_artifacts (
     artifact_id TEXT PRIMARY KEY,
     namespace TEXT NOT NULL,
@@ -262,15 +278,28 @@ class MetricStore:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        # additive 迁移：版本表建立前入库的存量论断补一条基线版本
+        # （recorded_at = created_at，幂等），历史投影从升级时刻起可重建
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO research_claim_versions (claim_id, namespace, entity_kind,"
+                " entity_id, recorded_at, payload_json)"
+                " SELECT c.claim_id, c.namespace, c.entity_kind, c.entity_id,"
+                " c.created_at, c.payload_json FROM research_claims c"
+                " WHERE NOT EXISTS (SELECT 1 FROM research_claim_versions v"
+                "                 WHERE v.namespace = c.namespace"
+                "                 AND v.claim_id = c.claim_id)"
+            )
+            self._conn.commit()
 
     # ---------------- 实体删除（用户发起；由 knowledge/purge.py 協调） ----------------
 
     #: 带 entity_kind/entity_id 列的表（逐表计数删除，不静默漏表）
     _ENTITY_TABLES: tuple[str, ...] = (
         "metric_observations", "calculation_runs", "research_plans", "research_claims",
-        "research_artifacts", "dossier_snapshots", "conflict_resolutions",
-        "metric_revisions",
+        "research_claim_versions", "research_artifacts", "dossier_snapshots",
+        "conflict_resolutions", "metric_revisions", "claim_invalidations",
+        "profile_update_commits",
     )
 
     def delete_entity(
@@ -626,20 +655,39 @@ class MetricStore:
             args.append(as_of.isoformat())
         return {r[0] for r in self._conn.execute(sql, args).fetchall()}
 
-    def refs_to(self, observation_id: str, *, namespace: str = "prod") -> dict[str, list[str]]:
-        """引用了某观测的下游产物（重审依赖用）：计算 / 论断 / 产物。"""
-        out: dict[str, list[str]] = {"calculations": [], "claims": [], "artifacts": []}
-        like = f"%{observation_id}%"
-        for table, key, bucket in (
-            ("calculation_runs", "calculation_id", "calculations"),
-            ("research_claims", "claim_id", "claims"),
-            ("research_artifacts", "artifact_id", "artifacts"),
-        ):
-            rows = self._conn.execute(
-                f"SELECT {key} FROM {table} WHERE namespace = ? AND payload_json LIKE ?",
-                (namespace, like),
-            ).fetchall()
-            out[bucket] = [r[0] for r in rows]
+    def refs_to(
+        self, ref_id: str, *, namespace: str = "prod",
+        entity_kind: str | None = None, entity_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> dict[str, list[str]]:
+        """引用了某 ref 的下游记录（重审依赖用）：派生观测 / 计算 / 论断 / 产物。
+
+        review R7：任意 ref 类型可查（观测/计算/论断均可作起点），依赖闭包遍历
+        沿它进行；entity/as_of 收窄保证闭包不跨主体、不泄露 as_of 之后才登记的
+        下游记录（历史投影纪律与 observations_as_of 一致）。自身引用行被排除
+        （payload 含自身 id，不自匹配）。
+        """
+        out: dict[str, list[str]] = {
+            "observations": [], "calculations": [], "claims": [], "artifacts": []}
+        like = f"%{ref_id}%"
+        specs = (
+            ("metric_observations", "observation_id", "observations", "knowledge_time"),
+            ("calculation_runs", "calculation_id", "calculations", "created_at"),
+            ("research_claims", "claim_id", "claims", "created_at"),
+            ("research_artifacts", "artifact_id", "artifacts", "created_at"),
+        )
+        for table, key, bucket, time_col in specs:
+            sql = (f"SELECT {key} FROM {table} WHERE namespace = ?"  # noqa: S608 - 表白名单
+                   " AND payload_json LIKE ?")
+            args: list[Any] = [namespace, like]
+            if entity_kind is not None and entity_id is not None:
+                sql += " AND entity_kind = ? AND entity_id = ?"
+                args.extend([entity_kind, entity_id])
+            if as_of is not None:
+                sql += f" AND {time_col} <= ?"
+                args.append(as_of.isoformat())
+            rows = self._conn.execute(sql, args).fetchall()
+            out[bucket] = [r[0] for r in rows if r[0] != ref_id]
         return out
 
     # ---------------- 裁决（时态化） ----------------
@@ -737,6 +785,63 @@ class MetricStore:
             (namespace, change_set_id),
         ).fetchone()
         return json.loads(row[0]) if row else None
+
+    def record_profile_update(
+        self, *, commit: dict[str, Any], invalidations: list[dict[str, Any]],
+    ) -> bool:
+        """档案整合提交的原子落库（review R6）：失效记录与提交台账在同一事务，
+        要么全落要么全不落——不再逐条提交导致「第一条已写入、第二条被拒」的半截状态。
+
+        change_set_id 幂等：台账已存在（含并发竞争）→ 整体回滚并返回 False
+        （重放语义：首次提交的失效记录保持，重跑不重复追加）。
+        commit/invalidations 的字段契约见 consolidator.commit_update。
+        """
+        namespace = str(commit["namespace"])
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT change_set_id FROM profile_update_commits"
+                " WHERE namespace = ? AND change_set_id = ?",
+                (namespace, str(commit["change_set_id"])),
+            ).fetchone()
+            if existing is not None:
+                return False
+            try:
+                for inv in invalidations:
+                    payload = {
+                        "invalidation_id": inv["invalidation_id"], "namespace": namespace,
+                        "entity_kind": commit["entity_kind"], "entity_id": commit["entity_id"],
+                        "claim_id": inv["claim_id"], "reason": inv["reason"],
+                        "source_refs": list(inv.get("source_refs") or []),
+                        "invalidated_at": inv["invalidated_at"], "run_id": inv.get("run_id"),
+                    }
+                    self._conn.execute(
+                        "INSERT INTO claim_invalidations (invalidation_id, namespace,"
+                        " entity_kind, entity_id, claim_id, reason, source_refs,"
+                        " invalidated_at, run_id, payload_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (inv["invalidation_id"], namespace, commit["entity_kind"],
+                         commit["entity_id"], inv["claim_id"], inv["reason"],
+                         json.dumps(payload["source_refs"], ensure_ascii=False),
+                         inv["invalidated_at"], inv.get("run_id"),
+                         json.dumps(payload, ensure_ascii=False)),
+                    )
+                self._conn.execute(
+                    "INSERT INTO profile_update_commits (change_set_id, namespace,"
+                    " entity_kind, entity_id, expected_base_hash, committed_at, run_id,"
+                    " payload_json) VALUES (?,?,?,?,?,?,?,?)",
+                    (str(commit["change_set_id"]), namespace, commit["entity_kind"],
+                     commit["entity_id"], str(commit["expected_base_hash"]),
+                     str(commit["committed_at"]), commit.get("run_id"),
+                     json.dumps(commit["payload"], ensure_ascii=False, default=str)),
+                )
+            except sqlite3.IntegrityError:
+                # 并发窗口：另一提交先落——回滚本次全部写入（含失效记录），按重放处理
+                self._conn.rollback()
+                return False
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
+            return True
 
     # ---------------- 计算 ----------------
 
@@ -960,8 +1065,20 @@ class MetricStore:
 
     # ---------------- 研究论断 ----------------
 
-    def save_claim(self, *, claim_id: str, namespace: str, payload: dict[str, Any]) -> str:
+    def save_claim(
+        self, *, claim_id: str, namespace: str, payload: dict[str, Any],
+        recorded_at: datetime | None = None,
+    ) -> str:
+        """写入论断：research_claims 为「当前指针」（INSERT OR REPLACE），
+        research_claim_versions 追加版本行（review R3：核验/降级等修订是时态修订，
+        不原位改写历史——claims_as_of 按 recorded_at ≤ T 的版本链重建过去状态）。
+
+        recorded_at = 系统获知的逻辑时刻（缺省真实当前时间；核验等带逻辑时钟的
+        调用方应显式传入，保证 as_of 重建与事件时序一致）。
+        """
         c = payload
+        recorded = (recorded_at or datetime.now(UTC)).isoformat()
+        dumped = json.dumps(c, ensure_ascii=False)
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO research_claims (claim_id, namespace, entity_kind,"
@@ -971,8 +1088,13 @@ class MetricStore:
                     claim_id, namespace, c["entity_kind"], c["entity_id"], c["kind"],
                     c.get("question_id"), c.get("status", "draft"), c["statement"],
                     c["created_at"], c.get("evidence_cutoff"), c.get("run_id"),
-                    c.get("superseded_by"), json.dumps(c, ensure_ascii=False),
+                    c.get("superseded_by"), dumped,
                 ),
+            )
+            self._conn.execute(
+                "INSERT INTO research_claim_versions (claim_id, namespace, entity_kind,"
+                " entity_id, recorded_at, payload_json) VALUES (?,?,?,?,?,?)",
+                (claim_id, namespace, c["entity_kind"], c["entity_id"], recorded, dumped),
             )
             self._conn.commit()
         return claim_id
@@ -983,6 +1105,22 @@ class MetricStore:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def _claim_payload_as_of(
+        self, claim_id: str, namespace: str, t: datetime, *, fallback: str
+    ) -> dict[str, Any] | None:
+        """claim 在 T 时点的 payload：版本链中 recorded_at ≤ T 的最新版本；
+        无版本行（版本表建立前的旧数据，迁移已按 created_at 补基线）回退当前 payload。"""
+        row = self._conn.execute(
+            "SELECT payload_json FROM research_claim_versions"
+            " WHERE namespace = ? AND claim_id = ? AND recorded_at <= ?"
+            " ORDER BY seq DESC LIMIT 1",
+            (namespace, claim_id, t.isoformat()),
+        ).fetchone()
+        try:
+            return json.loads(row[0] if row else fallback)
+        except Exception:  # noqa: BLE001 - 损坏行不拖死整表投影
+            return None
+
     def claims_as_of(
         self,
         entity_kind: str,
@@ -991,14 +1129,66 @@ class MetricStore:
         *,
         namespace: str = "prod",
         statuses: tuple[str, ...] = ("draft", "validated"),
+        include_invalidated: bool = False,
     ) -> list[dict[str, Any]]:
-        marks = ",".join("?" for _ in statuses)
+        """as_of(T) 论断投影（review R3/R4）：
+
+        - 时态：按版本链重建 T 时点的 status/verification——今天核验降级一条
+          论断，不改写过去时点的查询结果（历史投影不漂）；
+        - 失效消费：claim_invalidations（invalidated_at ≤ T）生效的论断默认
+          不再出现于投影（失效语义真正影响当前读取）；include_invalidated=True
+          时带 invalidated/invalidation 标记返回（审计与整合预览用）。
+        """
         rows = self._conn.execute(
-            f"SELECT payload_json FROM research_claims WHERE namespace = ? AND entity_kind = ?"
-            f" AND entity_id = ? AND created_at <= ? AND status IN ({marks}) ORDER BY created_at",
-            (namespace, entity_kind, entity_id, t.isoformat(), *statuses),
+            "SELECT claim_id, payload_json FROM research_claims WHERE namespace = ?"
+            " AND entity_kind = ? AND entity_id = ? AND created_at <= ?",
+            (namespace, entity_kind, entity_id, t.isoformat()),
         ).fetchall()
-        return [json.loads(r[0]) for r in rows]
+        invalidated = {
+            str(i.get("claim_id")): i
+            for i in self.invalidations_as_of(entity_kind, entity_id, t, namespace=namespace)
+        }
+        out: list[dict[str, Any]] = []
+        for claim_id, current_json in rows:
+            payload = self._claim_payload_as_of(claim_id, namespace, t, fallback=current_json)
+            if payload is None:
+                continue
+            if str(payload.get("status", "draft")) not in statuses:
+                continue
+            inv = invalidated.get(claim_id)
+            if inv is not None:
+                if not include_invalidated:
+                    continue
+                payload = dict(payload)
+                payload["invalidated"] = True
+                payload["invalidation"] = {
+                    "reason": inv.get("reason"),
+                    "invalidated_at": inv.get("invalidated_at"),
+                    "source_refs": inv.get("source_refs") or [],
+                }
+            out.append(payload)
+        out.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("claim_id") or "")))
+        return out
+
+    def claim_invalidation(
+        self, claim_id: str, *, namespace: str = "prod", as_of: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """claim 在 as_of（缺省=当前）已生效的最新失效记录；无 → None。"""
+        sql = ("SELECT payload_json FROM claim_invalidations"
+               " WHERE namespace = ? AND claim_id = ?")
+        args: list[Any] = [namespace, claim_id]
+        if as_of is not None:
+            sql += " AND invalidated_at <= ?"
+            args.append(as_of.isoformat())
+        row = self._conn.execute(
+            sql + " ORDER BY invalidated_at DESC LIMIT 1", args).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def is_claim_invalidated(
+        self, claim_id: str, *, namespace: str = "prod", as_of: datetime | None = None,
+    ) -> bool:
+        """失效语义判定（发布门禁/引用回读用，review R4）。"""
+        return self.claim_invalidation(claim_id, namespace=namespace, as_of=as_of) is not None
 
     # ---------------- 研究产物（冻结研报） ----------------
 

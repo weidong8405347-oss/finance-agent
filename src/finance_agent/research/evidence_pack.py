@@ -21,6 +21,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..knowledge.store import BitemporalStore
 from .assessment import source_role
 
+#: 间接血缘展开约束（review R8）：论断/计算引用必须递归展开到原始证据
+#: （核验员看原文，不把另一层分析结论当证据）；深度/总量双上限 + 循环截断
+#: 防止互引链路打爆上下文。
+MAX_LINEAGE_DEPTH = 4
+MAX_LINEAGE_SPANS = 24
+
 
 class EvidenceSpan(BaseModel):
     """一条可核验的原文/数值素材（ref 可回读，定位随包携带）。"""
@@ -93,7 +99,7 @@ def resolve_span(kb: BitemporalStore, metrics: Any, ref: str, *, namespace: str)
             ev = kb.get_evidence(ref)
             return EvidenceSpan(
                 ref=ref, kind="evidence", text=ev.verbatim_quote,
-                source_id=ev.source_id, source_role=source_role(ev.source_id),
+                source_id=ev.source_id, source_role=source_role(ev.source_id, ev.url),
                 url=ev.url, available_at=ev.available_at,
                 pit_grade=getattr(ev.pit_grade, "value", str(ev.pit_grade)),
                 quality=getattr(ev, "quality", "ok"),
@@ -150,9 +156,44 @@ def source_role_ref(kb: BitemporalStore, evidence_ref: str) -> str:
     if not evidence_ref.startswith("ev-"):
         return "non_evidence"
     try:
-        return source_role(kb.get_evidence(evidence_ref).source_id)
+        ev = kb.get_evidence(evidence_ref)
+        return source_role(ev.source_id, ev.url)
     except Exception:  # noqa: BLE001 - 缺失来源如实归 unknown（不默认一手）
         return "unknown"
+
+
+def lineage_refs(metrics: Any, span: EvidenceSpan) -> list[str]:
+    """span 背后的原始依据引用（review R8 间接引用展开）：
+
+    - observation → 其证据引用 + 来源计算（calculation_ref）；
+    - calculation → 输入引用（input_refs，观测/计算均可）；
+    - claim → 其支持引用（论断引论断时，核验必须看到底层原文而非陈述）。
+    """
+    if metrics is None:
+        return []
+    try:
+        if span.kind == "observation":
+            obs = metrics.get_observation(span.ref)
+            if obs is None:
+                return []
+            refs = [str(r) for r in (obs.evidence_refs or [])]
+            if obs.calculation_ref:
+                refs.append(str(obs.calculation_ref))
+            return refs
+        if span.kind == "calculation":
+            stored = metrics.get_calculation(span.ref)
+            if stored is None:
+                return []
+            return [str(r.get("ref_id")) for r in (stored.payload.get("input_refs") or [])
+                    if r.get("ref_id")]
+        if span.kind == "claim":
+            payload = metrics.get_claim(span.ref)
+            if payload is None:
+                return []
+            return [str(r) for r in (payload.get("support_refs") or [])]
+    except Exception:  # noqa: BLE001 - 血缘读取失败按无展开处理（主引用仍可用）
+        return []
+    return []
 
 
 def build_evidence_pack(
@@ -174,27 +215,42 @@ def build_evidence_pack(
     unresolved: list[str] = []
     obs_refs: list[str] = []
     calc_refs: list[str] = []
+    lineage_notes: list[str] = []
+    expanded: set[str] = set()  # 已展开血缘的 ref（循环保护：claim 互引不死循环）
+    lineage_count = 0
+    lineage_truncated = False
 
-    def collect(refs: list[str], bucket: list[EvidenceSpan]) -> None:
+    def collect(refs: list[str], bucket: list[EvidenceSpan], *, depth: int = 0,
+                via: str | None = None) -> None:
+        nonlocal lineage_count, lineage_truncated
         for ref in refs:
             span = resolve_span(kb, metrics, str(ref), namespace=namespace)
             if span.kind == "unresolved":
-                unresolved.append(str(ref))
+                if depth == 0:
+                    unresolved.append(str(ref))  # 直接引用不可解析 → 硬检查失败
+                else:
+                    # 间接血缘死端：可见但不拖垮直接引用的可解析性
+                    lineage_notes.append(f"间接血缘引用不可解析（{via} 的依据）: {ref}")
                 continue
-            bucket.append(span)
+            if via is not None:
+                span.meta = {**span.meta, "via": via, "indirect": True}
+            if not any(s.ref == span.ref for s in bucket):
+                bucket.append(span)
             if span.kind == "observation":
                 obs_refs.append(str(ref))
             elif span.kind == "calculation":
                 calc_refs.append(str(ref))
-            # 观测背后的证据原文也进包（内容核验必须看原文，不看二手摘要）
-            if span.kind == "observation" and metrics is not None:
-                obs = metrics.get_observation(str(ref))
-                for ev_ref in (obs.evidence_refs if obs else []) or []:
-                    ev_span = resolve_span(kb, metrics, str(ev_ref), namespace=namespace)
-                    if ev_span.kind == "evidence" and not any(
-                        s.ref == ev_span.ref for s in bucket
-                    ):
-                        bucket.append(ev_span)
+            # 血缘递归展开到原始证据（review R8：观测→证据/计算→输入→论断支持链）
+            if span.ref in expanded or depth >= MAX_LINEAGE_DEPTH:
+                continue
+            if lineage_count >= MAX_LINEAGE_SPANS:
+                lineage_truncated = True
+                continue
+            expanded.add(span.ref)
+            children = lineage_refs(metrics, span)
+            if children:
+                lineage_count += len(children)
+                collect(children, bucket, depth=depth + 1, via=span.ref)
 
     candidate_answer = ""
     question_id: str | None = None
@@ -247,6 +303,12 @@ def build_evidence_pack(
         missing.append("结论无支持证据（supporting_spans 为空）")
     if unresolved:
         missing.append(f"引用不可解析：{unresolved}")
+    missing.extend(lineage_notes)
+    if lineage_truncated:
+        missing.append(
+            f"间接血缘展开达上限（{MAX_LINEAGE_SPANS} 条）已截断——"
+            "其余依据可按需用 read_evidence 回读"
+        )
     low_quality = [s.ref for s in supporting
                    if s.quality in ("garbled", "needs_ocr")]
     if low_quality:
@@ -278,4 +340,7 @@ def build_evidence_pack(
     return pack
 
 
-__all__ = ["EvidencePack", "EvidenceSpan", "build_evidence_pack", "resolve_span"]
+__all__ = [
+    "EvidencePack", "EvidenceSpan", "build_evidence_pack", "resolve_span",
+    "lineage_refs", "MAX_LINEAGE_DEPTH", "MAX_LINEAGE_SPANS",
+]
