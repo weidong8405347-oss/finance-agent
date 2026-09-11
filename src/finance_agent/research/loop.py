@@ -139,6 +139,8 @@ class ResearchLoop:
         #: 插件编译能力集（P1-C 执行闭环）：非 None 时 worker 工具经
         #: RuntimeBinder 绑定（执行面=声明∩装配，ToolExecutor 统一执行纪律）
         plugin_set: object | None = None,
+        #: 消融开关（方案 §10.2 + F14；评估运行专用，生产空集）
+        ablation: frozenset[str] | None = None,
     ):
         self._store = store
         self._events = events
@@ -166,6 +168,7 @@ class ResearchLoop:
         self._max_tool_chars = max_tool_chars
         self._keep_recent_tools = keep_recent_tools
         self._plugin_set = plugin_set
+        self._ablation = frozenset(ablation or ())
         #: 运行期绑定器（run() 内预算就绪后创建；None = 旧装配路径不变）
         self._binder: Any | None = None
         self.stop_reason: str | None = None
@@ -407,6 +410,12 @@ class ResearchLoop:
                     doc_store=doc_store,
                     fetch_paged=self._fetch_paged,
                     verify_llm=self._judge_llm or self._llm,
+                    # 二次独立核验（§5.4 检查 4）：judge 核验、research 主模型复核
+                    # （无独立 judge 时不装独立——跳过并留痕）
+                    second_verify_llm=(self._llm if self._judge_llm is not None
+                                       else None),
+                    with_verifier="verifier" not in self._ablation,
+                    with_knowledge_context="knowledge_context" not in self._ablation,
                 )
                 for source_id in self._gateway_sources:
                     tools[f"query_{source_id}"] = make_gateway_tool(
@@ -510,11 +519,18 @@ class ResearchLoop:
             self._emit_partial(entity_kind, entity_id, round_no, report)
             # 语义压缩（§8.3）：状态卡落事件（来源区间+hash，原日志不删可重建），
             # 并回流下一轮 brief——投影裁剪丢的是旧工具结果，不丢问题状态与关键证据
-            self._state_card = self._build_state_card(
-                entity_kind, entity_id, objective, round_no, trackers,
-                doc_store, gaps_after, all_rejected, round_seq_from,
-            )
-            self._emit(RESEARCH_CONTEXT_COMPRESSED, self._state_card)
+            if "state_card" not in self._ablation:
+                self._state_card = self._build_state_card(
+                    entity_kind, entity_id, objective, round_no, trackers,
+                    doc_store, gaps_after, all_rejected, round_seq_from,
+                )
+                self._emit(RESEARCH_CONTEXT_COMPRESSED, self._state_card)
+            else:
+                # 消融运行（F14 诊断）：状态卡关闭必须在事件里可见（归因依据）
+                self._emit(RESEARCH_BUDGET, {
+                    "action": "ablation", "reason": "state_card 已关闭（FA_ABLATE_STATE_CARD）",
+                    "round": round_no,
+                })
 
             coverage_ok_after = coverage_after is None or (
                 coverage_after >= target_coverage and not violations_after
@@ -697,6 +713,8 @@ class ResearchLoop:
             fetch_paged=self._fetch_paged,
             verify_llm=self._judge_llm or self._llm,
             second_verify_llm=(self._llm if self._judge_llm is not None else None),
+            with_verifier="verifier" not in self._ablation,
+            with_knowledge_context="knowledge_context" not in self._ablation,
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(

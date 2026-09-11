@@ -62,3 +62,63 @@ def test_placeholder_task_skipped_explicitly(tmp_path):
     result = mod.run_task(task, tmp_path, dry_run=True)
     assert result["status"] == "skipped"
     assert "pick_ticker_hint" in result["reason"] or "冻结" in result["reason"]
+
+
+# ---------------- P3 题集（24 题：16 迭代 + 8 留出 + 链式刷新） ----------------
+
+TASKS_FILE_24 = REPO_ROOT / "evals" / "sentinel_tasks_24.yaml"
+
+
+def test_p3_tasks_frozen_24_with_groups():
+    """方案 §10.1 P3：24 题 = 12 单股 + 8 行业/比较 + 4 增量刷新；16 iter/8 holdout。"""
+    data = yaml.safe_load(TASKS_FILE_24.read_text(encoding="utf-8"))
+    tasks = data["tasks"]
+    assert len(tasks) == 24
+    groups = [t.get("group") for t in tasks]
+    assert groups.count("iter") == 16 and groups.count("holdout") == 8
+    chains = [t for t in tasks if t.get("chain")]
+    assert len(chains) == 4, "历史档案增量刷新 4 题（链式：建档 → 刷新）"
+    for t in chains:
+        assert len(t["chain"]) == 2 and all(c.startswith("/") for c in t["chain"])
+    # 关键任务重复 3 次（测波动，方案 §10.1）
+    repeats = {t["id"]: t.get("repeat") for t in tasks if int(t.get("repeat") or 1) > 1}
+    assert repeats and all(int(r) == 3 for r in repeats.values())
+    ids = [t["id"] for t in tasks]
+    assert len(set(ids)) == 24
+    # 单股/行业/刷新三类的形态校验
+    industry = [t for t in tasks if str(t.get("command", "")).startswith("/industry")]
+    assert len(industry) == 8
+
+
+def test_runner_list_24_and_group_filter():
+    proc = subprocess.run(
+        [sys.executable, str(RUNNER), "--tasks-file", str(TASKS_FILE_24),
+         "--group", "holdout", "--list"],
+        capture_output=True, text=True, timeout=60, cwd=REPO_ROOT,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "aapl-services-mix" in proc.stdout
+    assert "be-orders-revenue" not in proc.stdout, "group=holdout 不应列出迭代组题目"
+
+
+def test_holdout_gate_blocks_by_default():
+    """留出组默认拒跑（预算制保护）：不带 --allow-holdout 时明确跳过。"""
+    proc = subprocess.run(
+        [sys.executable, str(RUNNER), "--tasks-file", str(TASKS_FILE_24),
+         "--group", "holdout", "--task", "aapl-services-mix"],
+        capture_output=True, text=True, timeout=60, cwd=REPO_ROOT,
+    )
+    assert proc.returncode == 2
+    assert "--allow-holdout" in proc.stderr
+
+
+def test_holdout_consumes_ledger_budget(tmp_path):
+    """带 --allow-holdout 的 dry-run 不扣预算；真实门槛由 HoldoutLedger 把关。"""
+    proc = subprocess.run(
+        [sys.executable, str(RUNNER), "--tasks-file", str(TASKS_FILE_24),
+         "--group", "holdout", "--task", "aapl-services-mix",
+         "--allow-holdout", "--dry-run", "--data-dir", str(tmp_path)],
+        capture_output=True, text=True, timeout=60, cwd=REPO_ROOT,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "dry-run" in proc.stdout

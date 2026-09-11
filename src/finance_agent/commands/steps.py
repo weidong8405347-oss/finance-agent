@@ -239,6 +239,9 @@ class StepDeps:
     #: 单条检索记录正文上限（audit §3.3 按需 evidence bundle）；超出部分凭
     #: read_chunk(chunk_id) 取回——工具响应不再无条件灌满上下文
     max_record_chars: int | None = 6000
+    #: 消融开关（方案 §10.2 + F14 诊断；harness/ablation.py）：仅评估/试点用，
+    #: 生产默认空集（全量开启）；只切执行路径，不动数据与历史事件
+    ablation: frozenset[str] = frozenset()
 
 
 def _open_child(deps: StepDeps, ctx: StepContext, step: str) -> RunManifest:
@@ -368,6 +371,7 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         calculations=deps.calculations,
         max_record_chars=deps.max_record_chars,
         plugin_set=plugin_set,
+        ablation=deps.ablation,
     )
     reports = loop.run(
         ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
@@ -1222,6 +1226,9 @@ def _batch_verify_referenced_claims(
     """
     stats = {"attempted": 0, "verified": 0, "unavailable": 0,
              "skipped_over_cap": 0, "already_checked": 0}
+    if "verifier" in deps.ablation:
+        stats["ablated"] = 1  # 消融运行：核验关闭必须在结果里可见
+        return stats
     if not claim_ids or deps.metrics is None:
         return stats
     from ..research.verifier import verify_claim
@@ -1596,13 +1603,17 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
 
         # verify_claim（§5.4）：S2 整合时对关键论断做内容级核验（与 S1 同一实现）；
         # judge_llm 优先（独立于主研究模型），缺省惰性取 research 角色
-        verify_tool = make_verify_claim_tool(
-            kb=deps.kb, metrics=deps.metrics, events=deps.events, manifest=manifest,
-            namespace="prod", entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
-            llm=deps.judge_llm or _LazyResearchLLM(deps),
-            # 二次独立核验（§5.4 检查 4）：judge 核验、research 复核（不同模型才独立）
-            second_llm=(_LazyResearchLLM(deps) if deps.judge_llm is not None else None),
-        )
+        # 消融（方案 §10.2）：verifier 关闭时 S2 不装配核验工具（可见的装配事实）
+        if "verifier" in deps.ablation:
+            verify_tool = None
+        else:
+            verify_tool = make_verify_claim_tool(
+                kb=deps.kb, metrics=deps.metrics, events=deps.events, manifest=manifest,
+                namespace="prod", entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+                llm=deps.judge_llm or _LazyResearchLLM(deps),
+                # 二次独立核验（§5.4 检查 4）：judge 核验、research 复核（不同模型才独立）
+                second_llm=(_LazyResearchLLM(deps) if deps.judge_llm is not None else None),
+            )
 
         def prepare_profile_update(args: dict[str, Any]) -> dict[str, Any]:
             try:
@@ -1639,7 +1650,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         consolidator_tools = {
             "prepare_profile_update": prepare_profile_update,
             "commit_profile_update": commit_profile_update,
-            "verify_claim": verify_tool,
+            **({"verify_claim": verify_tool} if verify_tool is not None else {}),
         }
 
     def propose_thesis(args: dict[str, Any]) -> dict[str, Any]:
@@ -1916,6 +1927,7 @@ def _industry_loop(
         plugin_set=plugin_set,
         calculations=deps.calculations,
         max_record_chars=deps.max_record_chars,
+        ablation=deps.ablation,
     )
     loop.run(
         "industry", ctx.ticker,
@@ -2569,6 +2581,7 @@ def step_deep_dive(deps: StepDeps, ctx: StepContext) -> StepResult:
                 fetch_document_paged=deps.fetch_document_paged,
                 worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
                 plugin_set=plugin_set,
+                ablation=deps.ablation,
             )
             loop.run("stock", ticker, f"深度研究 {ticker}（赛道：{ctx.objective}）")
             if loop.stop_reason == "stalled":

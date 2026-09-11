@@ -147,6 +147,10 @@ def make_research_tools(
     #: 二次独立核验者（§5.4 检查 4）：必须与 verify_llm 不同模型；缺省/同模型 →
     #: 重大结论的二审跳过并留痕（同模型重问不构成独立复核）
     second_verify_llm: Any | None = None,
+    #: 消融开关（方案 §10.2，仅评估运行）：with_verifier=False 不装配 verify_claim；
+    #: with_knowledge_context=False 不注入统一知识读取工具组
+    with_verifier: bool = True,
+    with_knowledge_context: bool = True,
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -341,10 +345,14 @@ def make_research_tools(
     # ---------------- 统一知识读取（tools-plugins 方案 §5.3，S1/S2/合成共享模块） ----
     # 复用已有 typed 数据（观测/论断/计算/冲突）与证据原文，减少重复搜索与重写结论；
     # as_of/namespace/实体由运行上下文固定，模型参数只能缩小范围。
-    for name, fn in make_context_tools(
-        kb=store, metrics=metrics, entity_kind=entity_kind, entity_id=entity_id,
-        namespace=namespace, plan_id=plan_id, writer=writer, manifest=manifest, events=events,
-    ).items():
+    for name, fn in (
+        make_context_tools(
+            kb=store, metrics=metrics, entity_kind=entity_kind, entity_id=entity_id,
+            namespace=namespace, plan_id=plan_id, writer=writer, manifest=manifest,
+            events=events,
+        ).items()
+        if with_knowledge_context else {}
+    ):
         tools.setdefault(name, fn)
 
     # ---------------- typed 工具（档案升级 §6.2/§7.3/§8.1；未装配新存储则不注入） ----------------
@@ -854,9 +862,11 @@ def make_research_tools(
                 ensure_ascii=False), "provenance": []}
 
         # verify_claim：共享工厂（S1/S2 同一实现）；拒绝计入 tracker 供停滞诊断归因
-        from .verifier import make_verify_claim_tool
+        # （消融运行 with_verifier=False 时不装配——核验关闭必须是可见的装配事实）
+        if with_verifier:
+            from .verifier import make_verify_claim_tool
 
-        verify_claim_tool = make_verify_claim_tool(
+            verify_claim_tool = make_verify_claim_tool(
             kb=store, metrics=metrics, events=events, manifest=manifest,
             namespace=namespace, entity_kind=entity_kind, entity_id=entity_id,
             llm=verify_llm,
@@ -864,12 +874,12 @@ def make_research_tools(
             second_llm=second_verify_llm,
             on_reject=lambda cid, reason: tracker.rejected.append(
                 {"verify": cid, "reason": reason}),
-        )
+            )
 
         tools.update({
             "submit_question_result": submit_question_result,
             "track_sub_question": track_sub_question,
-            "verify_claim": verify_claim_tool,
+            **({"verify_claim": verify_claim_tool} if with_verifier else {}),
         })
 
     if metrics is not None and calculations is not None:

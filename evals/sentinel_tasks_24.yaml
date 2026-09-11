@@ -1,0 +1,265 @@
+# P3 效果验收题集（tools-plugins 方案 §10.1：24 题 = 12 单股 + 8 行业/多公司比较
+# + 4 历史档案增量刷新；16 题迭代调优（iter），8 题留出验收（holdout））。
+#
+# 纪律：冻结题目、目标、截止时间、允许来源与期望产物；不预设公司结论；
+#       关键任务（repeat: 3）至少重复 3 次测波动；holdout 组受预算制保护
+#       （--allow-holdout + HoldoutLedger 扣减，见 test_holdout_protected.py）；
+#       结果只支持阶段决策，不证明普遍追平（方案 §10.2）。
+#
+# 运行：uv run python scripts/run_sentinel.py --tasks-file evals/sentinel_tasks_24.yaml --list
+#       … --group iter --task be-orders-revenue     # 迭代组单题
+#       … --group holdout --allow-holdout --task aapl-services-mix  # 留出组（扣预算）
+version: 2
+frozen_at: "2026-09-11"
+groups:
+  iter: 迭代调优组（失败分布分析、提示与工具迭代的测量对象）
+  holdout: 留出验收组（预算制保护：只在阶段验收时运行，防过拟合题集）
+tasks:
+  # ---------------- 单股（12）----------------
+  - id: be-orders-revenue            # 沿用哨兵题（A/B 组同题，跨组对照锚点）
+    group: iter
+    repeat: 3
+    title: BE 财务与订单口径
+    market: US
+    command: /research BE --depth=deep --focus=订单口径与收入确认
+    why: 历史事故标的（合同总额/首付款/里程碑口径混置），量级与口径错置真实失败场景。
+    expected: [firm_backlog/booked_revenue/revenue 不混写, 金额观测带 currency+period+locator,
+               关键数值可重算, 订单口径引用披露原文]
+    key_questions: [在手订单口径定义与期间, 订单转收入节奏与确认政策]
+    timeout_minutes: 60
+  - id: 2228hk-chinese-filings
+    group: iter
+    repeat: 3
+    title: 2228.HK 中文财报与合同定义
+    market: HK
+    command: /research 2228.HK --depth=deep --focus=中文披露的合同定义与收入口径
+    why: 港股中文 PDF：实体归一、抽取质量（garbled/needs_ocr）、合同术语是真实失败场景。
+    expected: [HKEXnews 原文可达 A 级, 乱码正文不进指标库, 实体归一无双档案,
+               合同定义引用中文原文逐字]
+    key_questions: [重大合同收入条款原文定义, 报告币种与会计准则口径]
+    timeout_minutes: 60
+  - id: restatement-handling
+    group: iter
+    title: 财报更正与竞争版本
+    market: US
+    command: /research LOB --depth=targeted --focus=更正后的最新口径与历史版本
+    why: 重述/更正是双时态知识库的核心考验（竞争版本不得取平均/静默覆盖）。
+    expected: [更正值形成竞争版本或修订链, 冲突走裁决闭环, 历史 as_of 投影仍见旧值]
+    key_questions: [更正涉及科目/期间与差异, 更正原因与内控披露]
+    timeout_minutes: 45
+  - id: deep-pdf-late-table
+    group: iter
+    repeat: 3
+    title: 80 页后关键表格可达性（巨型年报 PDF）
+    market: HK
+    command: /research 3988.HK --depth=targeted --focus=年报财务报表附注中的分部报告
+    why: 411 页年报后半部附注表的分页续读验收（Document Read v2 惰性续解）。
+    expected: [PDF 带页码存档完整性如实, read/search_document 定位 pp.315+,
+               分部观测 locator 带 page, 关键数值逐字来自附注原文]
+    key_questions: [各分部收入与利润（最新财年）, 分部口径定义与可比性]
+    timeout_minutes: 45
+  - id: guidance-to-actual
+    group: iter
+    title: 电话会指引与实际兑现
+    market: US
+    command: /research NVDA --depth=targeted --focus=最近两个季度公司指引与实际披露值对比
+    why: guidance 源未接入时的诚实降级与来源分层验收（发行人材料 vs 媒体转述）。
+    expected: [guidance 绑发行人原文或显式 missing, guidance/reported 不混 nature,
+               兑现对比只在两类都有时给出]
+    key_questions: [最近两季指引（指标/区间/发布时间）, 实际披露值与指引差距]
+    timeout_minutes: 45
+  - id: tsla-margin-adjustments
+    group: iter
+    title: TSLA 汽车毛利率与监管积分剔除
+    market: US
+    command: /research TSLA --depth=targeted --focus=剔除监管积分后的汽车毛利率趋势
+    why: 同口径调整（含/不含积分）是「口径不一致直接比较」的哨兵场景。
+    expected: [两种口径分别成观测不混用, 调整依据引用披露原文, 趋势结论带口径限定]
+    key_questions: [近四季汽车毛利率（含/不含积分）, 积分收入规模与来源]
+    timeout_minutes: 45
+  - id: msft-capex-guidance
+    group: iter
+    title: MSFT 资本开支指引与 Azure 增速
+    market: US
+    command: /research MSFT --depth=targeted --focus=资本开支指引与 Azure 收入增速的对应关系
+    why: 指引-实际-资本开支三角验证，跨期拼接与单位纪律的常见病场景。
+    expected: [capex 与 Azure 增速期间/单位一致, 指引与实际分行, 推论带前提标注]
+    key_questions: [近四季 capex 与指引, Azure 增速与产能约束表述]
+    timeout_minutes: 45
+  - id: 0700hk-buyback-fcf
+    group: iter
+    title: 0700.HK 回购与自由现金流
+    market: HK
+    command: /research 0700.HK --depth=targeted --focus=回购规模与自由现金流的覆盖关系
+    why: 港股回购+FCF 口径（IFRS 经营现金流-资本开支）跨表计算的血缘验收。
+    expected: [FCF 走 CalculationRun 有输入引用, 回购金额期间对应正确,
+               覆盖倍数可重算]
+    key_questions: [近四季回购金额与节奏, FCF 口径与覆盖倍数]
+    timeout_minutes: 45
+  # ---- 单股 holdout（4）----
+  - id: aapl-services-mix
+    group: holdout
+    title: AAPL 服务收入占比与毛利率结构
+    market: US
+    command: /research AAPL --depth=targeted --focus=服务收入占比趋势与分部毛利率差异
+    why: 留出验收：大市值充分披露标的上的口径与分部纪律。
+    expected: [服务/产品分部不混, 毛利率口径标注 basis, 数值可回指 filing]
+    key_questions: [服务收入占比趋势, 分部毛利率差异与原因]
+    timeout_minutes: 45
+  - id: 9988hk-segment-reorg
+    group: holdout
+    title: 9988.HK 分部重组后的口径可比性
+    market: HK
+    command: /research 9988.HK --depth=targeted --focus=分部重组后新旧口径的可比性
+    why: 留出验收：分部重组=口径变更的真实场景（重述与不可比必须显式）。
+    expected: [新旧口径不直接拼接, 不可比处显式标注原因, 重述链可见]
+    key_questions: [重组前后分部划分, 可比期间的重述口径]
+    timeout_minutes: 45
+  - id: mu-hbm-cycle
+    group: holdout
+    title: MU HBM 产能与存储周期
+    market: US
+    command: /research MU --depth=targeted --focus=HBM 产能爬坡与存储价格周期的关系
+    why: 留出验收：周期性行业的指引与产能兑现时间线。
+    expected: [产能/价格预测与公司指引分行, 周期判断给替代解释与反证记录]
+    key_questions: [HBM 产能爬坡节奏, 存储价格周期位置证据]
+    timeout_minutes: 45
+  - id: 1211hk-ev-margins
+    group: holdout
+    title: 1211.HK 整车毛利率与价格战
+    market: HK
+    command: /research 1211.HK --depth=targeted --focus=价格战下整车毛利率变化与成本结构
+    why: 留出验收：港股中文披露 + 毛利率归因分析。
+    expected: [中文原文逐字引用, 毛利率归因区分事实与推断, 价格战证据一手化]
+    key_questions: [整车毛利率趋势, 成本结构与降价传导证据]
+    timeout_minutes: 45
+  # ---------------- 行业/多公司比较（8）----------------
+  - id: ai4s-tech-commercial      # 沿用哨兵题（漏斗全链）
+    group: iter
+    title: AI for Science 技术与商业兑现
+    market: US
+    command: /industry ai-for-science
+    why: 行业漏斗全链（F1-F5）：技术证据与商业兑现分层，论文数量不直接变护城河评分。
+    expected: [candidate_assessment 区分 technology/commercial stage,
+               独立验证与公司自述分开, 每票绑证据, 反证检索有记录]
+    key_questions: [哪些公司形成技术护城河且可能商业爆发, 现金消耗与验证事件时间线]
+    timeout_minutes: 180
+  - id: glp1-competition
+    group: iter
+    title: GLP-1 减肥药竞争格局
+    market: US
+    command: /industry glp1-weight-loss
+    why: 双寡头 vs 追赶者的比较型研究（试验数据/产能/适应症扩展的证据矩阵）。
+    expected: [试验数据与商业化证据分层, 产能约束引用披露, 候选淘汰给理由]
+    key_questions: [双寡头壁垒证据, 追赶者差异化路径与验证事件]
+    timeout_minutes: 180
+  - id: solid-state-battery
+    group: iter
+    title: 固态电池产业化节奏
+    market: HK
+    command: /industry solid-state-battery
+    why: 产业化时间表类研究：公司自述与独立验证的分离是核心考验（中日韩来源混合）。
+    expected: [量产时间表区分公司自述/第三方, 技术路线替代解释,
+               商业化里程碑可定位]
+    key_questions: [各路线量产时间证据, 成本曲线与替代风险]
+    timeout_minutes: 180
+  - id: semi-equipment-localization
+    group: iter
+    title: 半导体设备国产替代
+    market: HK
+    command: /industry semi-equipment-localization
+    why: 政策/出口管制敏感行业：来源角色与时效（管制清单版本）是核验重点。
+    expected: [管制事实引用官方清单（日期可见）, 国产化率区分口径,
+               候选收入相关度有证据]
+    key_questions: [哪些环节国产化率提升最快, 管制变化的时点与范围]
+    timeout_minutes: 180
+  - id: innovative-drug-outlicense
+    group: iter
+    title: 创新药出海授权（license-out）
+    market: HK
+    command: /industry innovative-drug-outlicense
+    why: 授权交易类研究：首付/里程碑/总额必须分清（BE 同型口径事故的行业版）。
+    expected: [首付款/里程碑/潜在总额不混写, 交易条款引用公告原文,
+               兑现时间线可追踪]
+    key_questions: [近期重大 license-out 交易结构, 里程碑兑现证据]
+    timeout_minutes: 180
+  - id: cloud-capex-cycle
+    group: iter
+    title: 云厂商资本开支周期比较
+    market: US
+    command: /industry cloud-capex-supercycle
+    why: 多公司同口径比较（MSFT/GOOGL/AMZN/META capex 指引）——口径对齐是难点。
+    expected: [同期间同口径比较表, 不可比处给原因, 指引与实缴分行]
+    key_questions: [四大云商 capex 指引与实际, 供给约束证据]
+    timeout_minutes: 180
+  - id: hk-banks-nim        # holdout
+    group: holdout
+    title: 香港银行净息差比较
+    market: HK
+    command: /industry hk-banks-nim
+    why: 留出验收：同市场多公司财务比较（NIM/成本收入比口径纪律）。
+    expected: [NIM 口径一致（半年/全年）, 比较表数值可回指, 缺失项标 missing]
+    key_questions: [主要银行 NIM 趋势对比, 息差压力来源证据]
+    timeout_minutes: 180
+  - id: robotics-mass-production     # holdout
+    group: holdout
+    title: 人形机器人量产兑现
+    market: HK
+    command: /industry humanoid-robotics-production
+    why: 留出验收：量产承诺 vs 交付证据（预期管理类研究的兑现纪律）。
+    expected: [量产计划与交付数据分行, 订单/意向金口径显式, 验证事件时间线]
+    key_questions: [各厂量产计划与已交付证据, 订单口径与兑现概率]
+    timeout_minutes: 180
+  # ---------------- 历史档案增量刷新（4，链式：建档 → 刷新）----------------
+  - id: be-refresh-quarterly
+    group: iter
+    title: BE 建档后季度刷新（增量更新纪律）
+    market: US
+    chain:
+      - /research BE --depth=targeted --focus=订单与收入基线建档
+      - /research BE --depth=refresh --focus=最新季报与订单变化
+    why: 增量刷新验收（方案 §9.3）：新财报到达只更新受影响指标/论断，
+      旧快照不变；无证据变化不得制造「新发现」。
+    expected: [刷新走 prepare/commit 幂等, 依赖失效与重算留痕,
+               变化说明列出真正变化项, 无变化不显式报新发现]
+    key_questions: [最新季报相对基线的真实变化, 受影响论断的重审记录]
+    timeout_minutes: 45
+  - id: nvda-refresh-guidance
+    group: iter
+    title: NVDA 建档后指引刷新
+    market: US
+    chain:
+      - /research NVDA --depth=targeted --focus=收入与指引基线
+      - /research NVDA --depth=refresh --focus=最新指引变化
+    why: 指引类档案的增量刷新：指引修订必须带快照日期（方案 §5.2 query_expectations
+      纪律的刷新侧）。
+    expected: [指引修订区分快照时点, 旧指引历史可见, 变化解释完整]
+    key_questions: [指引是否上调/下调及幅度, 修订对应的披露出处]
+    timeout_minutes: 45
+  - id: lob-refresh-restatement    # holdout
+    group: holdout
+    title: LOB 重述后的档案刷新
+    market: US
+    chain:
+      - /research LOB --depth=targeted --focus=现金流与贷款出售收益基线
+      - /research LOB --depth=refresh --focus=10-K/A 重述后的口径更新
+    why: 留出验收：重述场景下的增量刷新（旧值修订链 + 投影隔离）。
+    expected: [重述值走 corrected 修订链, 历史快照不变, 受影响计算重算留痕]
+    key_questions: [重述影响的指标与期间, 修订前后差异]
+    timeout_minutes: 45
+  - id: 3988-refresh-annual       # holdout
+    group: holdout
+    title: 3988.HK 年报后档案刷新
+    market: HK
+    chain:
+      - /research 3988.HK --depth=targeted --focus=分部报告基线
+      - /research 3988.HK --depth=refresh --focus=年报更新后的分部口径
+    why: 留出验收：巨型 PDF 年报场景的增量刷新（后半部表格 + 刷新链）。
+    expected: [新年报版本与原版本并存可辨, 分部口径变化显式, 增量重算可见]
+    key_questions: [年报间分部口径变化, 受影响的观测与论断]
+    timeout_minutes: 45
+
+# 验收指标（方案 §10.2）：关键来源召回 Recall@20 ≥85%（分桶）、原文可获取率 ≥90%、
+# 关键数值准确率 ≥98%、引用可解析率 100%、引用语义支持率 ≥95%、有效问题覆盖 ≥85%、
+# 反证检查覆盖 100%、历史/快照污染 = 0、重复资料率较 baseline 降 ≥50%、
+# 盲评 C vs A 胜率 ≥70%（两位评审 + 样本数/平局/不确定区间）。

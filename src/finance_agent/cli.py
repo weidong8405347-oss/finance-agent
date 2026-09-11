@@ -153,6 +153,7 @@ def build_orchestrator(data_dir: Path):
     from .decision.store import DecisionStore
     from .gateway.adapters.edgar import fetch_filing_text
     from .gateway.fetch import fetch_document_paged  # Document Read v2（保页码/目录/完整性）
+    from .harness.ablation import ablation_flags
     from .harness.approvals import ApprovalService
     from .main_agent import MainAgent
     from .plugins.builtin import build_builtin_registry
@@ -188,7 +189,13 @@ def build_orchestrator(data_dir: Path):
     plugin_registry = build_builtin_registry(env=plugin_env)
     compiled = plugin_registry.compile(stage="research", env=plugin_env)
     gateway = DataGateway(mode="live", events=events, run_id="live-gateway")
+    ablation = ablation_flags()
     for adapter in compiled.adapters:
+        # 消融（方案 §10.2）：关闭第二搜索源验证双源合并净收益
+        if "second_search" in ablation and \
+                adapter.capability().source_id == "web_search_tavily":
+            print("[finance-agent] 消融运行：第二搜索源（tavily）未注册进网关")
+            continue
         gateway.register(adapter)
     for st in compiled.blocked:
         # 启动提示保留（旧装配的可诊断性）：未启用插件带状态与原因
@@ -284,6 +291,8 @@ def build_orchestrator(data_dir: Path):
         fetch_document_paged=fetch_document_paged,  # Document Read v2：保页码/目录/完整性
         plugin_registry=plugin_registry,
         plugin_env=plugin_env,
+        # 消融开关（方案 §10.2 + F14；评估/试点专用，生产默认空集）
+        ablation=ablation_flags(),
         metrics=metrics,
         metric_writer=metric_writer,
         calculations=calculations,

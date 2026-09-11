@@ -37,6 +37,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 TASKS_FILE = REPO_ROOT / "evals" / "sentinel_tasks.yaml"
+#: P3 题集（24 题：16 迭代 + 8 留出；留出组受预算制保护）
+TASKS_FILE_24 = REPO_ROOT / "evals" / "sentinel_tasks_24.yaml"
+#: holdout 查询预算台账（权力分离的技术落地，见 evaluation/holdout.py）
+HOLDOUT_LEDGER = REPO_ROOT / "evals" / "holdout-ledger.json"
 
 #: 采集的事件类型（确定性验收信号，方案 §10.2 指标的可自动采集子集）
 _COLLECT_TYPES = (
@@ -53,23 +57,33 @@ _COLLECT_TYPES = (
 )
 
 
-def load_tasks() -> list[dict]:
+def load_tasks(path: Path | None = None) -> list[dict]:
     import yaml
 
-    data = yaml.safe_load(TASKS_FILE.read_text(encoding="utf-8"))
+    tasks_file = path or TASKS_FILE
+    data = yaml.safe_load(tasks_file.read_text(encoding="utf-8"))
     tasks = data.get("tasks") or []
     if not tasks:
-        raise SystemExit(f"题集为空: {TASKS_FILE}")
+        raise SystemExit(f"题集为空: {tasks_file}")
+    for t in tasks:
+        t.setdefault("group", "iter")
+        if t.get("group") not in ("iter", "holdout"):
+            raise SystemExit(f"题目 {t.get('id')} 的 group 非法: {t.get('group')!r}"
+                             "（iter/holdout）")
     return tasks
 
 
-def cmd_list() -> int:
-    tasks = load_tasks()
-    print(f"哨兵题集（frozen {TASKS_FILE}）：{len(tasks)} 题")
+def cmd_list(tasks: list[dict] | None = None) -> int:
+    tasks = tasks if tasks is not None else load_tasks()
+    print(f"哨兵题集（{len(tasks)} 题）：")
     for t in tasks:
         pending = "（待冻结 ticker）" if "{TICKER}" in str(t.get("command", "")) else ""
-        print(f"- {t['id']}: {t.get('title', '')} [{t.get('market', '?')}]{pending}")
-        print(f"    {t.get('command', '')}")
+        group = t.get("group", "iter")
+        repeat = f" ×{t['repeat']}" if int(t.get("repeat") or 1) > 1 else ""
+        chain = " [链式×{}]".format(len(t["chain"])) if t.get("chain") else ""
+        print(f"- {t['id']}: {t.get('title', '')} [{t.get('market', '?')}/"
+              f"{group}{repeat}{chain}]{pending}")
+        print(f"    {t.get('command') or ' → '.join(t.get('chain') or [])}")
     return 0
 
 
@@ -152,14 +166,57 @@ def _extract_signals(collected: list[dict], session: str) -> dict:
 
 def run_task(task: dict, data_dir: Path, *, dry_run: bool,
              auto_approve_gates: bool = False) -> dict:
+    """单题执行：单命令（command）或链式（chain: 建档 → 刷新，同数据目录顺序跑）。"""
     task_id = str(task["id"])
+    chain = [str(c) for c in (task.get("chain") or [])]
     command = str(task.get("command") or "")
     result: dict = {
         "task_id": task_id, "title": task.get("title"), "market": task.get("market"),
-        "command": command,
+        "group": task.get("group", "iter"),
+        "repeat": task.get("repeat", 1),
+        "command": command or chain,
         "started_at": datetime.now(UTC).isoformat(),
         "environment": _environment(auto_approve_gates),
     }
+    if chain:
+        # 链式题（历史档案增量刷新，方案 §10.1）：同一数据目录顺序执行，
+        # 信号跨全链采集；任一环节失败即停（后环节依赖前环节的档案）
+        chain_results: list[dict] = []
+        for i, cmd in enumerate(chain, 1):
+            sub = dict(task)
+            sub.pop("chain", None)
+            sub["command"] = cmd
+            sub["_chain_session_suffix"] = f"-chain{i}"
+            sub_result = _run_single_command(sub, data_dir, dry_run=dry_run,
+                                             auto_approve_gates=auto_approve_gates)
+            chain_results.append({
+                "command": cmd, "status": sub_result.get("status"),
+                "elapsed_seconds": sub_result.get("elapsed_seconds"),
+                "summary": ((sub_result.get("command_done") or {}).get("summary")
+                            or "")[:400],
+            })
+            if sub_result.get("status") not in ("completed", "completed_after_grace",
+                                                "dry-run"):
+                break  # 链中断可见（不假装跑完）
+        done = [r for r in chain_results
+                if r["status"] in ("completed", "completed_after_grace")]
+        result.update({
+            "status": ("completed" if len(done) == len(chain) else "error"),
+            "chain_results": chain_results,
+            "elapsed_seconds": sum(r.get("elapsed_seconds") or 0 for r in chain_results),
+        })
+        return result
+    single = _run_single_command(task, data_dir, dry_run=dry_run,
+                                 auto_approve_gates=auto_approve_gates)
+    result.update(single)
+    return result
+
+
+def _run_single_command(task: dict, data_dir: Path, *, dry_run: bool,
+                        auto_approve_gates: bool = False) -> dict:
+    task_id = str(task["id"])
+    command = str(task.get("command") or "")
+    result: dict = {}
     if "{TICKER}" in command:
         result.update({
             "status": "skipped",
@@ -196,7 +253,8 @@ def run_task(task: dict, data_dir: Path, *, dry_run: bool,
     # 全库事件水位：只采集本题目运行期间新增的事件
     row = events._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()  # noqa: SLF001
     since_seq = int(row[0])
-    session = f"sentinel-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{task_id}"
+    session = (f"sentinel-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{task_id}"
+               f"{task.get('_chain_session_suffix') or ''}")
     timeout_s = float(task.get("timeout_minutes") or 60) * 60
 
     t0 = time.monotonic()
@@ -287,6 +345,13 @@ def _environment(auto_approve_gates: bool) -> dict:
     """A 组基线冻结（方案 §10.1）：代码版本与模型配置随结果存档，事后可归因。"""
     env: dict = {"auto_approve_gates": auto_approve_gates}
     try:
+        from finance_agent.harness.ablation import ablation_flags, ablation_notes
+
+        flags = ablation_flags()
+        env["ablation"] = ablation_notes(flags)  # 消融运行必须可归因（关了什么）
+    except Exception:  # noqa: BLE001 - 消融信息缺失不阻断运行
+        env["ablation"] = {}
+    try:
         env["git_commit"] = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True,
             text=True, timeout=10,
@@ -318,11 +383,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="代行人工闸口（如 /industry F3）：基线无人值守可复现；"
                          "每次代行落审计事件并记入结果（非人工判断）")
     ap.add_argument("--data-dir", default="", help="隔离数据目录（默认 data/sentinel/<ts>）")
+    ap.add_argument("--tasks-file", default="",
+                    help="题集文件（默认 evals/sentinel_tasks.yaml；P3 用 "
+                         "evals/sentinel_tasks_24.yaml）")
+    ap.add_argument("--group", choices=["iter", "holdout"], default="",
+                    help="只跑某组（P3 题集：iter 迭代组 / holdout 留出验收组）")
+    ap.add_argument("--allow-holdout", action="store_true",
+                    help="允许运行留出组（HoldoutLedger 预算扣减；缺省拒跑防过拟合）")
     args = ap.parse_args(argv)
 
-    tasks = load_tasks()
+    tasks_file = Path(args.tasks_file) if args.tasks_file else TASKS_FILE
+    tasks = load_tasks(tasks_file)
+    if args.group:
+        tasks = [t for t in tasks if t.get("group", "iter") == args.group]
     if args.list:
-        return cmd_list()
+        return cmd_list(tasks)
     if args.all:
         selected = tasks
     else:
@@ -337,6 +412,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"未选择题目（--task {'/'.join(str(t['id']) for t in tasks)} 或 --all）",
               file=sys.stderr)
         return 2
+    # 留出组预算门（P3：holdout 只在阶段验收时运行，防过拟合题集）
+    holdout_tasks = [t for t in selected if t.get("group") == "holdout"]
+    if holdout_tasks and not args.dry_run:
+        if not args.allow_holdout:
+            names = [t["id"] for t in holdout_tasks]
+            print(f"留出组题目 {names} 需要 --allow-holdout（预算制保护）——已跳过",
+                  file=sys.stderr)
+            selected = [t for t in selected if t.get("group") != "holdout"]
+            if not selected:
+                return 2
+        else:
+            from finance_agent.evaluation.holdout import BudgetExhausted, HoldoutLedger
+
+            ledger = HoldoutLedger(HOLDOUT_LEDGER)
+            kept = []
+            for t in selected:
+                if t.get("group") != "holdout":
+                    kept.append(t)
+                    continue
+                try:
+                    ledger.consume(str(t["id"]))
+                    kept.append(t)
+                except BudgetExhausted:
+                    print(f"留出组 {t['id']} 预算耗尽——跳过（不绕过预算制）",
+                          file=sys.stderr)
+            selected = kept
+            if not selected:
+                return 2
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     data_dir = Path(args.data_dir) if args.data_dir else REPO_ROOT / "data" / "sentinel" / ts
     data_dir.mkdir(parents=True, exist_ok=True)
