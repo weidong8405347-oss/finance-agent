@@ -107,6 +107,7 @@ def _extract_signals(collected: list[dict], session: str) -> dict:
             "violations": cov.get("violations"),
             "evidence_quality": a.get("evidence_quality"),
             "analytical_depth": a.get("analytical_depth"),
+            "numeric_consistency": a.get("numeric_consistency"),  # F17：量表离群/同值异键扫描进信号采集
             "integrity_checks": [
                 {"name": c.get("name"), "passed": c.get("passed"), "detail": c.get("detail")}
                 for c in (a.get("integrity_checks") or [])
