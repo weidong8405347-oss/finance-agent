@@ -16,3 +16,21 @@
 - INDUSTRY_SCHEMA 必填五字段：market_size / growth_rate / value_chain /
   competition / policy
 - 找不到可靠来源就留白，不编造（留白比错判有价值）。
+
+## 写数值的正确形态（F14 教训：形态误用会被门禁拒写）
+
+propose_metric 的 `value_text` **只能是证据里逐字出现的数字原文**（含规模词），
+不得拼接标签/期间文字：
+
+- ✅ `value_text="28.9%"`（证据原文：「CAGR 2026-2032 28.9%」）+ `value_span` 给原句
+- ❌ `value_text="CAGR 2026-2032 28.9%"`（拼接非逐字 → 拒写）
+
+nature 纪律：
+- 供应商一致预期（consensus）**必须有快照日期**（consensus.snapshot_at）——
+  拿不出快照日期就退化为 nature=reported + 绑定来源证据，或干脆不写；
+- 行业级指标写行业实体（market_size/growth_rate），公司财务写公司主体
+  （subject 跨主体需在授权范围内）；
+- 拒写信息里带修法：被拒后按提示修正重提，不要换写法蒙混。
+
+批量提交首选 `submit_question_result`（观测+论断+答案一次过，逐项给拒绝原因）；
+arguments 必须是合法 JSON（先写小批量验证形态，再放大）。

@@ -112,7 +112,9 @@ def canonical_record_text(item: dict[str, Any]) -> str:
     texts: list[str] = []
     scalars: list[str] = []
     for key, value in item.items():
-        if key == "chunk_id":
+        if key == "chunk_id" or key.startswith("_"):
+            # "_" 前缀 = 内部元数据约定（如 SearchBroker 的转载族标记）：
+            # 传输可见但不是证据原文，不进台账（子串校验的基准不受污染）
             continue
         if isinstance(value, str) and value.strip():
             texts.append(value)
@@ -129,16 +131,153 @@ def gateway_grade(gateway: DataGateway, source_id: str) -> str:
     return adapter.capability().pit_grade.value if adapter else "C"
 
 
+def make_search_broker_tool(
+    broker: Any, chunk_store: Any, *,
+    budget: Any | None = None, cache: dict | None = None,
+    max_record_chars: int | None = None,
+):
+    """SearchBroker 的 agent 工具（方案 §5.1 search_sources）。
+
+    与 make_gateway_tool 同一纪律：检索预算真实扣减（每个实际调用的引擎一次，
+    broker 内部执行）、同 run 去重缓存（命中不重复扣预算）、逐条落检索台账
+    （chunk_id 供 register_evidence 引用，PIT 按记录各自来源判定）、
+    长正文凭 chunk_id 按需回读。错误与空结果区分：引擎全失败返回 error，
+    无命中返回空清单 + trace。
+    """
+
+    def tool(arguments: dict[str, Any]) -> dict[str, Any]:
+        mode = str(arguments.get("mode") or "auto")
+        if mode not in ("auto", "primary", "dual"):
+            return {"content": f"error: 未知 mode {mode!r}（auto/primary/dual）",
+                    "provenance": []}
+        cache_key = None
+        if cache is not None:
+            cache_key = ("search_sources", json.dumps(
+                arguments, ensure_ascii=False, sort_keys=True, default=str))
+            hit = cache.get(cache_key)
+            if hit is not None:
+                if budget is not None:
+                    budget.record_duplicate_retrieval()
+                return {**hit, "cached": True}
+        from ..knowledge.models import PitGrade
+
+        result = broker.search(arguments, mode=mode)
+        items = []
+        for r in result.records:
+            broker_meta = r.payload.pop("_broker", {})  # 内部元数据不进台账正文
+            item = {**r.payload, "url": r.url,
+                    "available_at": r.available_at.isoformat()
+                    if r.available_at else None}
+            if chunk_store is not None:
+                item_text = canonical_record_text(item)
+                grade = gateway_grade(broker.gateway, r.source_id)
+                effective = grade if r.available_at is not None else "C"
+                item["chunk_id"] = chunk_store.add(
+                    source_id=r.source_id, text=item_text, url=r.url,
+                    available_at=r.available_at, pit_grade=PitGrade(effective),
+                )
+            if broker_meta:
+                item["broker"] = broker_meta  # 传输层可见：origin/family_size/canonical
+            items.append(_clamp_item(item, max_record_chars))
+        out = {
+            "content": json.dumps(
+                {"items": items, "broker_trace": result.trace,
+                 "note": "搜索用于发现来源；关键断言转入原文读取后才可引为证据"
+                 if items else "空结果不等于不存在：可换检索式/来源或标 unavailable"},
+                ensure_ascii=False, default=str,
+            ),
+            "provenance": [
+                {"source_id": r.source_id,
+                 "available_at": r.available_at.isoformat() if r.available_at else None,
+                 "pit_grade": gateway_grade(broker.gateway, r.source_id)}
+                for r in result.records
+            ],
+        }
+        if cache is not None and cache_key is not None:
+            cache[cache_key] = out
+        return out
+
+    return tool
+
+
+def maybe_make_search_broker(
+    gateway: DataGateway, *, events: Any | None = None, run_id: str = "",
+    budget: Any | None = None,
+) -> Any | None:
+    """装配辅助：网关注册了任一搜索源才产 broker（缺凭证 fail-closed 源不在其列）。"""
+    from .search_broker import SearchBroker
+
+    broker = SearchBroker(gateway, events=events, run_id=run_id, budget=budget)
+    return broker if broker.available() else None
+
+
 #: 网关工具 schema（供 LLMRouter 绑定；按数据源 source_id 逐个生成）
+SEARCH_SOURCES_SCHEMA: dict = {
+    "name": "search_sources",
+    "description": (
+        "双源代理搜索（SearchBroker，方案 §5.1）：Exa 主源优先，主源报错/低召回自动合并 "
+        "Tavily 备源（回退原因随结果可见）；canonical URL 去重 + 转载族归并——两个引擎"
+        "返回同一公告只算一个原始来源（family_size 可见）。结果带 origin 标记与 chunk_id，"
+        "重要断言须转入 fetch_document/read_document 读原文后才能引为证据。"
+        "mode: auto（默认）/ primary（只打主源）/ dual（强制双源）。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "检索式"},
+            "num_results": {"type": "integer", "description": "每源上限（默认 8）"},
+            "mode": {"type": "string", "enum": ["auto", "primary", "dual"]},
+        },
+        "required": ["query"],
+    },
+}
+
 GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
+    "search_sources": SEARCH_SOURCES_SCHEMA,
     "query_edgar": {
         "name": "query_edgar",
-        "description": "查询 SEC EDGAR 披露（filingDate 为 PIT 可知时刻）",
+        "description": (
+            "查询 SEC EDGAR 披露文件清单（filing 记录：表格/期间/原文链接）。"
+            "公开时刻优先 acceptanceDateTime（分钟精度），缺失保守取 filingDate 日末，A 级 PIT。"
+            "拿到记录后用 fetch_document/read_document 读原文；结构化数字首选 query_edgar_facts"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "ticker": {"type": "string"},
                 "forms": {"type": "array", "items": {"type": "string"}},
+                "include_history": {"type": "boolean",
+                                    "description": "遍历历史分段索引（默认只返回最近约千条）"},
+                "max_history_files": {"type": "integer",
+                                      "description": "历史分段上限（默认 4；每段一次额外请求）"},
+            },
+            "required": ["ticker"],
+        },
+    },
+    "query_edgar_facts": {
+        "name": "query_edgar_facts",
+        "description": (
+            "查询 SEC XBRL 结构化财务事实（companyfacts，A 级：acceptance 受理时刻为可知时刻）。"
+            "返回原始 tag/unit/期间/filing 版本（accn）与原文链接——美股收入/利润/现金流/"
+            "资产负债的正式口径首选，数字不依赖正文抽取。注意：分部 KPI/自定义口径可能"
+            "缺失，需回 filing 原文（fetch_document）；结果按披露时间倒序、上限 limit 条，"
+            "用 tags/forms/period 过滤缩小，截断不静默（换更窄过滤条件重查）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "cik": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"},
+                         "description": "XBRL 概念过滤（如 Revenues / NetIncomeLoss / "
+                                        "NetCashProvidedByUsedInOperatingActivities）"},
+                "forms": {"type": "array", "items": {"type": "string"},
+                          "description": "如 10-K / 10-Q / 8-K"},
+                "units": {"type": "array", "items": {"type": "string"},
+                          "description": "USD / shares / pure"},
+                "period_start": {"type": "string", "description": "期间末不早于（YYYY-MM-DD）"},
+                "period_end": {"type": "string", "description": "期间末不晚于（YYYY-MM-DD）"},
+                "limit": {"type": "integer", "description": "默认 120，最大 400"},
             },
             "required": ["ticker"],
         },

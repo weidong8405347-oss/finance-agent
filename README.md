@@ -72,7 +72,19 @@ uv run ruff check src tests
 
 ### 当前进度
 
-**Knowledge 档案升级已落地（M0/M1/M2 + M3/M4 部分，分支 feat/knowledge-dossier-research-upgrade）**
+**Research/Profile 能力加强已落地两轮（分支 `feat/research-profile-capability-upgrade`，方案见 [tools-plugins 计划](docs/research-profile-tools-plugins-plan-2026-09-09.md)，对照见 [实施记录](docs/research-profile-tools-implementation-2026-09-10.md)，哨兵基线见 [基线报告](docs/sentinel-baseline-A-2026-09-10.md)）**
+
+| 项 | 内容 |
+| --- | --- |
+| 第一轮 | P0 可信度（冲突真裁决/validated 分项核验/一手与 PIT 分离/plan 纪律/rubric 内容输入）；统一知识读取（S1/S2/合成共享 typed 查询+证据回读+双层裁决）；Document Read v2（保页码/惰性续解/80 页后表格可达/完整性透明）；SEC XBRL `query_edgar_facts`（acceptance 时刻 A 级）；哨兵题集脚手架 |
+| 基线验证 | 哨兵 6 题真实运行（A 组）+ F1–F9 整改 + A' 验证重跑：5/6 题全链、3 题 sufficient；411 页 PDF 附注直达、中文乱码诚实拦截、重述链条逐字准确、指引-实际正确配对；F10–F13 已整改（量表硬闸/有界修复回环/裁决纪律/状态卡） |
+| P1-C 薄插件层 | `plugins/` 包：类型化 manifest + 注册表（重名/版本/依赖/配置校验，按 stage×market×role 编译）+ 执行器（超时/重试扣预算/错误码）+ manifest 冻结（密钥不进哈希）+ 能力页从编译结果生成；cli 装配 registry 驱动（迁移不改变行为，parity 测试锁定） |
+| P2-A 证据核验 | EvidencePack；verify_claim（硬检查代码 + 原文支持性 LLM 意见，数字硬失败封顶、contradicted 降级 draft、发布硬拦截、反证检索留痕）；submit_question_result 批量提交；track_sub_question 内部子问题（不扩预算/范围）；语义压缩状态卡（事件可重建 + 回流 brief） |
+| P2-B 档案整合 | profile.consolidator：依赖图（document→obs→calc→claim→module）、prepare（待合并/冲突/失效依赖/预期 diff）、commit（幂等 + 基线哈希校验 + 时态失效记录，旧快照不变）；S2 全链接入（含 verify_claim） |
+
+验收：939 passed + ruff 通过（两轮累计新增 130+ 例）。
+
+**Knowledge 档案升级已落地（M0/M1/M2 + M3/M4 部分，已合入 `main`，截至 `d1b83ee`）**
 
 | 层 | 内容 |
 | --- | --- |

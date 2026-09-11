@@ -169,6 +169,11 @@ class EventStore:
         row = self._conn.execute("SELECT MAX(seq) FROM events WHERE run_id = ?", (run_id,)).fetchone()
         return int(row[0]) if row and row[0] is not None else 0
 
+    def global_head_seq(self) -> int:
+        """全库事件水位（跨 run；语义压缩状态卡的事件区间锚点，方案 §8.3）。"""
+        row = self._conn.execute("SELECT MAX(seq) FROM events").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
     def read(
         self,
         run_id: str,

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from ..eventstore.events import (
     FACT_ASSERTED,
     FACT_CONFLICT,
@@ -155,6 +157,93 @@ class ProfileWriter:
             },
         )
         return n
+
+    def adjudicate_conflict(
+        self,
+        entity_kind: str,
+        entity_id: str,
+        field: str,
+        *,
+        keep_fact_id: str = "",
+        keep_evidence_id: str = "",
+        note: str = "",
+        run: RunManifest,
+        namespace: str = "prod",
+    ) -> dict:
+        """真裁决（tools-plugins 方案 §2「旧事实冲突工具」P0 整改）。
+
+        旧缺陷：工具层收 `keep_evidence_id` 却向 writer 传空 `keep_fact_id`，
+        底层只清 conflict_flag——能显示「冲突已处理」，却没有真正选择与保存
+        获胜事实。本方法把裁决闭环补齐：
+
+        1. 在版本链中定位获胜版本（keep_fact_id 优先；否则用 keep_evidence_id
+           反查绑定该证据的版本），定位失败 fail-loud，不静默清标记；
+        2. 获胜版本不是最新投影 → 同值重写一条新事实落最新版（append-only 不破，
+           经全部写侧门禁：证据存在/knowledge-time/numeric-guard）；
+        3. 清除竞争标记并落事件（携带 winner/promoted 事实 id，可审计）。
+
+        返回 {"cleared", "winner_fact_id", "promoted_fact_id"}。
+        """
+        history = self._store.history(
+            entity_kind, entity_id, field, namespace=namespace
+        )
+        if not history:
+            raise KnowledgeInvariantError(
+                f"字段 {field} 无版本链，无从裁决（entity={entity_kind}:{entity_id}）"
+            )
+        winner = None
+        if keep_fact_id:
+            winner = next((r for r in history if r.fact_id == keep_fact_id), None)
+            if winner is None:
+                raise KnowledgeInvariantError(
+                    f"keep_fact_id {keep_fact_id} 不在字段 {field} 的版本链中"
+                    f"（可用：{[r.fact_id for r in history]}）"
+                )
+        elif keep_evidence_id:
+            matches = [r for r in history if keep_evidence_id in (r.evidence_ids or [])]
+            if not matches:
+                raise KnowledgeInvariantError(
+                    f"keep_evidence_id {keep_evidence_id} 未被字段 {field} 的任何版本引用，"
+                    "不能据此裁决（请先确认该证据确实支撑保留值，或改传 keep_fact_id）"
+                )
+            # 同证据支撑多版本时取 knowledge_time 最新的一条（同一摘录的后续修订）
+            winner = max(matches, key=lambda r: r.knowledge_time)
+        else:
+            raise KnowledgeInvariantError(
+                "裁决必须给出 keep_fact_id 或 keep_evidence_id（不接受无获胜方的「清标记」）"
+            )
+
+        current = history[-1]  # history 按 version 升序
+        promoted_fact_id: str | None = None
+        if winner.fact_id != current.fact_id:
+            # 获胜方非最新版 → 同值重写落最新投影（与人工裁决 API 同序：先晋升后清标记，
+            # 晋升写入若因值不同触发新冲突标记，随后的 resolve 一并清除）
+            promoted_fact_id = self.write_fact(
+                Fact(
+                    entity_kind=entity_kind,  # type: ignore[arg-type]
+                    entity_id=entity_id,
+                    field=field,
+                    value=winner.value,
+                    event_time=winner.event_time,
+                    knowledge_time=datetime.now(UTC),
+                    evidence_ids=list(winner.evidence_ids or []),
+                    run_id=run.run_id,
+                ),
+                run=run,
+                namespace=namespace,
+            )
+        cleared = self.resolve_conflict(
+            entity_kind, entity_id, field,
+            keep_fact_id=winner.fact_id,
+            note=note or f"以事实 {winner.fact_id} 为准",
+            run=run,
+            namespace=namespace,
+        )
+        return {
+            "cleared": cleared,
+            "winner_fact_id": winner.fact_id,
+            "promoted_fact_id": promoted_fact_id,
+        }
 
     def _emit(self, type_: str, run_id: str, payload: dict) -> None:
         if self._events is not None:

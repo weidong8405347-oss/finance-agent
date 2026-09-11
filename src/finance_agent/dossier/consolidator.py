@@ -1,0 +1,625 @@
+"""profile.consolidator（tools-plugins 方案 §9.1/§9.3，P2-B）：档案整合与增量刷新。
+
+S2 从「重写 thesis」扩展为：读取冻结基线 → 汇总本轮候选 → 语义去重 →
+冲突清单 → 依赖失效 → 预期 diff → 幂等提交（留变化说明）。
+
+纪律：
+- prepare 是确定性只读预览（不写任何状态）；commit 才落记录，且必须带
+  expected_base_hash——基线过期拒绝提交（不拿旧基线盖新数据）；
+- 依赖失效走**追加记录**（claim_invalidations，按 invalidated_at 时态合并）：
+  旧快照保持原样，历史投影不泄露「今天才作废」的状态；
+- change_set_id 幂等：重跑 commit 不重复落失效记录；
+- 事实与分析分层：整合结论以 Claim/失效记录表达，不直接改冻结产物。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from ..eventstore.events import Event
+from ..eventstore.store import EventStore
+from ..harness.manifest import RunManifest
+from ..knowledge.metric_store import MetricStore
+from ..knowledge.store import BitemporalStore
+from ..research.assessment import numeric_consistency_scan
+
+logger = logging.getLogger("finance_agent.dossier.consolidator")
+
+#: 整合提交事件（变化说明的审计锚点）
+PROFILE_UPDATE_COMMITTED = "profile/update_committed"
+#: 论断失效事件（依赖变更触发；旧快照不变）
+CLAIM_INVALIDATED = "profile/claim_invalidated"
+
+
+class ConsolidationError(Exception):
+    """整合提交被拒（基线过期/引用非法/幂等冲突）——fail-loud，不静默部分提交。"""
+
+
+def _sha16(material: Any) -> str:
+    canon = json.dumps(material, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+
+class ProfileConsolidator:
+    def __init__(
+        self, *, kb: BitemporalStore, metrics: MetricStore,
+        events: EventStore | None = None,
+        calculations: Any | None = None,
+    ):
+        self._kb = kb
+        self._metrics = metrics
+        self._events = events
+        #: CalculationService（可选）：commit 时重算失效依赖的计算（review P2-B
+        #: 「完整变化解释及重算」）；缺省时重算请求被拒绝并显式说明
+        self._calculations = calculations
+
+    # ---------------- 依赖图（§9.3：document → observation → calculation → claim → module）
+
+    def dependency_graph(
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod",
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = as_of or datetime.now(UTC)
+        edges: list[dict[str, str]] = []
+        observations = self._metrics.observations_as_of(
+            entity_kind, entity_id, now, namespace=namespace)
+        for o in observations:
+            for ev in o.evidence_refs or []:
+                edges.append({"from": str(ev), "to": o.observation_id,
+                              "kind": "evidence→observation"})
+        calc_ids = self._metrics.list_calculation_ids(
+            entity_kind, entity_id, now, namespace=namespace)
+        for cid in calc_ids:
+            stored = self._metrics.get_calculation(cid)
+            if stored is None:
+                continue
+            for ref in stored.payload.get("input_refs") or []:
+                if ref.get("ref_id"):
+                    edges.append({"from": str(ref["ref_id"]), "to": cid,
+                                  "kind": "input→calculation"})
+        claims = self._metrics.claims_as_of(
+            entity_kind, entity_id, now, namespace=namespace,
+            statuses=("draft", "validated"))
+        module_of = self._question_module_map(entity_kind, entity_id, namespace)
+        for c in claims:
+            for ref in [*(c.get("support_refs") or []), *(c.get("counter_refs") or [])]:
+                edges.append({"from": str(ref), "to": str(c.get("claim_id")),
+                              "kind": "ref→claim"})
+            module = module_of.get(str(c.get("question_id") or "")) or (
+                f"legacy:{c['legacy_field']}" if c.get("legacy_field") else "general"
+            )
+            edges.append({"from": str(c.get("claim_id")), "to": f"module:{module}",
+                          "kind": "claim→module"})
+        invalidated = sorted(
+            self._metrics.invalidated_observation_ids(namespace=namespace, as_of=now)
+        )
+        return {
+            "entity": f"{entity_kind}:{entity_id}",
+            "as_of": now.isoformat(),
+            "nodes": {
+                "observations": [o.observation_id for o in observations],
+                "calculations": list(calc_ids),
+                "claims": [str(c.get("claim_id")) for c in claims],
+                "invalidated_observations": invalidated,
+            },
+            "edges": edges,
+        }
+
+    def _question_module_map(
+        self, entity_kind: str, entity_id: str, namespace: str,
+    ) -> dict[str, str]:
+        out: dict[str, str] = {}
+        try:
+            plans = self._metrics.plans_for(
+                entity_kind, entity_id, namespace=namespace, limit=5)
+        except Exception:  # noqa: BLE001 - 计划缺失不拖死整合（module 归 general）
+            return out
+        for plan in plans:
+            for q in plan.get("questions") or []:
+                if q.get("question_id") and q.get("module"):
+                    out.setdefault(str(q["question_id"]), str(q["module"]))
+        return out
+
+    # ---------------- prepare（确定性只读预览） ----------------
+
+    def state_hash(
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod",
+        as_of: datetime | None = None, base_snapshot_id: str | None = None,
+    ) -> str:
+        """研究数据基线指纹（expected_base_hash 口径）。
+
+        只覆盖 S2 整合自身不会写的输入：观测投影（id+值+状态）、计算 id、
+        基线快照。thesis Fact/Claim、裁决、失效记录都是整合动作本身的产出，
+        不进指纹（否则 prepare→thesis→commit 的正常工作流会被自己触发
+        「基线过期」）；并发研究写入的新观测/修订会改变指纹 → 拒绝提交。
+        """
+        now = as_of or datetime.now(UTC)
+        obs = self._metrics.observations_as_of(
+            entity_kind, entity_id, now, namespace=namespace)
+        calcs = self._metrics.list_calculation_ids(
+            entity_kind, entity_id, now, namespace=namespace)
+        base = None
+        if base_snapshot_id:
+            snap = self._metrics.get_snapshot(base_snapshot_id)
+            base = (snap or {}).get("data_hash")
+        return _sha16({
+            "entity": f"{entity_kind}:{entity_id}", "namespace": namespace,
+            "base_snapshot": base_snapshot_id, "base_data_hash": base,
+            "observations": sorted(
+                (o.observation_id, str(o.value), str(o.status)) for o in obs),
+            "calculations": sorted(calcs),
+        })
+
+    def prepare_update(
+        self, entity_kind: str, entity_id: str, *,
+        base_snapshot_id: str | None = None,
+        candidate_refs: list[str] | None = None,
+        namespace: str = "prod", as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        """整合预览：待合并、重复、冲突、失效依赖、预期 diff（全部只读）。"""
+        now = as_of or datetime.now(UTC)
+        base = None
+        if base_snapshot_id:
+            base = self._metrics.get_snapshot(base_snapshot_id)
+            if base is None:
+                raise ConsolidationError(f"基线快照不存在: {base_snapshot_id}")
+        else:
+            base = self._metrics.latest_snapshot(
+                entity_kind, entity_id, namespace=namespace)
+        base_inputs = (base or {}).get("inputs") or {}
+        base_ctx = (base or {}).get("context") or {}
+
+        def _base_ids(key: str) -> set[str]:
+            return {str(x) for x in (base_inputs.get(key) or [])}
+
+        # 快照的 claims 是冻结 payload 列表（状态不漂移），id 从中取
+        base_claim_ids = {
+            str(c.get("claim_id")) for c in (base_inputs.get("claims") or [])
+            if isinstance(c, dict)
+        }
+
+        obs = self._metrics.observations_as_of(
+            entity_kind, entity_id, now, namespace=namespace)
+        claims = self._metrics.claims_as_of(
+            entity_kind, entity_id, now, namespace=namespace,
+            statuses=("draft", "validated"))
+        calcs = self._metrics.list_calculation_ids(
+            entity_kind, entity_id, now, namespace=namespace)
+        view = self._kb.view(entity_kind, entity_id, now, namespace=namespace)
+
+        new_obs = [o.observation_id for o in obs
+                   if o.observation_id not in _base_ids("observation_ids")]
+        new_claims = [str(c.get("claim_id")) for c in claims
+                      if str(c.get("claim_id")) not in base_claim_ids]
+        new_calcs = [c for c in calcs if c not in _base_ids("calculation_ids")]
+
+        # 冲突（typed 竞争语义键 + legacy 字段）
+        typed_conflicts = []
+        for sem in self._metrics.conflicted_semantic_hashes(
+            entity_kind, entity_id, namespace=namespace, as_of=now, exclude_resolved=True,
+        ):
+            versions = self._metrics.observation_history(sem, namespace=namespace, as_of=now)
+            typed_conflicts.append({
+                "semantic_hash": sem,
+                "metric_key": versions[0].metric_key if versions else "",
+                "versions": [{"observation_id": v.observation_id, "value": v.value}
+                             for v in versions],
+            })
+        legacy_conflicts = sorted({r.field for r in self._kb.open_conflicts(
+            entity_kind, entity_id, namespace=namespace)})
+
+        # 依赖失效（§9.3 + review R7）：沿完整依赖闭包传播——
+        # observation → calculation →（派生 observation）→ claim → artifact，
+        # 只查直接引用会漏掉「观测 underpinning 计算 underpinning 论断」的下游论断。
+        # 遍历限本主体与 as_of 之前登记的记录（不跨实体、不泄露未来）。
+        invalidated_obs = sorted(
+            self._metrics.invalidated_observation_ids(namespace=namespace, as_of=now))
+        corrected = self._metrics.corrected_observation_ids(
+            namespace=namespace, as_of=now)
+        already = {
+            str(i.get("claim_id"))
+            for i in self._metrics.invalidations_as_of(
+                entity_kind, entity_id, now, namespace=namespace)
+        }
+        # 闭包根 = 已失效 ∪ 已更正（更正有替代版本，下游引用旧值的计算需要重算）
+        stale_dependents, closure_truncated = self._dependency_closure(
+            sorted({*invalidated_obs, *corrected}), entity_kind=entity_kind,
+            entity_id=entity_id, namespace=namespace, now=now)
+        for d in stale_dependents:
+            d["already_invalidated"] = (d["kind"] == "claim"
+                                        and d["ref"] in already)
+
+        # 语义去重线索：同值异维度（语义键漂移候选，F10 扫描复用）
+        scan = numeric_consistency_scan(list(obs))
+
+        # 候选引用分类（模型圈定的本轮整合素材；不可解析显式列出）
+        candidates: dict[str, list[str]] = {"resolved": [], "unresolved": []}
+        for ref in candidate_refs or []:
+            if self._ref_exists(str(ref), namespace):
+                candidates["resolved"].append(str(ref))
+            else:
+                candidates["unresolved"].append(str(ref))
+
+        module_of = self._question_module_map(entity_kind, entity_id, namespace)
+        touched = sorted({
+            module_of.get(str(c.get("question_id") or ""), "general")
+            for c in claims if str(c.get("claim_id")) in set(new_claims)
+        })
+        expected_diff = {
+            "base_snapshot_id": base_ctx.get("snapshot_id"),
+            "base_data_hash": (base or {}).get("data_hash"),
+            "new_observations": len(new_obs), "new_claims": len(new_claims),
+            "new_calculations": len(new_calcs),
+            "modules_touched": touched,
+            "open_conflicts": len(typed_conflicts) + len(legacy_conflicts),
+            "stale_dependents": len(stale_dependents),
+        }
+        change_set_id = "chg-" + _sha16({
+            "entity": f"{entity_kind}:{entity_id}", "namespace": namespace,
+            "base": base_ctx.get("snapshot_id"),
+            "new_obs": sorted(new_obs), "new_claims": sorted(new_claims),
+            "new_calcs": sorted(new_calcs),
+            "stale": sorted(d["ref"] for d in stale_dependents),
+            "conflicts": sorted(c["semantic_hash"] for c in typed_conflicts)
+            + legacy_conflicts,
+        })[:12]
+        return {
+            "change_set_id": change_set_id,
+            "expected_base_hash": self.state_hash(
+                entity_kind, entity_id, namespace=namespace, as_of=now,
+                base_snapshot_id=base_ctx.get("snapshot_id"),
+            ),
+            "entity": f"{entity_kind}:{entity_id}",
+            "as_of": now.isoformat(),
+            "base_snapshot": {
+                "snapshot_id": base_ctx.get("snapshot_id"),
+                "data_hash": (base or {}).get("data_hash"),
+                "as_of": base_ctx.get("as_of"),
+            } if base else None,
+            "merges": {
+                "new_observations": new_obs[:100], "new_claims": new_claims[:100],
+                "new_calculations": new_calcs[:50],
+                "fact_fields": sorted(view)[:50],
+            },
+            "duplicates": scan["same_value_different_dims"],
+            "scale_suspects": scan["scale_suspect_pairs"],
+            "conflicts": {"typed": typed_conflicts, "legacy_fields": legacy_conflicts},
+            "invalidated_dependencies": {
+                "observations": invalidated_obs,
+                "corrected_observations": corrected,
+                "stale_dependents": stale_dependents[:50],
+                "closure_truncated": closure_truncated,
+            },
+            "candidates": candidates,
+            "expected_diff": expected_diff,
+            "hint": ("整合后 commit_profile_update(change_set_id, expected_base_hash, "
+                     "base_snapshot=base_snapshot.snapshot_id) 幂等提交（基线快照绑定到"
+                     "变化集，缺省取最新快照）；冲突先 adjudicate_conflict；需要作废的"
+                     "依赖论断在 commit 的 invalidate_claims 里给 claim_id+reason"
+                     "（先全量校验再原子落库，旧快照不变）"),
+        }
+
+    def _ref_exists(self, ref: str, namespace: str) -> bool:
+        from ..research.artifacts import ref_resolvable
+
+        return ref_resolvable(self._kb, self._metrics, ref, namespace=namespace)
+
+    # ---------------- commit（幂等提交） ----------------
+
+    def _stale_dependents_summary(
+        self, entity_kind: str, entity_id: str, namespace: str, now: datetime,
+    ) -> list[dict[str, Any]]:
+        """当前失效依赖闭包的紧凑清单（commit 变化解释用；与 prepare 同闭包口径）。"""
+        entries, _ = self._dependency_closure(
+            self._stale_roots(namespace, now), entity_kind=entity_kind,
+            entity_id=entity_id, namespace=namespace, now=now)
+        return entries[:200]
+
+    def _default_base_snapshot_id(
+        self, entity_kind: str, entity_id: str, namespace: str,
+    ) -> str | None:
+        """commit 的缺省基线与 prepare 对齐（review R5）：未显式给 base_snapshot
+        时取最新快照——prepare 默认选最新快照而 commit 默认按无快照算哈希，
+        导致已有快照时误报「基线已变化」。选定快照随提交 payload 绑定留痕。"""
+        latest = self._metrics.latest_snapshot(entity_kind, entity_id, namespace=namespace)
+        if not latest:
+            return None
+        sid = str((latest.get("context") or {}).get("snapshot_id") or "")
+        return sid or None
+
+    def _dependency_closure(
+        self, roots: list[str], *, entity_kind: str, entity_id: str,
+        namespace: str, now: datetime, cap: int = 200,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """失效依赖闭包（BFS，review R7）：prepare 预览 / commit 重算 / 变化解释
+        同源。返回 (条目[{ref,kind,via_observation,via_ref}], 是否达上限截断)。"""
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        root_of: dict[str, str] = {r: r for r in roots}
+        queue = list(roots)
+        truncated = False
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            refs = self._metrics.refs_to(
+                current, namespace=namespace,
+                entity_kind=entity_kind, entity_id=entity_id, as_of=now)
+            for kind in ("observations", "calculations", "claims", "artifacts"):
+                for rid in refs.get(kind, []):
+                    if rid in seen:
+                        continue
+                    root = root_of.get(current, current)
+                    root_of.setdefault(rid, root)
+                    queue.append(rid)
+                    if len(entries) >= cap:
+                        truncated = True  # 防御性上限：闭包爆炸时显式截断
+                        continue
+                    entries.append({
+                        "ref": rid, "kind": kind[:-1],
+                        "via_observation": root, "via_ref": current,
+                    })
+        return entries, truncated
+
+    def _stale_roots(self, namespace: str, now: datetime) -> list[str]:
+        """失效闭包根：已失效 ∪ 已更正（带替代版本）的观测（时态一致）。"""
+        return sorted({
+            *self._metrics.invalidated_observation_ids(namespace=namespace, as_of=now),
+            *self._metrics.corrected_observation_ids(namespace=namespace, as_of=now),
+        })
+
+    def _stale_calculation_ids(
+        self, entity_kind: str, entity_id: str, namespace: str, now: datetime,
+    ) -> list[str]:
+        """当前已失效/已更正观测的依赖闭包中的计算 id（重算对象；与 prepare 同口径）。"""
+        entries, _ = self._dependency_closure(
+            self._stale_roots(namespace, now), entity_kind=entity_kind,
+            entity_id=entity_id, namespace=namespace, now=now)
+        return sorted({e["ref"] for e in entries if e["kind"] == "calculation"})
+
+    def _replacement_map(self, namespace: str) -> dict[str, str]:
+        """已失效/已更正观测 → 更正替代版本（metric_revisions 的 corrected 记录）；
+        无替代 = 该依赖无法重算（显式错误，不拿已失效值重跑）。"""
+        return self._metrics.corrected_observation_ids(namespace=namespace)
+
+    def _recompute_calculations(
+        self, calc_ids: list[str], *, entity_kind: str, entity_id: str,
+        namespace: str, manifest: RunManifest | None, now: datetime,
+    ) -> list[dict[str, Any]]:
+        """重算失效依赖的计算（review P2-B）：引用值剥离 + 失效引用重映射后重跑——
+        引用解析取当前/替代版本值，input_hash 幂等（值未变 → 返回原计算，
+        不重复建行）；同批 calc→calc 引用按重算产出重映射（BFS 序父先子后）；
+        失败逐条记录不拖死整体。"""
+        if self._calculations is None:
+            return [{"calculation_id": c, "error": "未装配 CalculationService，"
+                     "无法重算（重算被拒绝是显式的）"} for c in calc_ids]
+        from ..research.calculations import InputRef
+
+        obs_remap = self._replacement_map(namespace)
+        # 失效 ∪ 已更正：引用它们的输入都必须重映射到替代版本（或显式拒绝）
+        invalidated = self._metrics.invalidated_observation_ids(namespace=namespace) \
+            | set(obs_remap)
+        calc_remap: dict[str, str] = {}  # 同批重算产出：旧 calc → 新 calc
+        out: list[dict[str, Any]] = []
+        for cid in calc_ids:
+            stored = self._metrics.get_calculation(cid)
+            if stored is None:
+                out.append({"calculation_id": cid, "error": "计算不存在"})
+                continue
+            inputs: list[InputRef] = []
+            blocked: str | None = None
+            for r in stored.payload.get("input_refs") or []:
+                kind = str(r.get("kind") or "")
+                ref_id = str(r["ref_id"]) if r.get("ref_id") else None
+                # 失效观测引用 → 替代版本；无替代 → 该计算不可重算（显式记录）
+                if kind == "observation" and ref_id in invalidated:
+                    replacement = obs_remap.get(ref_id)
+                    if replacement is None:
+                        blocked = (f"依赖观测 {ref_id} 已失效且无更正替代版本"
+                                   "——重算拒绝（不拿已失效值重跑）")
+                        break
+                    ref_id = replacement
+                elif kind == "calculation" and ref_id in calc_remap:
+                    ref_id = calc_remap[ref_id]
+                # 观测/计算引用：剥掉旧解析值，让服务端按当前值重解析；
+                # assumption/market_data 无引用，保留原值
+                keep_value = kind in ("assumption", "market_data")
+                inputs.append(InputRef(
+                    kind=kind, label=str(r.get("label") or kind),  # type: ignore[arg-type]
+                    ref_id=ref_id,
+                    value=(str(r["value"]) if keep_value and r.get("value") is not None
+                           else None),
+                    unit=str(r.get("unit") or ""),
+                    currency=r.get("currency"),
+                ))
+            if blocked is not None:
+                out.append({"calculation_id": cid, "error": blocked})
+                continue
+            try:
+                result = self._calculations.calculate(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    formula_id=stored.formula_id, inputs=inputs,
+                    assumptions={str(k): str(v) for k, v in
+                                 (stored.payload.get("assumptions") or {}).items()},
+                    run_id=manifest.run_id if manifest else None,
+                    namespace=namespace, now=now,
+                )
+            except Exception as e:  # noqa: BLE001 - 单条失败不拖死整体（记录可见）
+                out.append({"calculation_id": cid,
+                            "error": f"{type(e).__name__}: {e}"})
+                continue
+            if result.calculation_id != cid:
+                calc_remap[cid] = result.calculation_id
+            out.append({
+                "calculation_id": cid,
+                "new_calculation_id": result.calculation_id,
+                "formula_id": stored.formula_id,
+                "old_result": stored.result, "new_result": result.result,
+                "changed": result.calculation_id != cid or result.result != stored.result,
+                "status": result.status,
+            })
+        return out
+
+    def commit_update(
+        self, entity_kind: str, entity_id: str, *,
+        change_set_id: str, expected_base_hash: str,
+        note: str = "", invalidate_claims: list[dict[str, Any]] | None = None,
+        base_snapshot_id: str | None = None,
+        recompute_calculations: bool = False,
+        manifest: RunManifest | None = None, namespace: str = "prod",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """幂等提交整合：校验基线哈希 → 完整校验失效条目 → 同事务落库与事件。
+
+        - 同 change_set_id 重放：返回首次结果（不重复落失效记录）；
+        - expected_base_hash 与当前状态不符：拒绝（基线过期，重新 prepare）；
+        - base_snapshot_id 缺省时与 prepare 取同一默认（最新快照，review R5），
+          并绑定进提交 payload（变化集与基线的对应关系可追溯）；
+        - invalidate_claims 先**全部**校验通过再原子落库（review R6：任一非法
+          整体拒绝，不落半截失效记录，重试不重复追加）。
+        """
+        ts = now or datetime.now(UTC)
+        if not str(change_set_id or "").strip():
+            raise ConsolidationError(
+                "commit 必须带 prepare_profile_update 返回的 change_set_id"
+            )
+        existing = self._metrics.get_profile_update_commit(
+            change_set_id, namespace=namespace)
+        if existing is not None:
+            return {"idempotent_replay": True, **existing}
+        if not str(note or "").strip():
+            raise ConsolidationError("commit 必须给 note（变化说明进审计与档案历史）")
+        if base_snapshot_id is None:
+            base_snapshot_id = self._default_base_snapshot_id(
+                entity_kind, entity_id, namespace)
+        current = self.state_hash(
+            entity_kind, entity_id, namespace=namespace, as_of=ts,
+            base_snapshot_id=base_snapshot_id,
+        )
+        if current != expected_base_hash:
+            raise ConsolidationError(
+                f"基线已变化（expected {expected_base_hash}，当前 {current}）——"
+                "有并发写入或数据更新；重新 prepare_profile_update 后再提交"
+                "（不允许拿过期基线盖新数据）"
+            )
+        # 第一阶段：完整校验全部失效条目（不落库，任一非法整体拒绝）
+        validated_invs: list[dict[str, Any]] = []
+        for item in invalidate_claims or []:
+            claim_id = str(item.get("claim_id") or "")
+            reason = str(item.get("reason") or "").strip()
+            if not claim_id or not reason:
+                raise ConsolidationError(
+                    f"invalidate_claims 条目必须含 claim_id 与 reason（收到 {item!r}）")
+            claim = self._metrics.get_claim(claim_id)
+            if claim is None or claim.get("namespace", "prod") != namespace or (
+                claim.get("entity_kind"), claim.get("entity_id"),
+            ) != (entity_kind, entity_id):
+                raise ConsolidationError(
+                    f"论断 {claim_id} 不存在或不属于 {entity_kind}:{entity_id}"
+                    "（跨上下文失效拒绝）")
+            validated_invs.append({
+                "invalidation_id": f"inval-{uuid.uuid4().hex[:10]}",
+                "claim_id": claim_id, "reason": reason,
+                "source_refs": [str(r) for r in (item.get("source_refs") or [])],
+                "invalidated_at": ts.isoformat(),
+                "run_id": manifest.run_id if manifest else None,
+            })
+        invalidations = [
+            {"invalidation_id": v["invalidation_id"], "claim_id": v["claim_id"],
+             "reason": v["reason"]}
+            for v in validated_invs
+        ]
+        payload = {
+            "change_set_id": change_set_id,
+            "entity": f"{entity_kind}:{entity_id}",
+            "namespace": namespace,
+            "expected_base_hash": expected_base_hash,
+            "base_snapshot_id": base_snapshot_id,
+            "committed_at": ts.isoformat(),
+            "note": note,
+            "invalidations": invalidations,
+            "run_id": manifest.run_id if manifest else None,
+        }
+        # 第二阶段：原子落库（失效记录 + 提交台账同事务，review R6）
+        created = self._metrics.record_profile_update(
+            commit={
+                "change_set_id": change_set_id, "namespace": namespace,
+                "entity_kind": entity_kind, "entity_id": entity_id,
+                "expected_base_hash": expected_base_hash,
+                "committed_at": ts.isoformat(),
+                "run_id": manifest.run_id if manifest else None,
+                "payload": payload,
+            },
+            invalidations=validated_invs,
+        )
+        if not created:
+            # 并发窗口：另一提交先落——读回首次结果（幂等语义不变，本次零写入）
+            first = self._metrics.get_profile_update_commit(
+                change_set_id, namespace=namespace)
+            return {"idempotent_replay": True, **(first or payload)}
+        # 第三阶段（可选）：重算失效依赖的计算（review P2-B「完整变化解释及重算」）。
+        # 重算在提交后进行——计算走自身幂等/事件链，不进台账事务（台账只含失效记录）；
+        # 每条重算自带 calculation/completed 事件，完整可归因。
+        recomputations: list[dict[str, Any]] = []
+        if recompute_calculations:
+            stale_calcs = self._stale_calculation_ids(
+                entity_kind, entity_id, namespace, ts)
+            recomputations = self._recompute_calculations(
+                stale_calcs, entity_kind=entity_kind, entity_id=entity_id,
+                namespace=namespace, manifest=manifest, now=ts)
+        # 第四阶段：审计事件（落库成功后追加；事件存储独立，顺序保证先库后事件）
+        if self._events is not None:
+            for v in validated_invs:
+                self._events.append(Event(
+                    run_id=manifest.run_id if manifest else "consolidator",
+                    type=CLAIM_INVALIDATED,
+                    payload={
+                        "invalidation_id": v["invalidation_id"],
+                        "entity": f"{entity_kind}:{entity_id}",
+                        "claim_id": v["claim_id"], "reason": v["reason"],
+                        "source_refs": v["source_refs"],
+                        "namespace": namespace,
+                    },
+                ))
+            self._events.append(Event(
+                run_id=manifest.run_id if manifest else "consolidator",
+                type=PROFILE_UPDATE_COMMITTED,
+                payload={**payload, "recomputations": recomputations},
+            ))
+        logger.info(
+            "档案整合提交 %s:%s change_set=%s（失效 %d 条论断，重算 %d 条计算）",
+            entity_kind, entity_id, change_set_id, len(invalidations),
+            len(recomputations),
+        )
+        # 完整变化解释（review P2-B）：失效论断 + 重算明细 + 未自动处理的残留依赖
+        remaining_stale = [
+            d for d in (self._stale_dependents_summary(entity_kind, entity_id,
+                                                       namespace, ts))
+            if d["kind"] != "calculation"
+        ]
+        return {
+            "committed": True, **payload,
+            "recomputations": recomputations,
+            "dependency_resolution": {
+                "claims_invalidated": len(invalidations),
+                "calculations_recomputed": sum(
+                    1 for r in recomputations if r.get("changed")),
+                "calculations_recompute_failed": [
+                    r for r in recomputations if r.get("error")],
+                "remaining_stale_dependents": remaining_stale[:20],
+            },
+            "snapshot_note": ("新快照由下一次投影/发布按 data_hash 幂等生成；"
+                              "旧快照与历史投影保持不变（失效按 invalidated_at 时态合并）"),
+        }
+
+
+__all__ = [
+    "ProfileConsolidator", "ConsolidationError",
+    "PROFILE_UPDATE_COMMITTED", "CLAIM_INVALIDATED",
+]

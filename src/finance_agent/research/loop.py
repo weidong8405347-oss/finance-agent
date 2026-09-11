@@ -14,11 +14,13 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from ..eventstore.events import (
     CONTEXT_INJECT,
     RESEARCH_ASSESSMENT,
     RESEARCH_BUDGET,
+    RESEARCH_CONTEXT_COMPRESSED,
     RESEARCH_PARTIAL_PUBLISHED,
     RESEARCH_PLAN_CREATED,
     RESEARCH_QUESTION_STALL,
@@ -95,6 +97,10 @@ def _question_groups(plan_payload: dict) -> list[tuple[str, list[str]]]:
 
 logger = logging.getLogger("finance_agent.research")
 
+#: 基线发现 F11：连续「只有可验证探索、无正式产出」的轮次上限——给门禁修复
+#: 回环留轮次，但不允许无限探索（预算照常扣减，超限仍 stalled）
+_MAX_EXPLORATION_ONLY_ROUNDS = 2
+
 
 class ResearchLoop:
     def __init__(
@@ -115,6 +121,8 @@ class ResearchLoop:
         judge_llm: LLM | None = None,  # research-rubric 软反馈（advisory，D4）
         should_stop: Callable[[], bool] | None = None,  # 取消闸（轮次边界检查）
         fetch_document: Callable[[str], str] | None = None,  # 文档正文抓取（live 才有）
+        #: 分页抓取（Document Read v2）：f(url) -> FetchedDocument；缺省退回旧纯文本抓取
+        fetch_document_paged: Callable[[str], object] | None = None,
         worker_llms: list[LLM] | None = None,  # 维度并行池（P3 §4.2）；None/单元素 → 串行兼容
         # ---- 问题驱动研究（knowledge-dossier-research-redesign §7）----
         plan_id: str | None = None,  # 冻结的 ResearchPlan（metrics 存储中）
@@ -128,6 +136,11 @@ class ResearchLoop:
         #: 只保留最近 N 条工具结果全文，更早的裁到 max_tool_chars（只动投影不动日志）
         max_tool_chars: int | None = DEFAULT_MAX_TOOL_CHARS,
         keep_recent_tools: int | None = DEFAULT_KEEP_RECENT_TOOLS,
+        #: 插件编译能力集（P1-C 执行闭环）：非 None 时 worker 工具经
+        #: RuntimeBinder 绑定（执行面=声明∩装配，ToolExecutor 统一执行纪律）
+        plugin_set: object | None = None,
+        #: 消融开关（方案 §10.2 + F14；评估运行专用，生产空集）
+        ablation: frozenset[str] | None = None,
     ):
         self._store = store
         self._events = events
@@ -144,6 +157,7 @@ class ResearchLoop:
         self._judge_llm = judge_llm
         self._should_stop = should_stop
         self._fetch_document = fetch_document
+        self._fetch_paged = fetch_document_paged
         self._worker_llms = worker_llms or []
         self._plan_id = plan_id
         self._metrics = metrics
@@ -153,6 +167,10 @@ class ResearchLoop:
         self._max_record_chars = max_record_chars
         self._max_tool_chars = max_tool_chars
         self._keep_recent_tools = keep_recent_tools
+        self._plugin_set = plugin_set
+        self._ablation = frozenset(ablation or ())
+        #: 运行期绑定器（run() 内预算就绪后创建；None = 旧装配路径不变）
+        self._binder: Any | None = None
         self.stop_reason: str | None = None
         #: 预算终止的具体维度（wall_clock/tokens/retrieval_calls/...）——可归因，不笼统
         self.budget_exhausted: list[str] = []
@@ -171,6 +189,10 @@ class ResearchLoop:
         #: 研究充分度评估（§7.6；有计划+新存储时填充）
         self.assessment: object | None = None
         self.plan_payload: dict | None = None
+        #: F11：连续 exploration-only 轮次计数（有界修复回环）
+        self._exploration_rounds = 0
+        #: 语义压缩状态卡（§8.3）：上一轮末构建，回流下一轮 brief（跨轮保状态）
+        self._state_card: dict | None = None
 
     def run(
         self,
@@ -184,6 +206,10 @@ class ResearchLoop:
 
         analyzer = GapAnalyzer(self._store)
         chunk_store = ChunkStore()  # 检索台账：本 run 的证据验证基准（跨轮共享）
+        # 文档库（Document Read v2）：同一财报只抓取解析一次，各 worker 共享只读文档引用
+        from ..gateway.documents import DocumentStore
+
+        doc_store = DocumentStore()
         reports: list[IterationReport] = []
         # 评估时刻：显式传入（评估回放）则固定；否则每次 gap 分析取当前真实时间，
         # 避免 run 内新写入的事实因 knowledge_time 晚于「起跑线时刻」而不可见。
@@ -231,6 +257,13 @@ class ResearchLoop:
             run_budget.start()
             self._emit(RESEARCH_BUDGET, {"action": "start", "run_id": self._manifest.run_id,
                                          "budget": run_budget.snapshot().as_payload()})
+        # 执行闭环（P1-C）：预算就绪后创建运行期绑定器——worker 工具的全部
+        # 模型可见调用经 ToolExecutor（校验/超时/重试吃预算/错误码/trace）
+        if self._plugin_set is not None:
+            from ..plugins.runtime import RuntimeBinder
+
+            self._binder = RuntimeBinder(
+                self._plugin_set, events=self._events, budget=run_budget)
         #: 同 run 检索去重（重复资料既是成本也是上下文膨胀的主因）
         retrieval_cache: dict = self._retrieval_cache
         while True:
@@ -278,6 +311,8 @@ class ResearchLoop:
                 "gaps": gaps_before.model_dump(mode="json"),
                 "question_coverage": coverage,
             })
+            # 语义压缩的事件区间锚点（§8.3：状态卡必须可回源重建）
+            round_seq_from = self._events.global_head_seq()
 
             # 维度分组并行（P3 §4.2）：配置了 worker 池（>1）才启用——
             # 每组独立 child run / 独立 context / 独立步数预算；共享 ChunkStore（锁保护）。
@@ -325,7 +360,7 @@ class ResearchLoop:
                         self._run_group, entity_kind, entity_id, objective,
                         gaps_before, round_no, item,
                         workers[i % len(workers)], judge_feedback,
-                        playbook_text, chunk_store,
+                        playbook_text, chunk_store, doc_store, self._state_card,
                     )
                     for i, item in enumerate(schedule.items)
                 }
@@ -372,6 +407,15 @@ class ResearchLoop:
                     metric_writer=self._metric_writer,
                     calculations=self._calculations,
                     plan_id=self._plan_id,
+                    doc_store=doc_store,
+                    fetch_paged=self._fetch_paged,
+                    verify_llm=self._judge_llm or self._llm,
+                    # 二次独立核验（§5.4 检查 4）：judge 核验、research 主模型复核
+                    # （无独立 judge 时不装独立——跳过并留痕）
+                    second_verify_llm=(self._llm if self._judge_llm is not None
+                                       else None),
+                    with_verifier="verifier" not in self._ablation,
+                    with_knowledge_context="knowledge_context" not in self._ablation,
                 )
                 for source_id in self._gateway_sources:
                     tools[f"query_{source_id}"] = make_gateway_tool(
@@ -379,6 +423,20 @@ class ResearchLoop:
                         budget=run_budget, cache=retrieval_cache,
                         max_record_chars=self._max_record_chars,
                     )
+                # SearchBroker（方案 §5.1）：双源代理搜索（主备/去重/转载族归并）
+                from ..gateway.tools import make_search_broker_tool, maybe_make_search_broker
+
+                broker = maybe_make_search_broker(
+                    self._gateway, events=self._events,
+                    run_id=self._manifest.run_id, budget=run_budget)
+                if broker is not None:
+                    tools["search_sources"] = make_search_broker_tool(
+                        broker, chunk_store, cache=retrieval_cache,
+                        max_record_chars=self._max_record_chars)
+                if self._binder is not None:
+                    # P1-C：执行面 = 编译声明 ∩ run 装配（经 ToolExecutor）
+                    tools = self._binder.bind(
+                        tools, run_id=self._manifest.run_id).tools
 
                 if round_no == 1:  # system 契约只注入一次（稳定前缀）
                     self._emit(CONTEXT_INJECT, {"role": "system", "content": GROUNDING_CONTRACT})
@@ -400,6 +458,7 @@ class ResearchLoop:
                         judge_feedback=judge_feedback,
                         plan_payload=self.plan_payload,
                         typed_tools=typed and set(tools) >= {"propose_metric", "answer_question"},
+                        state_card=self._state_card,
                     )
                 )
                 trackers = [tracker]
@@ -413,6 +472,22 @@ class ResearchLoop:
                 (self.plan_payload or {}).get("budgets", {}).get("question_coverage_target", 0.8)
                 if self.plan_payload else 0.8
             )
+            progress = any(tr.any_progress for tr in trackers)
+            close_reads = sum(len(getattr(tr, "close_reads", [])) for tr in trackers)
+            answer_rejections = sum(
+                len(getattr(tr, "answer_rejections", [])) for tr in trackers
+            )
+            # F11：提交类门禁拒绝（propose_metric/claim、answer_question 等）=
+            # 模型真实尝试过交付、处于修复回环——与高价值精读同属可验证探索；
+            # 纯囤证据（只登记不提交）不算。仅限问题驱动（有冻结计划）：
+            # legacy 补字段模式保持旧停滞语义（基线事故形态发生在 plan 模式）
+            submission_rejections = sum(
+                len(getattr(tr, "submission_rejections", [])) for tr in trackers
+            )
+            exploration_only = (
+                (not progress) and self.plan_payload is not None
+                and (submission_rejections > 0 or close_reads >= 3)
+            )
             report = IterationReport(
                 run_id=self._manifest.run_id,
                 round=round_no,
@@ -423,12 +498,15 @@ class ResearchLoop:
                 rejected=rejected,
                 missing_after=list(gaps_after.missing),
                 # 进展 = 字段/观测/论断/计算/问题任一有成功产出（§7.7 防 stalled 误判）
-                progress=any(tr.any_progress for tr in trackers),
+                progress=progress,
                 observations_written=[m for tr in trackers for m in tr.observations],
                 claims_written=[c for tr in trackers for c in tr.claims],
                 calculations_done=[c for tr in trackers for c in tr.calculations],
                 questions_advanced=[q for tr in trackers for q in tr.questions_advanced],
                 question_coverage=coverage_after,
+                exploration_only=exploration_only,
+                close_reads=close_reads,
+                answer_rejections=answer_rejections,
             )
             self._emit(RESEARCH_ROUND_END, report.model_dump(mode="json"))
             reports.append(report)
@@ -439,6 +517,20 @@ class ResearchLoop:
                 entity_kind, entity_id, round_no, report, trackers, dispatched_qids
             )
             self._emit_partial(entity_kind, entity_id, round_no, report)
+            # 语义压缩（§8.3）：状态卡落事件（来源区间+hash，原日志不删可重建），
+            # 并回流下一轮 brief——投影裁剪丢的是旧工具结果，不丢问题状态与关键证据
+            if "state_card" not in self._ablation:
+                self._state_card = self._build_state_card(
+                    entity_kind, entity_id, objective, round_no, trackers,
+                    doc_store, gaps_after, all_rejected, round_seq_from,
+                )
+                self._emit(RESEARCH_CONTEXT_COMPRESSED, self._state_card)
+            else:
+                # 消融运行（F14 诊断）：状态卡关闭必须在事件里可见（归因依据）
+                self._emit(RESEARCH_BUDGET, {
+                    "action": "ablation", "reason": "state_card 已关闭（FA_ABLATE_STATE_CARD）",
+                    "round": round_no,
+                })
 
             coverage_ok_after = coverage_after is None or (
                 coverage_after >= target_coverage and not violations_after
@@ -451,17 +543,40 @@ class ResearchLoop:
                 self.stop_reason = "converged"
                 break
             if not report.progress:
-                self.stop_reason = "stalled"
-                self._emit_stall_diagnostic(
-                    entity_kind, entity_id, gaps_after, all_rejected, reports
-                )
-                break
+                if (
+                    report.exploration_only
+                    and self._exploration_rounds < _MAX_EXPLORATION_ONLY_ROUNDS
+                ):
+                    # F11（基线：answer_question 被拒后的修复尝试不计进展 → 提前 stalled）：
+                    # 可验证探索（提交尝试/精读）给修复回留有界轮次；不重置预算，
+                    # 连续无产出仍照常 stalled（不因模型自报「有进展」续命）
+                    self._exploration_rounds += 1
+                    logger.info(
+                        "research 第 %d 轮无正式产出但有可验证探索（%d 次交题尝试/%d 次精读）："
+                        "给门禁修复回轮次 %d/%d",
+                        round_no, report.answer_rejections, report.close_reads,
+                        self._exploration_rounds, _MAX_EXPLORATION_ONLY_ROUNDS,
+                    )
+                else:
+                    self.stop_reason = "stalled"
+                    self._emit_stall_diagnostic(
+                        entity_kind, entity_id, gaps_after, all_rejected, reports
+                    )
+                    break
+            else:
+                self._exploration_rounds = 0
 
         self._finalize_assessment(entity_kind, entity_id, _now(), reports)
         if self._run_budget is not None:
             self.budget_snapshot = self._run_budget.snapshot().as_payload()
             # 台账级重复（同正文不同请求）与检索级重复（同请求）分开计数
             self.budget_snapshot["duplicate_chunks"] = chunk_store.duplicates
+            # F16 口径拆分：去重命中（同页/同文本重注册，良性）与唯一 chunk 数
+            # 分开呈现——重复资料率的判读基准是唯一内容占比，不是裸命中数
+            self.budget_snapshot["unique_chunks"] = len(chunk_store)
+            # 文档级重复（同内容哈希/同来源 URL 被短路复用）：重复资料率可见
+            self.budget_snapshot["duplicate_documents"] = doc_store.duplicates
+            self.budget_snapshot["documents_stored"] = len(doc_store)
             self.budget_snapshot["timed_out_groups"] = list(self.timed_out_groups)
             self._emit(RESEARCH_BUDGET, {
                 "action": "research_end", "stop_reason": self.stop_reason,
@@ -507,6 +622,21 @@ class ResearchLoop:
                 as_of=now, exclude_resolved=True,
             )
         )
+        # 来源角色归类需要 evidence_id → source_id/url（PIT 与一手分离，方案 §2 P0；
+        # 披露域细化 F7）；解析不了的引用归 unknown 档（诚实缺省，不默认一手）
+        evidence_sources: dict[str, str] = {}
+        evidence_urls: dict[str, str] = {}
+        for obs in observations:
+            for ref in getattr(obs, "evidence_refs", None) or []:
+                if ref in evidence_sources:
+                    continue
+                try:
+                    ev = self._store.get_evidence(ref)
+                except Exception:  # noqa: BLE001 - 不可解析本身由 assessment 计入 unknown 档
+                    continue
+                evidence_sources[ref] = ev.source_id
+                if ev.url:
+                    evidence_urls[ref] = ev.url
         assessment = assess(
             plan,
             claims=claims,
@@ -517,6 +647,8 @@ class ResearchLoop:
             stop_reason=self.stop_reason or "",
             namespace=self._namespace,
             now=now,
+            evidence_sources=evidence_sources,
+            evidence_urls=evidence_urls,
         )
         self.assessment = assessment
         self._emit(RESEARCH_ASSESSMENT, assessment.model_dump(mode="json"))
@@ -553,6 +685,8 @@ class ResearchLoop:
         judge_feedback: str | None,
         playbook_text: str,
         chunk_store,
+        doc_store=None,
+        state_card: dict | None = None,
     ) -> tuple[str, object]:
         """单个 WorkItem 的一轮研究：独立 child run（context 隔离）+ 独立步数预算。
 
@@ -575,6 +709,12 @@ class ResearchLoop:
             calculations=self._calculations,
             plan_id=self._plan_id,
             allowed_question_ids=list(item.question_ids) or None,
+            doc_store=doc_store,
+            fetch_paged=self._fetch_paged,
+            verify_llm=self._judge_llm or self._llm,
+            second_verify_llm=(self._llm if self._judge_llm is not None else None),
+            with_verifier="verifier" not in self._ablation,
+            with_knowledge_context="knowledge_context" not in self._ablation,
         )
         for source_id in self._gateway_sources:
             tools[f"query_{source_id}"] = make_gateway_tool(
@@ -582,7 +722,19 @@ class ResearchLoop:
                 budget=self._run_budget, cache=self._retrieval_cache,
                 max_record_chars=self._max_record_chars,
             )
+        from ..gateway.tools import make_search_broker_tool, maybe_make_search_broker
+
         group_run_id = f"{self._manifest.run_id}--r{round_no}-{group}"
+        broker = maybe_make_search_broker(
+            self._gateway, events=self._events, run_id=group_run_id,
+            budget=self._run_budget)
+        if broker is not None:
+            tools["search_sources"] = make_search_broker_tool(
+                broker, chunk_store, cache=self._retrieval_cache,
+                max_record_chars=self._max_record_chars)
+        if self._binder is not None:
+            # P1-C：并行组同样经编译集绑定（trace 归属到组 run）
+            tools = self._binder.bind(tools, run_id=group_run_id).tools
         self._events.append(
             Event(
                 run_id=group_run_id,
@@ -619,12 +771,17 @@ class ResearchLoop:
                 plan_payload=self._group_plan_view(group, fields, item.question_ids),
                 typed_tools="propose_metric" in tools,
                 assigned_question_ids=list(item.question_ids) or None,
+                state_card=state_card,
             )
             + f"\n\n你是「{group}」维度组的专职研究员。\n{playbook_text}"
-            # 生产纪律（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）
-            + "\n\n生产纪律（防囤证据空转）：按字段逐个推进——每字段：搜索 → 登记 1-2 条关键证据"
-              " → 立即 propose_fact；禁止连续登记超过 3 条证据而不写事实；"
-              "本组字段写完才准碰可选维度；写不出就留白，换下一个字段。"
+            + _worker_discipline(
+                question_driven=bool(item.question_ids),
+                has_document_reader=(
+                    "document" if "read_document" in tools
+                    else "edgar" if "read_edgar_filing" in tools
+                    else ""
+                ),
+            )
         )
         try:
             kernel = AgentKernel(
@@ -637,7 +794,10 @@ class ResearchLoop:
                 ),
                 tools=tools,
                 hooks=self._hooks,
-                max_steps=12,  # 维度组独立步数预算（§4.2）
+                # 维度组独立步数预算（§4.2）：问题驱动组 16 步（精读→证据→观测/论断→
+                # 交题的完整链需要余量；哨兵基线试跑：12 步下证据全部登记成功却零提交），
+                # legacy 补字段组保持 12 步（防囤证据空转的旧约束不变）
+                max_steps=16 if item.question_ids else 12,
                 budget=self._run_budget,  # 全局墙钟/token/检索预算共享扣减（audit §3.3）
                 max_tool_chars=self._max_tool_chars,
                 keep_recent_tools=self._keep_recent_tools,
@@ -662,6 +822,7 @@ class ResearchLoop:
                     "written": list(tracker.written),
                     "rejected": list(tracker.rejected),
                     "evidence_registered": len(tracker.registered),  # 囤证据检测
+                    "close_reads": len(tracker.close_reads),  # F11 高价值精读计数
                     "observations": list(tracker.observations),
                     "claims": list(tracker.claims),
                     "questions_advanced": list(tracker.questions_advanced),
@@ -814,6 +975,21 @@ class ResearchLoop:
             "sources_available": list(self._gateway_sources),
             "suggestions": _stall_suggestions(entity_id, gaps.missing, self._gateway_sources),
         }
+        # F11：探索回环耗尽的 stalled 是另一种形态——有交题尝试/精读但零正式产出，
+        # 建议指向拒绝原因修复，而不是笼统的「换查询策略」
+        if reports and reports[-1].exploration_only:
+            last = reports[-1]
+            diag["exploration_exhausted"] = {
+                "answer_rejections": last.answer_rejections,
+                "close_reads": last.close_reads,
+                "rounds_granted": self._exploration_rounds,
+            }
+            diag["suggestions"].insert(0, (
+                f"门禁修复回环已耗尽（连续 {self._exploration_rounds} 轮只有探索无产出："
+                f"{last.answer_rejections} 次交题尝试/{last.close_reads} 次精读）——"
+                "按 answer_rejections/rejected 里的具体拒绝原因修复（引用/数值/期间/单位），"
+                "或把该题标 disputed/unavailable 并记录 attempts"
+            ))
         self.stall_diagnostic = diag
         logger.warning(
             "research stalled %s:%s：%d 轮零写入，缺口 %s；建议：%s",
@@ -827,7 +1003,7 @@ class ResearchLoop:
             return None
         from .rubric import RubricJudge
 
-        digest = report.model_dump_json()
+        digest = self._build_judge_digest(report)
         score = RubricJudge(self._judge_llm).judge(digest)
         if score is None:
             self._emit(RESEARCH_RUBRIC, {"round": report.round, "parse_error": True})
@@ -838,8 +1014,184 @@ class ResearchLoop:
         )
         return "；".join(score.gaps) if score.gaps else None
 
+    #: rubric digest 上限：够放 ~12 条论断 + 摘录，不致于把 judge 上下文打爆
+    _JUDGE_DIGEST_MAX_CHARS = 12000
+
+    def _build_judge_digest(self, report: IterationReport) -> str:
+        """rubric 输入升级（tools-plugins 方案 §2「研究评审」P0）。
+
+        旧缺陷：judge 只收到 IterationReport 的 ID/字段/计数，无法判断一手证据、
+        反证质量、推理跳跃和关键遗漏。现在附带：本轮写入论断的原文 + 支持摘录、
+        计划问题的结论/未解决项（均有界），让评分基于内容而非仅基于结构。
+        """
+        parts: list[str] = [report.model_dump_json()]
+        if self._metrics is not None and report.claims_written:
+            claim_entries = []
+            for cid in report.claims_written[:12]:
+                payload = self._metrics.get_claim(cid)
+                if payload is None:
+                    continue
+                quotes = []
+                for ref in (payload.get("support_refs") or [])[:3]:
+                    if str(ref).startswith("ev-"):
+                        try:
+                            quotes.append(self._store.get_evidence(str(ref)).verbatim_quote[:400])
+                        except Exception:  # noqa: BLE001 - 未登记引用本身就是评审信号
+                            quotes.append(f"{ref}（不可解析）")
+                entry = {
+                    "claim_id": cid,
+                    "statement": str(payload.get("statement") or "")[:400],
+                    "kind": payload.get("kind"),
+                    "status": payload.get("status"),
+                    "question_id": payload.get("question_id"),
+                    "limitations": (payload.get("limitations") or [])[:3],
+                    "verification": {
+                        k: (payload.get("verification") or {}).get(k)
+                        for k in ("references_valid", "evidence_support", "numeric_checks")
+                    },
+                    "support_quotes": quotes,
+                }
+                claim_entries.append(entry)
+            if claim_entries:
+                parts.append(
+                    "本轮写入的论断（含支持证据原文摘录，评审其是否真正支持结论）："
+                    + json.dumps(claim_entries, ensure_ascii=False)
+                )
+        if self.plan_payload:
+            answered = [
+                {"question_id": q.get("question_id"), "status": q.get("status"),
+                 "conclusion": str(q.get("conclusion") or "")[:300],
+                 "unresolved": (q.get("unresolved") or [])[:3]}
+                for q in self.plan_payload.get("questions", [])
+                if q.get("status") not in (None, "", "unanswered")
+            ]
+            if answered:
+                parts.append("计划问题状态与结论：" + json.dumps(answered, ensure_ascii=False))
+        digest = "\n".join(parts)
+        if len(digest) > self._JUDGE_DIGEST_MAX_CHARS:
+            digest = digest[: self._JUDGE_DIGEST_MAX_CHARS] + "\n…（digest 截断）"
+        return digest
+
+    def _build_state_card(
+        self, entity_kind: str, entity_id: str, objective: str, round_no: int,
+        trackers: list, doc_store, gaps, all_rejected: list[dict], seq_from: int,
+    ) -> dict:
+        """语义压缩状态卡（方案 §8.3）：保留目标、问题状态、关键证据 ID 与定位、
+        已存档文档、未解决冲突、当前结论与下一步；压缩结果与来源事件区间/hash
+        记录为新事件——不删除原日志，确保可重建。确定性构建（不额外调 LLM，
+        语义选择按规则：最近证据/开放问题/未决冲突/最新论断）。
+
+        同时是 F13（重复窗口注册）的可见性基础：卡片列出已存档文档与证据 ID，
+        下一轮 worker 直接复用，不重新搜索/重抓。
+        """
+        now = datetime.now(UTC)
+        card: dict[str, Any] = {
+            "objective": objective, "round": round_no,
+            "entity": f"{entity_kind}:{entity_id}",
+        }
+        if self.plan_payload:
+            card["questions"] = [
+                {
+                    "question_id": q.get("question_id"), "status": q.get("status"),
+                    "conclusion": (str(q.get("conclusion") or "")[:200] or None),
+                    "open_subs": [str(s.get("text") or "")[:80]
+                                  for s in (q.get("sub_questions") or [])
+                                  if s.get("status") == "open"][:4],
+                }
+                for q in self.plan_payload.get("questions", [])
+            ]
+        ev_ids: list[str] = []
+        for tr in trackers:
+            ev_ids.extend(getattr(tr, "registered", []))
+        evidence_recent = []
+        for eid in ev_ids[-15:]:
+            try:
+                ev = self._store.get_evidence(eid)
+                evidence_recent.append({
+                    "evidence_id": eid, "source_id": ev.source_id,
+                    "locator": {k: str(v) for k, v in (ev.locator or {}).items()},
+                })
+            except Exception:  # noqa: BLE001 - 证据回读不到则状态卡跳过（原台账在事件日志）
+                continue
+        card["evidence_recent"] = evidence_recent
+        card["documents"] = doc_store.snapshot()[:10] if doc_store is not None else []
+        if self._metrics is not None:
+            try:
+                claims = self._metrics.claims_as_of(
+                    entity_kind, entity_id, now, namespace=self._namespace,
+                    statuses=("draft", "validated"),
+                )
+                card["claims"] = [
+                    {"claim_id": c.get("claim_id"), "status": c.get("status"),
+                     "statement": str(c.get("statement") or "")[:120],
+                     "evidence_support": (c.get("verification") or {}).get(
+                         "evidence_support", "unchecked")}
+                    for c in claims[-10:]
+                ]
+            except Exception:  # noqa: BLE001 - 论断投影失败不拖死状态卡（如实置空）
+                card["claims"] = []
+        else:
+            card["claims"] = []
+        card["open_conflicts"] = list(gaps.conflicts)[:10]
+        card["rejections_recent"] = [
+            str(r.get("reason") or "")[:120] for r in all_rejected[-5:]
+        ]
+        pending = pending_questions(self.plan_payload) if self.plan_payload else []
+        card["next_actions"] = [
+            f"回答 {q.get('question_id')}：{str(q.get('text') or '')[:60]}"
+            for q in pending[:6]
+        ]
+        seq_to = self._events.global_head_seq()
+        card["source_events"] = {
+            "run_id": self._manifest.run_id, "from_seq": seq_from, "to_seq": seq_to,
+        }
+        material = json.dumps(
+            {k: v for k, v in card.items() if k != "state_hash"},
+            ensure_ascii=False, sort_keys=True, default=str,
+        )
+        card["state_hash"] = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+        return card
+
     def _emit(self, type_: str, payload: dict) -> None:
         self._events.append(Event(run_id=self._manifest.run_id, type=type_, payload=payload))
+
+
+def _worker_discipline(*, question_driven: bool, has_document_reader: str | bool) -> str:
+    """worker 尾部生产纪律（tools-plugins 方案 §2「研究策略」P0）。
+
+    旧缺陷：plan 模式下 worker 尾部仍附「先逐字段写入」纪律，会把开放问题
+    压回快速填字段，影响深度。现在：分配到问题的 worker 用问题驱动纪律
+    （搜索发现 → 重要资料精读 → 证据 → 观测/论断 → 立即交题），
+    legacy 补字段模式（无计划/无分配问题）才保留逐字段纪律。
+
+    has_document_reader："document" = read_document 已装配；"edgar" = 仅
+    read_edgar_filing；其他/False = 无文档读取工具（提示只引用真实存在的工具）。
+    """
+    if question_driven:
+        # 精读提示只引用实际装配的工具（能力与提示同源，不引导模型调不存在的工具）
+        if has_document_reader == "document":
+            read_hint = "用 read_document/search_document 按页精读原文"
+        elif has_document_reader == "edgar":
+            read_hint = "用 read_edgar_filing 抓正文并定位原文窗口"
+        else:
+            read_hint = "用 read_chunk 取回完整正文"
+        return (
+            "\n\n生产纪律（问题驱动，防囤证据空转）：按问题逐个推进——每题：搜索发现 →"
+            f" 重要资料精读（{read_hint}，搜索摘录不足以支撑结论）→ 登记证据 →"
+            " propose_metric/propose_claim → 完成一题立即 answer_question；"
+            "禁止连续登记超过 3 条证据而不产出观测/论断/答案；"
+            "查不到就标 unavailable 并记录 attempts，不烧预算空转。"
+            "answer_question 只需 conclusion + 已登记证据 refs：能答就先交答案，"
+            "结构化观测可随后补；propose_metric 被拒时按拒绝提示的修法示例重试一次，"
+            "仍失败就先交答案再补观测，不要放弃提交。"
+            "旧字段（propose_fact）只在回答问题的顺带产出时写，不为刷字段完整度消耗预算。"
+        )
+    # legacy 补字段模式（2026-09-01 实测 flash worker 囤证据空转：124 次登记 0 次写入）
+    return (
+        "\n\n生产纪律（防囤证据空转）：按字段逐个推进——每字段：搜索 → 登记 1-2 条关键证据"
+        " → 立即 propose_fact；禁止连续登记超过 3 条证据而不写事实；"
+        "本组字段写完才准碰可选维度；写不出就留白，换下一个字段。"
+    )
 
 
 def _question_stall_suggestions(
@@ -878,18 +1230,36 @@ _QUALITATIVE_FIELDS = frozenset({"moat", "risks", "management", "catalysts", "co
 
 
 def _stall_suggestions(entity_id: str, missing: list[str], sources: list[str]) -> list[str]:
-    """停滞建议（规则化，不依赖 LLM）：按缺口形态指出最可能的数据边界。"""
+    """停滞建议（规则化，不依赖 LLM）：按缺口形态指出最可能的数据/工具边界。
+
+    2026-09-10 按当前工具面更新（哨兵基线实测：旧文案指向「待接入 HKEXnews/Exa」，
+    两者早已装配——过时建议会把排查引向不存在的缺口）。
+    """
     out: list[str] = []
     if re.fullmatch(r"\d{4,5}(\.HK)?", entity_id) or entity_id.upper().endswith(".HK"):
-        out.append(
-            "港股披露不在 SEC EDGAR 覆盖内；待接入 HKEXnews 源后重试"
-            "（docs/research-capability-upgrade.md P2）"
-        )
+        if "hkex_news" in sources:
+            out.append(
+                "港股披露用 hkex_news（A 级，全 PDF）：中文 PDF 乱码时（quality=garbled/"
+                "needs_ocr）换英文版/HTML 公告或标 unavailable 并记录 attempts，"
+                "不要硬引乱码正文"
+            )
+        else:
+            out.append(
+                "港股披露不在 SEC EDGAR 覆盖内，且 hkex_news 源未装配"
+                "（检查启动时的源注册/预检提示）"
+            )
     if set(missing) & _QUALITATIVE_FIELDS:
-        out.append(
-            "定性维度（护城河/风险/管理层等）靠现有 EDGAR+行情源覆盖薄弱；"
-            "待接入 web 搜索源（Exa）后重试（docs/research-capability-upgrade.md P2）"
-        )
+        if "web_search" in sources or "web_search_tavily" in sources:
+            out.append(
+                "定性维度（护城河/风险/管理层等）靠 web_search + 文档精读"
+                "（fetch_document/read_document/search_document）；检查检索预算与"
+                "查询改写，连续低收益就发布 partial 并标明缺口"
+            )
+        else:
+            out.append(
+                "定性维度靠 EDGAR/行情源覆盖薄弱，且 web 搜索源未装配"
+                "（检查 NOVITA_API_KEY/EXA_API_KEY/TAVILY_API_KEY 与启动提示）"
+            )
     if not out:
         out.append("可换查询策略重试，或缩小研究目标范围（objective 指定更具体的缺口字段）")
     return out

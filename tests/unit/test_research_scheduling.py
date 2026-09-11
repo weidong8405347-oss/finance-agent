@@ -287,6 +287,11 @@ class TestDispatchAssemblyReplay:
         assert "answer_question" in briefs
         assert "反证" in briefs
         assert "字段 100% 不等于研究充分" in briefs
+        # 尾部落纪律分流（tools-plugins 方案 §2「研究策略」P0）：分配到问题的
+        # worker 用问题驱动纪律，不再附带「先逐字段写入」把开放问题压回填字段
+        # （playbook 里的 legacy 小节是背景说明，尾部注入的才是生效纪律）
+        assert "生产纪律（问题驱动" in briefs
+        assert "生产纪律（防囤证据空转）：按字段逐个推进" not in briefs
 
     def test_worker_answer_gate_rejects_unassigned_question(self, industry_env):
         """worker 只能回答被分配的问题（越位回答让验收无法归因）。"""

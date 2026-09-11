@@ -30,7 +30,11 @@ from ..eventstore.events import (
 )
 from ..eventstore.store import EventStore
 from ..gateway.gateway import DataGateway
-from ..gateway.tools import make_gateway_tool
+from ..gateway.tools import (
+    make_gateway_tool,
+    make_search_broker_tool,
+    maybe_make_search_broker,
+)
 from ..harness.approvals import ApprovalService
 from ..harness.manifest import RunManifest, RunMode
 from ..knowledge.gaps import GapAnalyzer
@@ -40,6 +44,7 @@ from ..knowledge.writer import ProfileWriter
 from ..llm.base import LLM
 from ..loop.kernel import AgentKernel
 from ..research.calc import calc_tool
+from ..research.context_tools import make_context_tools
 from ..research.evidence_desk import ChunkStore
 from ..research.loop import ResearchLoop
 from ..research.playbooks import load_playbook
@@ -48,10 +53,42 @@ from ..research.tools import make_research_tools
 
 logger = logging.getLogger("finance_agent.steps")
 
-# S2 thesis 修订的契约（证据绑定纪律不变：thesis 也必须绑证据）
+
+class _LazyResearchLLM:
+    """惰性 research LLM 代理：首次真正调用时才向 llm_for 取实例。
+
+    用于 S2 的 verify_claim 工具：不预先消耗 llm_for 的脚本计数（测试装配的
+    llm_for 按调用次序发脚本，预取会把主 kernel 的脚本顶掉）。
+    """
+
+    model_name = "research(lazy)"
+
+    def __init__(self, deps: StepDeps):
+        self._deps = deps
+        self._inner = None
+
+    def complete(self, messages, tools):
+        if self._inner is None:
+            self._inner = self._deps.llm_for("research")
+        return self._inner.complete(messages, tools)
+
+# S2 档案更新的契约（tools-plugins 方案 §9.1：从「重写 thesis」扩展为整合与更新）
 _PROFILE_CONTRACT = """\
-你是档案修订员。基于档案事实（query_kb 可查，含每条事实的证据 id）修订该标的的投资论点。
-纪律：论点只能建立在档案事实之上；propose_thesis 必须绑定支撑它的证据 id。
+你是档案整合员（不只是 thesis 重写员）。基于冻结基线与本轮研究产出整合更新该标的档案。
+工作流：
+1. prepare_profile_update 取变化集：待合并（新观测/论断/计算）、重复与量表可疑项、
+   开放冲突、失效依赖（已作废观测的下游）与预期 diff；get_research_context 看问题结论详情；
+2. list_conflicts 检查开放冲突；有则先 adjudicate_conflict 裁决（必须给 rationale；
+   不得留着冲突值写无条件结论）；
+3. read_evidence 核对支撑论点的关键证据原文；
+4. propose_thesis 提交：论点与已裁决的观测/论断一致，绑定支撑证据 id；
+   证据不足或未裁决的点在 limitations 里明确写出；
+5. 有失效依赖或需作废旧论断时，commit_profile_update(change_set_id,
+   expected_base_hash, note, invalidate_claims) 幂等提交并留变化说明；
+   基线过期会被拒，重新 prepare 后再提交。
+纪律：论点只能建立在档案事实/typed 数据之上；validated 仅表示引用校验过，
+内容是否支持结论由你对照原文把关（关键论断可 verify_claim 核验）；
+没有证据表明观点变化时，不得把「新增一条重复资料」说成新投资发现。
 """
 
 PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
@@ -62,14 +99,79 @@ PROFILE_TOOL_SCHEMAS: dict[str, dict] = {
     },
     "propose_thesis": {
         "name": "propose_thesis",
-        "description": "提交修订后的投资论点（必须绑定支撑证据 id）",
+        "description": (
+            "提交修订后的投资论点（必须绑定支撑证据 id）。服务端同时保存为："
+            "旧 thesis Fact（兼容投影）+ 带证据与前提的分析论断 Claim（新读侧入口）"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "thesis": {"type": "string", "description": "修订后的投资论点全文"},
                 "evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "limitations": {"type": "array", "items": {"type": "string"},
+                                "description": "证据不足/未裁决/待验证的限制点"},
             },
             "required": ["thesis", "evidence_ids"],
+        },
+    },
+    "prepare_profile_update": {
+        "name": "prepare_profile_update",
+        "description": (
+            "档案整合预览（确定性只读，不写任何状态）：返回待合并（相对基线快照的"
+            "新观测/论断/计算）、重复与量表可疑项、开放冲突、失效依赖（已作废观测的"
+            "下游计算/论断/产物）与预期 diff，以及 commit 需要的 change_set_id 与 "
+            "expected_base_hash。base_snapshot 缺省取最新快照。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_snapshot": {"type": "string", "description": "基线快照 id（可选）"},
+                "candidate_refs": {"type": "array", "items": {"type": "string"},
+                                   "description": "本轮整合候选引用（服务端验可解析性）"},
+            },
+        },
+    },
+    "commit_profile_update": {
+        "name": "commit_profile_update",
+        "description": (
+            "幂等提交档案整合（宿主规则校验）：expected_base_hash 与当前状态不符"
+            "则拒绝（基线过期，重新 prepare）；base_snapshot 回传 prepare 返回的 "
+            "base_snapshot.snapshot_id（缺省取最新快照，与 prepare 默认一致）；"
+            "invalidate_claims 先全量校验再原子落库（任一非法整体拒绝，"
+            "旧快照与历史投影不变，按时态合并）；同 change_set_id 重放"
+            "返回首次结果。note（变化说明）必填，进审计事件。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "change_set_id": {"type": "string"},
+                "expected_base_hash": {"type": "string"},
+                "note": {"type": "string", "description": "变化说明（哪些数据/结论/置信度变了）"},
+                "invalidate_claims": {
+                    "type": "array",
+                    "description": "需作废的依赖论断（依赖的观测已失效/被更正）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim_id": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "source_refs": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["claim_id", "reason"],
+                    },
+                },
+                "base_snapshot": {
+                    "type": "string",
+                    "description": "基线快照 id（回传 prepare 的 base_snapshot.snapshot_id；"
+                                   "缺省取最新快照）",
+                },
+                "recompute_calculations": {
+                    "type": "boolean",
+                    "description": "失效依赖中的计算是否随提交重算（引用解析取当前值，"
+                                   "input_hash 幂等；结果明细进变化解释）",
+                },
+            },
+            "required": ["change_set_id", "expected_base_hash", "note"],
         },
     },
 }
@@ -115,6 +217,13 @@ class StepDeps:
     eval_runner: Callable[..., dict[str, Any]] | None = None  # (config_name, child_run_id) → summary dict
     fetch_document: Callable[[str], str] | None = None  # 文档正文抓取（生产研究用；eval 回放经
                                                        # ReplayEngine 自带）
+    #: 分页抓取（Document Read v2）：f(url) -> gateway.fetch.FetchedDocument；
+    #: 缺省时研究工具退回旧纯文本抓取（兼容 eval 回放与旧装配）
+    fetch_document_paged: Callable[[str], Any] | None = None
+    #: 薄插件层（P1-C）：PluginRegistry + 凭证可见性环境（manifest 冻结/能力页）；
+    #: 缺省 = 旧装配（无 registry 的测试/回放路径行为不变）
+    plugin_registry: Any | None = None
+    plugin_env: dict[str, str] | None = None
     max_rounds: int | None = None  # None → 动态预算（P3 §4.2：0%→5 轮/>50%→3 轮/仅刷新→1 轮）
     max_steps_per_round: int = 16
     # ---- 档案升级（knowledge-dossier-research-redesign §12.1）：typed 观测/计算/快照 ----
@@ -130,6 +239,9 @@ class StepDeps:
     #: 单条检索记录正文上限（audit §3.3 按需 evidence bundle）；超出部分凭
     #: read_chunk(chunk_id) 取回——工具响应不再无条件灌满上下文
     max_record_chars: int | None = 6000
+    #: 消融开关（方案 §10.2 + F14 诊断；harness/ablation.py）：仅评估/试点用，
+    #: 生产默认空集（全量开启）；只切执行路径，不动数据与历史事件
+    ablation: frozenset[str] = frozenset()
 
 
 def _open_child(deps: StepDeps, ctx: StepContext, step: str) -> RunManifest:
@@ -153,6 +265,76 @@ def _cancelled(ctx: StepContext) -> StepResult:
     return StepResult(status="cancelled", summary="已被用户停止")
 
 
+def _compile_plugin_set(deps: StepDeps, ctx: StepContext, stage: str):
+    """编译本 step 场景的能力集（无 registry → None，旧装配/回放路径）。
+
+    编译失败不阻断研究（partial_with_reason）但必须可见：事件 + 日志双通道。
+    """
+    if deps.plugin_registry is None:
+        return None
+    try:
+        return deps.plugin_registry.compile(stage=stage, env=deps.plugin_env or {})
+    except Exception as e:  # noqa: BLE001 - 编译失败可见，不静默跳过
+        logger.warning("插件编译失败（%s/%s）：%s", stage, ctx.child_run_id, e)
+        deps.events.append(Event(
+            run_id=ctx.child_run_id, type="plugins/compile_failed",
+            payload={"stage": stage, "error": f"{type(e).__name__}: {e}"},
+        ))
+        return None
+
+
+def _freeze_plugin_manifest(
+    deps: StepDeps, ctx: StepContext, stage: str, extra: dict[str, Any] | None = None,
+    compiled: Any | None = None,
+) -> None:
+    """manifest 冻结（tools-plugins 方案 §6.2）：同一 run 不静默切换能力面。
+
+    编译结果（启用插件/工具/schema 指纹/配置哈希，密钥不进哈希）落事件；
+    冻结失败不阻断研究（partial_with_reason）但必须可见：事件 + 日志。
+    无 registry 的旧装配（测试/回放）直接跳过，行为不变。
+    """
+    if deps.plugin_registry is None:
+        return
+    from ..plugins.freezing import freeze_manifest
+
+    try:
+        compiled = compiled or _compile_plugin_set(deps, ctx, stage)
+        if compiled is None:
+            return
+        freeze_manifest(
+            compiled, run_id=ctx.child_run_id, events=deps.events,
+            extra={"entity": f"{ctx.entity_kind}:{ctx.ticker}", **(extra or {})},
+        )
+    except Exception as e:  # noqa: BLE001 - 审计锚点失败可见不阻断（事件+日志双通道）
+        logger.warning("plugin manifest 冻结失败（%s/%s）：%s", stage, ctx.child_run_id, e)
+        deps.events.append(Event(
+            run_id=ctx.child_run_id, type="plugins/freeze_failed",
+            payload={"stage": stage, "error": f"{type(e).__name__}: {e}"},
+        ))
+
+
+def _bind_runtime_tools(
+    deps: StepDeps, ctx: StepContext, stage: str,
+    tools: dict[str, Any], *, budget: Any | None = None, compiled: Any | None = None,
+) -> dict[str, Any]:
+    """执行闭环（P1-C 收口，交付复核整改）：让插件编译结果实际决定工具执行。
+
+    有 registry 时，run 装配的 handler 绑进编译能力集：执行面 = 声明 ∩ 装配，
+    全部模型可见调用经 ToolExecutor（参数校验/超时/重试吃预算/错误码/trace），
+    实际执行面冻结进 plugins/runtime_bound 事件；装配了未声明的工具记 warning。
+    无 registry 的旧装配/回放路径原样返回（行为不变）。
+    """
+    if deps.plugin_registry is None or not tools:
+        return tools
+    compiled = compiled or _compile_plugin_set(deps, ctx, stage)
+    if compiled is None:
+        return tools
+    from ..plugins.runtime import RuntimeBinder
+
+    binder = RuntimeBinder(compiled, events=deps.events, budget=budget)
+    return binder.bind(tools, run_id=ctx.child_run_id).tools
+
+
 # ---------------- S1 研究 ----------------
 
 
@@ -163,6 +345,10 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
     # 问题驱动研究（§7）：冻结 ResearchPlan 后，终止由问题覆盖+字段覆盖+预算共同决定；
     # 已有 100% 档案遇到新目标仍创建计划（只复用有效证据，不宣告「无需研究」）
     plan_id = _prepare_research_plan(deps, ctx)
+    # 编译一次两用：manifest 冻结（声明面）+ ResearchLoop 运行期绑定（执行面，P1-C 收口）
+    plugin_set = _compile_plugin_set(deps, ctx, "research")
+    _freeze_plugin_manifest(deps, ctx, "research", extra={"plan_id": plan_id},
+                            compiled=plugin_set)
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -177,12 +363,15 @@ def step_research(deps: StepDeps, ctx: StepContext) -> StepResult:
         judge_llm=deps.judge_llm,
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
+        fetch_document_paged=deps.fetch_document_paged,
         worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
         plan_id=plan_id,
         metrics=deps.metrics,
         metric_writer=deps.metric_writer,
         calculations=deps.calculations,
         max_record_chars=deps.max_record_chars,
+        plugin_set=plugin_set,
+        ablation=deps.ablation,
     )
     reports = loop.run(
         ctx.entity_kind, ctx.ticker, ctx.objective or f"深度研究 {ctx.ticker}"
@@ -536,8 +725,10 @@ _SYNTHESIZE_CONTRACT = """\
 _SYNTHESIZE_CONTRACT_V2 = """\
 你是 CIO（首席投资官）。基于档案事实、typed 观测与研究论断，提交一份结构化研究报告。
 工作流：
-1. query_kb 读旧字段档案；query_observations 读结构化指标观测；query_claims 读研究论断；
-   read_evidence 核对证据原文。
+1. get_research_context 一次取回研究上下文（问题结论/字段投影/观测与论断概要）；
+   query_kb 读旧字段档案；query_observations 读结构化指标观测（支持过滤与游标，
+   total > returned 时用 cursor 继续）；query_claims 读研究论断；
+   read_evidence 核对证据原文（refs 可批量）。
 2. 用 submit_report_document 提交结构化报告（固定 block 类型）：
    - heading/paragraph：每章「结论—证据—推导—限制」，结论尽量短；
    - claim：引用已登记 claim_id（不要重写论断文本）；
@@ -600,56 +791,23 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             "provenance": [],
         }
 
-    def read_evidence(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            ev = deps.kb.get_evidence(str(args["evidence_id"]))
-        except Exception as e:
-            return {"content": f"error: {e}", "provenance": []}
-        return {
-            "content": json.dumps(
-                {
-                    "evidence_id": ev.evidence_id,
-                    "source_id": ev.source_id,
-                    "url": ev.url,
-                    "verbatim_quote": ev.verbatim_quote,
-                    "available_at": ev.available_at.isoformat() if ev.available_at else None,
-                },
-                ensure_ascii=False,
-            ),
-            "provenance": [
-                {
-                    "source_id": ev.source_id,
-                    "available_at": ev.available_at.isoformat() if ev.available_at else None,
-                    "pit_grade": ev.pit_grade.value,
-                }
-            ],
-        }
+    # 统一知识读取（tools-plugins 方案 §5.3）：与 S1/S2 共用同一模块与契约；
+    # 合成阶段只读（不装配裁决），as_of 固定在本 step 开始时刻（报告内不漂移）；
+    # 限额沿用旧上限（观测 200/论断 100/计算 50），但截断不再静默：返回 total+游标。
+    context_tools = make_context_tools(
+        kb=deps.kb, metrics=deps.metrics, entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+        namespace="prod", as_of=now, writer=deps.writer, manifest=manifest,
+        events=deps.events, read_only=True,
+        default_limits={"query_observations": 200, "query_claims": 100,
+                        "query_calculations": 50},
+    )
 
-    tools: dict[str, Any] = {"query_kb": query_kb, "read_evidence": read_evidence}
+    tools: dict[str, Any] = {"query_kb": query_kb, **context_tools}
     submitted: dict[str, Any] | None = None
     submitted_structures: dict[str, Any] = {}
     contract = _SYNTHESIZE_CONTRACT
     if deps.metrics is not None:
         contract = _SYNTHESIZE_CONTRACT_V2
-
-        def query_observations(_args: dict[str, Any]) -> dict[str, Any]:
-            obs = deps.metrics.observations_as_of(ctx.entity_kind, ctx.ticker, datetime.now(UTC))
-            return {"content": json.dumps([
-                {"observation_id": o.observation_id, "metric_key": o.metric_key,
-                 "value": o.value, "unit": o.unit, "currency": o.currency,
-                 "period": o.period.fiscal_label or o.period.end.isoformat(),
-                 "frequency": o.period.frequency, "nature": o.nature, "basis": o.basis,
-                 "dimensions": o.dimensions, "status": o.status,
-                 "evidence_refs": o.evidence_refs}
-                for o in obs
-            ][:200], ensure_ascii=False), "provenance": []}
-
-        def query_claims(_args: dict[str, Any]) -> dict[str, Any]:
-            claims = deps.metrics.claims_as_of(
-                ctx.entity_kind, ctx.ticker, datetime.now(UTC),
-                statuses=("draft", "validated"),
-            )
-            return {"content": json.dumps(claims[:100], ensure_ascii=False), "provenance": []}
 
         def submit_report_document(args: dict[str, Any]) -> dict[str, Any]:
             """提交即校验（audit §3.9）：同一轮内返回可修复错误，不失掉修复机会。
@@ -706,22 +864,6 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
                 "soft_issues": [i.model_dump(mode="json") for i in issues][:10],
             }, ensure_ascii=False), "provenance": []}
 
-        def query_calculations(_args: dict[str, Any]) -> dict[str, Any]:
-            """已登记计算（可重算引用）：合成时直接引用 calculation_id，不重算。"""
-            try:
-                ids = deps.metrics.list_calculation_ids(
-                    ctx.entity_kind, ctx.ticker, datetime.now(UTC), namespace="prod"
-                )
-            except Exception:  # noqa: BLE001 - 存储不支持时降级为空
-                ids = []
-            out = []
-            for cid in ids[:50]:
-                stored = deps.metrics.get_calculation(cid)
-                if stored is not None:
-                    out.append(stored.payload)
-            return {"content": json.dumps(out, ensure_ascii=False, default=str),
-                    "provenance": []}
-
         def submit_structures(args: dict[str, Any]) -> dict[str, Any]:
             """结构化产物提交即校验 + 按 kind 部分接受（audit §3.7 + 归一层）。
 
@@ -777,9 +919,6 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             return {"content": json.dumps(resp, ensure_ascii=False), "provenance": []}
 
         tools.update({
-            "query_observations": query_observations,
-            "query_claims": query_claims,
-            "query_calculations": query_calculations,
             "submit_structures": submit_structures,
             "submit_report_document": submit_report_document,
         })
@@ -791,6 +930,8 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
             payload={"role": "system", "content": contract},
         )
     )
+    # 执行闭环（P1-C）：合成阶段工具同样经编译集绑定 + ToolExecutor 执行
+    tools = _bind_runtime_tools(deps, ctx, "synthesize", tools)
     kernel = AgentKernel(
         store=deps.events,
         llm=deps.llm_for("research"),
@@ -824,24 +965,9 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
 # ---------------- v2 报告产物（ReportDocument/ResearchArtifact，§7.8） ----------------
 
 SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
-    "query_observations": {
-        "name": "query_observations",
-        "description": "查询当前实体的 typed 指标观测（结构化数值，带 observation_id/期间/口径/证据）",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    "query_claims": {
-        "name": "query_claims",
-        "description": "查询当前实体的研究论断（claim_id/statement/kind/status/支持反方引用）",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    "query_calculations": {
-        "name": "query_calculations",
-        "description": (
-            "查询已登记的受控计算（calculation_id/公式/输入引用/结果）——"
-            "报告用 calculation_ref 引用，不重算"
-        ),
-        "parameters": {"type": "object", "properties": {}},
-    },
+    # query_observations / query_claims / query_calculations / read_evidence 已迁至
+    # 共享上下文工具（research/context_tools.CONTEXT_TOOL_SCHEMAS，S1/S2/合成同一契约），
+    # 由 cli._all_tool_schemas 统一合并；本表只留合成阶段专有的提交类工具。
     "submit_structures": {
         "name": "submit_structures",
         "description": (
@@ -1082,6 +1208,74 @@ def _report_dependencies(doc: Any, metrics: Any) -> dict[str, list[str]]:
     }
 
 
+#: 合成定稿前服务端批量核验的条数上限（F15）：超出上限的未核验论断在
+#: 产物校验备注中逐条可见（claim_content_unchecked 软问题），不为覆盖烧穿预算
+_SYNTHESIZE_VERIFY_CAP = 8
+
+
+def _batch_verify_referenced_claims(
+    deps: StepDeps, ctx: StepContext, claim_ids: list[str], now: datetime,
+) -> dict[str, int]:
+    """合成定稿前的服务端批量核验（B 组发现 F15：工具在但模型不主动用）。
+
+    报告实际引用的 validated 且内容未核验（evidence_support=unchecked）的论断，
+    按 kind 优先（fact_summary > inference > analysis > hypothesis）+ 创建序取 top-N
+    直接调 verify_claim（judge 优先；第二核验者 = research 主模型，
+    不同模型才算独立复核）；结果落库为时态修订并计入产物事件。
+    LLM 不可用/输出不可解析 → 诚实记 unavailable（不冒充已核验，不改状态）。
+    """
+    stats = {"attempted": 0, "verified": 0, "unavailable": 0,
+             "skipped_over_cap": 0, "already_checked": 0}
+    if "verifier" in deps.ablation:
+        stats["ablated"] = 1  # 消融运行：核验关闭必须在结果里可见
+        return stats
+    if not claim_ids or deps.metrics is None:
+        return stats
+    from ..research.verifier import verify_claim
+
+    candidates: list[dict[str, Any]] = []
+    for cid in claim_ids:
+        claim = deps.metrics.get_claim(cid)
+        if not claim or claim.get("status") != "validated":
+            continue
+        if (claim.get("verification") or {}).get("evidence_support", "unchecked") \
+                != "unchecked":
+            stats["already_checked"] += 1
+            continue
+        candidates.append(claim)
+    kind_rank = {"fact_summary": 0, "inference": 1, "analysis": 2, "hypothesis": 3}
+    candidates.sort(key=lambda c: (kind_rank.get(str(c.get("kind")), 4),
+                                   str(c.get("created_at") or ""),
+                                   str(c.get("claim_id") or "")))
+    if not candidates:
+        return stats
+    llm = deps.judge_llm or deps.llm_for("research")
+    second = deps.llm_for("research") if deps.judge_llm is not None else None
+    for claim in candidates[:_SYNTHESIZE_VERIFY_CAP]:
+        stats["attempted"] += 1
+        try:
+            result = verify_claim(
+                deps.kb, deps.metrics, claim_id=str(claim["claim_id"]), llm=llm,
+                second_llm=second, events=deps.events, namespace="prod",
+                entity_kind=ctx.entity_kind, entity_id=ctx.ticker, now=now,
+            )
+            if result.content_review_available:
+                stats["verified"] += 1
+            else:
+                stats["unavailable"] += 1
+        except Exception as e:  # noqa: BLE001 - 单条核验失败不阻断合成（记录可见）
+            stats["unavailable"] += 1
+            logger.warning("合成批量核验 %s 失败：%s", claim.get("claim_id"), e)
+    stats["skipped_over_cap"] = max(0, len(candidates) - _SYNTHESIZE_VERIFY_CAP)
+    if stats["attempted"]:
+        logger.info(
+            "合成批量核验：尝试 %d / 内容核验成功 %d / 不可用 %d / 超上限跳过 %d",
+            stats["attempted"], stats["verified"], stats["unavailable"],
+            stats["skipped_over_cap"],
+        )
+    return stats
+
+
 def _verified_claim_ids(
     deps: StepDeps, claim_ids: list[str], *, namespace: str = "prod",
 ) -> tuple[list[str], list[dict[str, Any]]]:
@@ -1165,6 +1359,10 @@ def _finalize_artifact_v2(
     # 依赖闭包（audit §3.9）：只纳入报告实际引用且经校验的论断/计算，
     # 未通过的草稿保留在缺口区（可见、可修正后重验），不靠关闭校验通过。
     referenced = _report_dependencies(doc, deps.metrics)
+    # F15（B 组实测核验覆盖 3/106：工具在但模型不主动用）→ 合成定稿前服务端
+    # 批量核验报告引用的 validated 未核验论断（top-N 有界；结果落库为时态修订，
+    # 新发现的 contradicted/数值失败会被下游 ArtifactValidator 硬拦）
+    verify_stats = _batch_verify_referenced_claims(deps, ctx, referenced["claims"], now)
     ok_claims, broken_claims = _verified_claim_ids(deps, referenced["claims"])
     if broken_claims:
         from ..research.artifacts import GapNoticeBlock
@@ -1230,6 +1428,7 @@ def _finalize_artifact_v2(
             "plan_id": plan_id,
             "claim_ids": artifact.claim_ids,
             "calculation_ids": artifact.calculation_ids,
+            "verification_batch": verify_stats,
             "excluded_claims": broken_claims,
             "structures": sorted((structures or {}).keys()),
             "referenced_observations": referenced["observations"],
@@ -1341,6 +1540,12 @@ def _publish_report(
 
 
 def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
+    """S2 档案更新（tools-plugins 方案 §9.1 第一步：从重写 thesis 扩展为整合与更新）。
+
+    读取冻结基线与本轮研究产出（问题结论/观测/论断/计算）→ 检查并裁决开放冲突
+    → 修订 thesis：旧 Fact 保兼容投影，同时保存为带证据与前提的分析 Claim
+    （新读侧入口，dossier 投影据此取总论）。完整 consolidator（依赖失效/语义 diff）属 P2-B。
+    """
     if ctx.should_cancel():
         return _cancelled(ctx)
     now = datetime.now(UTC)
@@ -1349,6 +1554,7 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         return StepResult(status="completed", summary="档案为空，跳过 thesis 修订")
 
     manifest = _open_child(deps, ctx, "profile_update")
+    _freeze_plugin_manifest(deps, ctx, "profile")
     outcome: dict[str, str] = {}
 
     def query_kb(_args: dict[str, Any]) -> dict[str, Any]:
@@ -1372,16 +1578,93 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
             ],
         }
 
+    # 统一知识读取（方案 §5.3）：S2 与 S1/合成共用 typed 查询与证据回读；
+    # 裁决入口开放（整合阶段需要消除冲突后再下结论）；as_of 固定在本 step 开始时刻。
+    plan_id: str | None = None
+    if deps.metrics is not None:
+        plans = deps.metrics.plans_for(ctx.entity_kind, ctx.ticker, namespace="prod", limit=1)
+        plan_id = str(plans[0].get("plan_id")) if plans else None
+    context_tools = make_context_tools(
+        kb=deps.kb, metrics=deps.metrics, entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+        namespace="prod", as_of=now, plan_id=plan_id, writer=deps.writer,
+        manifest=manifest, events=deps.events,
+    )
+
+    # 整合与刷新（方案 §9.1/§9.3，P2-B）：prepare 确定性预览（只读），
+    # commit 幂等提交（基线哈希校验 + 失效追加记录，旧快照不变）
+    consolidator_tools: dict[str, Any] = {}
+    if deps.metrics is not None:
+        from ..dossier.consolidator import ProfileConsolidator
+        from ..research.verifier import make_verify_claim_tool
+
+        consolidator = ProfileConsolidator(
+            kb=deps.kb, metrics=deps.metrics, events=deps.events,
+            calculations=deps.calculations)
+
+        # verify_claim（§5.4）：S2 整合时对关键论断做内容级核验（与 S1 同一实现）；
+        # judge_llm 优先（独立于主研究模型），缺省惰性取 research 角色
+        # 消融（方案 §10.2）：verifier 关闭时 S2 不装配核验工具（可见的装配事实）
+        if "verifier" in deps.ablation:
+            verify_tool = None
+        else:
+            verify_tool = make_verify_claim_tool(
+                kb=deps.kb, metrics=deps.metrics, events=deps.events, manifest=manifest,
+                namespace="prod", entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+                llm=deps.judge_llm or _LazyResearchLLM(deps),
+                # 二次独立核验（§5.4 检查 4）：judge 核验、research 复核（不同模型才独立）
+                second_llm=(_LazyResearchLLM(deps) if deps.judge_llm is not None else None),
+            )
+
+        def prepare_profile_update(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                out = consolidator.prepare_update(
+                    ctx.entity_kind, ctx.ticker,
+                    base_snapshot_id=(str(args["base_snapshot"])
+                                      if args.get("base_snapshot") else None),
+                    candidate_refs=[str(r) for r in (args.get("candidate_refs") or [])],
+                )
+            except Exception as e:  # noqa: BLE001 - 拒绝原因回给模型（可修正重试）
+                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+            return {"content": json.dumps(out, ensure_ascii=False, default=str),
+                    "provenance": []}
+
+        def commit_profile_update(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                out = consolidator.commit_update(
+                    ctx.entity_kind, ctx.ticker,
+                    change_set_id=str(args.get("change_set_id") or ""),
+                    expected_base_hash=str(args.get("expected_base_hash") or ""),
+                    note=str(args.get("note") or ""),
+                    invalidate_claims=args.get("invalidate_claims") or [],
+                    base_snapshot_id=(str(args["base_snapshot"])
+                                      if args.get("base_snapshot") else None),
+                    recompute_calculations=bool(args.get("recompute_calculations")),
+                    manifest=manifest,
+                )
+            except Exception as e:  # noqa: BLE001 - 基线过期/非法失效条目都拒绝可见
+                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+            outcome["change_set_id"] = str(args.get("change_set_id") or "")
+            return {"content": json.dumps(out, ensure_ascii=False, default=str),
+                    "provenance": []}
+
+        consolidator_tools = {
+            "prepare_profile_update": prepare_profile_update,
+            "commit_profile_update": commit_profile_update,
+            **({"verify_claim": verify_tool} if verify_tool is not None else {}),
+        }
+
     def propose_thesis(args: dict[str, Any]) -> dict[str, Any]:
+        evidence_ids = [str(r) for r in (args.get("evidence_ids") or [])]
+        thesis = str(args["thesis"])
         try:
             fact_id = deps.writer.write_fact(
                 Fact(
                     entity_kind=ctx.entity_kind,  # type: ignore[arg-type]
                     entity_id=ctx.ticker,
                     field="thesis",
-                    value=args["thesis"],
+                    value=thesis,
                     knowledge_time=datetime.now(UTC),
-                    evidence_ids=list(args["evidence_ids"]),
+                    evidence_ids=evidence_ids,
                     run_id=ctx.child_run_id,
                 ),
                 run=manifest,
@@ -1389,7 +1672,43 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
         except Exception as e:
             return {"content": f"rejected: {e}", "provenance": []}
         outcome["fact_id"] = fact_id
-        return {"content": json.dumps({"fact_id": fact_id}), "provenance": []}
+        claim_id: str | None = None
+        # 事实与分析分层（方案 §9.1）：新 thesis 同时保存为带证据与前提的 Claim；
+        # 旧 thesis Fact 仅作兼容投影（decision 入口依赖旧格式，先不破坏）。
+        if deps.metrics is not None:
+            from ..research.artifacts import ClaimVerification, ResearchClaim, ref_resolvable
+
+            unresolved = [
+                r for r in evidence_ids
+                if not ref_resolvable(
+                    deps.kb, deps.metrics, r, namespace="prod",
+                    entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+                )
+            ]
+            status = "validated" if evidence_ids and not unresolved else "draft"
+            claim = ResearchClaim(
+                entity_kind=ctx.entity_kind,  # type: ignore[arg-type]
+                entity_id=ctx.ticker,
+                statement=thesis, kind="analysis",
+                support_refs=evidence_ids,
+                limitations=[str(x) for x in (args.get("limitations") or [])],
+                status=status,  # type: ignore[arg-type]
+                verification=ClaimVerification(
+                    references_valid=status == "validated",
+                    verified_by="profile_update:references",
+                ),
+                evidence_cutoff=now, run_id=ctx.child_run_id, namespace="prod",
+                legacy_field="thesis",
+            ).with_id()
+            deps.metrics.save_claim(
+                claim_id=claim.claim_id, namespace="prod",
+                payload=claim.model_dump(mode="json"),
+            )
+            claim_id = claim.claim_id
+            outcome["claim_id"] = claim_id
+        return {"content": json.dumps(
+            {"fact_id": fact_id, "claim_id": claim_id}, ensure_ascii=False
+        ), "provenance": []}
 
     deps.events.append(
         Event(
@@ -1398,19 +1717,36 @@ def step_profile_update(deps: StepDeps, ctx: StepContext) -> StepResult:
             payload={"role": "system", "content": _PROFILE_CONTRACT},
         )
     )
+    # 执行闭环（P1-C）：S2 工具经编译集绑定 + ToolExecutor 执行（含核验/提交）
+    s2_tools = _bind_runtime_tools(
+        deps, ctx, "profile",
+        {"query_kb": query_kb, "propose_thesis": propose_thesis,
+         **context_tools, **consolidator_tools},
+    )
     kernel = AgentKernel(
         store=deps.events,
         llm=deps.llm_for("research"),
         manifest=manifest,
-        tools={"query_kb": query_kb, "propose_thesis": propose_thesis},
-        max_steps=6,
+        tools=s2_tools,
+        # 6 → 12 步：整合需要读上下文/预览变化集/核证据/裁决冲突/提交的余量（§9.1）
+        max_steps=12,
     )
     kernel.run_turn(
-        f"请基于 {ctx.entity_kind}:{ctx.ticker} 的当前档案修订投资论点（thesis）。"
-        "先 query_kb 查看全部事实，再 propose_thesis 提交（绑定支撑证据 id）。"
+        f"请基于本轮研究产出整合更新 {ctx.entity_kind}:{ctx.ticker} 的档案。\n"
+        "步骤：① prepare_profile_update 取变化集（待合并/重复/冲突/失效依赖/预期 diff，"
+        "兼得 get_research_context 的问题结论详情）；② 有开放冲突先 adjudicate_conflict "
+        "裁决（给 rationale）；③ read_evidence 核对关键证据；④ propose_thesis 提交修订"
+        "（绑证据，限制写 limitations）；⑤ 若变化集里有失效依赖或需要作废旧论断，"
+        "commit_profile_update(change_set_id, expected_base_hash, note, invalidate_claims) "
+        "幂等提交并留变化说明（基线过期会被拒，重新 prepare）。"
+        "若上下文与档案已一致且无新证据，可不提交（保持现状）。"
     )
     if "fact_id" in outcome:
-        return StepResult(status="completed", summary=f"thesis 已修订（{outcome['fact_id']}）")
+        extra = f"，claim {outcome['claim_id']}" if outcome.get("claim_id") else ""
+        if outcome.get("change_set_id"):
+            extra += f"，整合提交 {outcome['change_set_id']}"
+        return StepResult(status="completed",
+                          summary=f"thesis 已修订（{outcome['fact_id']}{extra}）")
     return StepResult(status="completed", summary="模型未提交 thesis 修订（保持现状）")
 
 
@@ -1568,6 +1904,8 @@ def _industry_loop(
         objective_override=step_objective,
         entity_kind_override="industry",
     )
+    # 执行闭环（P1-C）：行业研究同样经编译集绑定（research 阶段工具面）
+    plugin_set = _compile_plugin_set(deps, ctx, "research")
     loop = ResearchLoop(
         store=deps.kb,
         events=deps.events,
@@ -1581,18 +1919,38 @@ def _industry_loop(
         judge_llm=deps.judge_llm,
         should_stop=ctx.should_cancel,
         fetch_document=deps.fetch_document,
+        fetch_document_paged=deps.fetch_document_paged,
         worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
         plan_id=plan_id,
         metrics=deps.metrics,
         metric_writer=deps.metric_writer,
+        plugin_set=plugin_set,
         calculations=deps.calculations,
         max_record_chars=deps.max_record_chars,
+        ablation=deps.ablation,
     )
     loop.run(
         "industry", ctx.ticker,
         f"{step_objective}\n\n{playbook}",
     )
     return loop
+
+
+def _industry_map_stall_blocked(loop, gaps) -> bool:
+    """F1 停滞是否应拦停漏斗（哨兵基线 ai4s 事故整改 2026-09-10）。
+
+    旧判据只看字段完整度：问题已答、论断/观测已落但旧字段 0% 时，整个 /industry
+    被 blocked（基线实测：F1 问题覆盖 1/1 sufficient 仍被拦停）。与 step_research
+    同一口径：有任意有效产出（已答问题/观测/论断）就不算一无所获。
+    """
+    a = getattr(loop, "assessment", None)
+    if a is not None:
+        eq = getattr(a, "evidence_quality", None) or {}
+        qc = getattr(a, "question_coverage", None)
+        if (getattr(qc, "answered", 0) or eq.get("observations")
+                or eq.get("validated_claims") or eq.get("draft_claims")):
+            return False
+    return not gaps.completeness
 
 
 def step_industry_map(deps: StepDeps, ctx: StepContext) -> StepResult:
@@ -1603,14 +1961,22 @@ def step_industry_map(deps: StepDeps, ctx: StepContext) -> StepResult:
     if loop.stop_reason == "cancelled":
         return _cancelled(ctx)
     gaps = GapAnalyzer(deps.kb).analyze("industry", ctx.ticker, datetime.now(UTC))
-    if loop.stop_reason == "stalled" and not gaps.completeness:
+    if loop.stop_reason == "stalled" and _industry_map_stall_blocked(loop, gaps):
         diag = (loop.stall_diagnostic or {}).get("suggestions") or []
         return StepResult(status="blocked",
                           summary=f"赛道地图停滞：完整度 0%（{'；'.join(diag)}）")
-    return StepResult(
-        status="completed",
-        summary=f"赛道地图完成（{loop.stop_reason}）：行业档案完整度 {gaps.completeness:.0%}",
-    )
+    summary = f"赛道地图完成（{loop.stop_reason}）：行业档案完整度 {gaps.completeness:.0%}"
+    a = getattr(loop, "assessment", None)
+    if a is not None and gaps.completeness < 0.5:
+        # 问题优先产出、字段缺口如实（不把 stalled+0% 字段包装成「完成」）
+        qc = a.question_coverage
+        eq = a.evidence_quality or {}
+        summary += (
+            f"；问题覆盖 {qc.answered}/{qc.applicable}，观测 {eq.get('observations', 0)} 条，"
+            f"论断 {eq.get('validated_claims', 0)}v/{eq.get('draft_claims', 0)}d"
+            f"；缺口字段：{'、'.join(gaps.missing[:5]) or '无'}"
+        )
+    return StepResult(status="completed", summary=summary)
 
 
 def step_candidate_pool(deps: StepDeps, ctx: StepContext) -> StepResult:
@@ -1646,9 +2012,15 @@ def step_candidate_pool(deps: StepDeps, ctx: StepContext) -> StepResult:
             store=deps.kb, writer=deps.writer, manifest=manifest,
             entity_kind="industry", entity_id=ctx.ticker,
             chunk_store=chunk_store, fetch_document=deps.fetch_document,
+            fetch_paged=deps.fetch_document_paged,
         )
         for source_id in deps.gateway.source_ids():
             tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
+        # SearchBroker（方案 §5.1）：双源代理搜索可用时一并装配
+        _broker = maybe_make_search_broker(
+            deps.gateway, events=deps.events, run_id=ctx.child_run_id)
+        if _broker is not None:
+            tools["search_sources"] = make_search_broker_tool(_broker, chunk_store)
 
         def propose_candidates(args: dict[str, Any]) -> dict[str, Any]:
             cands = args.get("candidates") or []
@@ -1769,9 +2141,15 @@ def step_thesis(deps: StepDeps, ctx: StepContext) -> StepResult:
         store=deps.kb, writer=deps.writer, manifest=manifest,
         entity_kind="industry", entity_id=ctx.ticker,
         chunk_store=chunk_store, fetch_document=deps.fetch_document,
+        fetch_paged=deps.fetch_document_paged,
     )
     for source_id in deps.gateway.source_ids():
         tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
+    # SearchBroker（方案 §5.1）：双源代理搜索可用时一并装配
+    _broker = maybe_make_search_broker(
+        deps.gateway, events=deps.events, run_id=ctx.child_run_id)
+    if _broker is not None:
+        tools["search_sources"] = make_search_broker_tool(_broker, chunk_store)
     tools["calc"] = calc_tool
     deps.events.append(
         Event(run_id=ctx.child_run_id, type=CONTEXT_INJECT,
@@ -1846,20 +2224,17 @@ def step_committee(deps: StepDeps, ctx: StepContext) -> StepResult:
             ensure_ascii=False, default=str,
         )[:9000]
 
-        def read_evidence(args: dict[str, Any]) -> dict[str, Any]:
-            try:
-                ev = deps.kb.get_evidence(str(args["evidence_id"]))
-            except Exception as e:
-                return {"content": f"error: {e}", "provenance": []}
-            return {"content": json.dumps({"verbatim_quote": ev.verbatim_quote,
-                                           "source_id": ev.source_id, "url": ev.url},
-                                          ensure_ascii=False), "provenance": []}
+        # 共享证据读取（方案 §5.3）：与 S1/S2/合成同一契约（单条 evidence_id 或批量 refs）
+        shared_read = make_context_tools(
+            kb=deps.kb, metrics=deps.metrics, entity_kind="stock", entity_id=ticker,
+            namespace="prod", read_only=True,
+        )["read_evidence"]
 
         notes: dict[str, str] = {}
 
         def run_perspective(role_key: str, role_desc: str, llm: LLM,
                             ticker: str = ticker, profile_md: str = profile_md,
-                            notes: dict = notes) -> None:
+                            notes: dict = notes, read_ev=shared_read) -> None:
             run_id = f"{ctx.child_run_id}--{ticker}-{role_key}"
             deps.events.append(
                 Event(run_id=run_id, type=RUN_CREATED,
@@ -1878,7 +2253,7 @@ def step_committee(deps: StepDeps, ctx: StepContext) -> StepResult:
                 notes[role_key] = AgentKernel(
                     store=deps.events, llm=llm,
                     manifest=RunManifest(run_id=run_id, mode=RunMode.LIVE),
-                    tools={"read_evidence": read_evidence, "calc": calc_tool},
+                    tools={"read_evidence": read_ev, "calc": calc_tool},
                     max_steps=8,
                 ).run_turn(brief)
                 if not (notes[role_key] or "").strip():
@@ -1965,9 +2340,15 @@ def _screen_one_candidate(deps: StepDeps, ctx: StepContext, cand: dict, llm: LLM
         entity_kind="stock", entity_id=ticker,
         chunk_store=chunk_store,
         fetch_document=deps.fetch_document,
+        fetch_paged=deps.fetch_document_paged,
     )
     for source_id in deps.gateway.source_ids():
         tools[f"query_{source_id}"] = make_gateway_tool(deps.gateway, source_id, chunk_store)
+    # SearchBroker（方案 §5.1）：双源代理搜索可用时一并装配
+    _broker = maybe_make_search_broker(
+        deps.gateway, events=deps.events, run_id=ctx.child_run_id)
+    if _broker is not None:
+        tools["search_sources"] = make_search_broker_tool(_broker, chunk_store)
     tools["calc"] = calc_tool
     card: dict[str, Any] = {}
 
@@ -2175,6 +2556,9 @@ def step_deep_dive(deps: StepDeps, ctx: StepContext) -> StepResult:
 
     results: dict[str, str] = {}
 
+    # 执行闭环（P1-C）：deep dive 与主研究同一执行面（编译一次，逐票复用）
+    plugin_set = _compile_plugin_set(deps, ctx, "research")
+
     def dive(ticker: str) -> None:
         manifest = RunManifest(
             run_id=f"{ctx.child_run_id}--{ticker}", mode=RunMode.LIVE,
@@ -2194,7 +2578,10 @@ def step_deep_dive(deps: StepDeps, ctx: StepContext) -> StepResult:
                 judge_llm=deps.judge_llm,
                 should_stop=ctx.should_cancel,
                 fetch_document=deps.fetch_document,
+                fetch_document_paged=deps.fetch_document_paged,
                 worker_llms=deps.worker_llm_for(4) if deps.worker_llm_for else None,
+                plugin_set=plugin_set,
+                ablation=deps.ablation,
             )
             loop.run("stock", ticker, f"深度研究 {ticker}（赛道：{ctx.objective}）")
             if loop.stop_reason == "stalled":
@@ -2300,14 +2687,11 @@ def step_rank_report(deps: StepDeps, ctx: StepContext) -> StepResult:
               payload={"name": "rank_report", "version": ver})
     )
 
-    def read_evidence(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            ev = deps.kb.get_evidence(str(args["evidence_id"]))
-        except Exception as e:
-            return {"content": f"error: {e}", "provenance": []}
-        return {"content": json.dumps({"evidence_id": ev.evidence_id, "source_id": ev.source_id,
-                                       "url": ev.url, "verbatim_quote": ev.verbatim_quote},
-                                      ensure_ascii=False), "provenance": []}
+    # 共享证据读取（方案 §5.3）：F5 与 S1/S2/合成/委员会同一契约
+    shared_read_evidence = make_context_tools(
+        kb=deps.kb, metrics=deps.metrics, entity_kind=ctx.entity_kind, entity_id=ctx.ticker,
+        namespace="prod", read_only=True,
+    )["read_evidence"]
 
     # P4：thesis + 评分 rubric + 投资委员会记录 一并注入（判断层的全部上游产物）
     thesis_text = str(industry_view["thesis"].value) if "thesis" in industry_view else "（无）"
@@ -2322,7 +2706,7 @@ def step_rank_report(deps: StepDeps, ctx: StepContext) -> StepResult:
         store=deps.events,
         llm=deps.llm_for("research"),
         manifest=manifest,
-        tools={"read_evidence": read_evidence, "calc": calc_tool},
+        tools={"read_evidence": shared_read_evidence, "calc": calc_tool},
         max_steps=20,  # 实测 8 步不够：核对证据会吃步数，必须留足写报告的余量
     )
     # 漏斗事实（§3 漏斗叙事的事实源——没有这些数字，模型会凭记忆编造池子规模与淘汰理由）
@@ -2409,12 +2793,26 @@ STEP_TITLES: dict[str, str] = {
 #: step agent 能力清单（GET /api/capabilities 的数据源；新增能力 = 在这里登记）
 STEP_MANIFEST: dict[str, dict[str, Any]] = {
     "research": {
-        "title": "S1 研究（轮次制：gap 分析 → 采集 → 证据验证 → 落库）",
-        "model_role": "research",
-        "tools": ["query_kb", "read_edgar_filing", "register_evidence", "propose_fact"],
-        "plugins": ["gap 分析（完整度+新鲜度驱动）", "rubric 评审（judge）", "停滞/预算收敛"],
-        "hooks": ["evidence-binding（服务端子串校验）", "numeric-guard", "ProfileWriter 单写者"],
-        "budget": {"max_rounds": "动态（0%→5/>50%→3/仅刷新→1）", "max_steps_per_group": 12},
+        "title": "S1 研究（问题驱动：冻结计划 → 维度并行 worker → 证据验证 → typed 落库）",
+        "model_role": "research + research-worker ×4",
+        "tools": [
+            "query_* 数据源（含 query_edgar_facts XBRL 结构化财务）",
+            "search_sources（SearchBroker 双源代理：主备回退/去重/转载族归并，trace 可见）",
+            "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
+            "extract_table（表格候选抽取：表头/单元格/币种期间候选 + 定位，不直接成事实）",
+            "register_evidence / read_chunk",
+            "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",
+            "submit_question_result（批量提交）/ track_sub_question（内部子问题）",
+            "verify_claim（内容级核验：硬检查+原文支持性+反证闭环）",
+            "get_research_context / query_observations / query_claims / query_calculations / read_evidence",
+            "list_conflicts / adjudicate_conflict（resolve_conflict 兼容别名）",
+        ],
+        "plugins": ["gap 分析（完整度+新鲜度驱动）", "rubric 评审（digest 含论断原文与支持摘录）",
+                    "停滞/预算收敛（RunBudget 真实扣减）", "文档库（内容哈希去重，同财报只抓解一次）"],
+        "hooks": ["evidence-binding（服务端子串校验）", "numeric-guard", "ProfileWriter 单写者",
+                  "问题分配门禁（越位回答/裁决 fail-loud）"],
+        "budget": {"max_rounds": "动态（0%→5/>50%→3/仅刷新→1；有计划按模式预算表）",
+                   "max_steps_per_group": 12},
     },
     "industry_map": {
         "title": "F1 赛道地图（子赛道拆解 → industry 档案）",
@@ -2447,17 +2845,25 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
     "rank_report": {
         "title": "F5 排序对比报告（矩阵逐格证据锚点；判断只在报告）",
         "model_role": "research（强模型；双强交叉在 P4）",
-        "tools": ["read_evidence", "calc"],
+        "tools": ["read_evidence（共享批量契约）", "calc"],
         "plugins": ["playbook: rank_report"],
         "hooks": [],
     },
     "profile_update": {
-        "title": "S2 档案更新（thesis 修订）",
+        "title": "S2 档案更新（整合：预览变化集 → 裁决冲突 → thesis 分层落库 → 幂等提交）",
         "model_role": "research",
-        "tools": ["query_kb", "propose_thesis"],
-        "plugins": ["thesis 版本化"],
-        "hooks": ["evidence-binding", "ProfileWriter 单写者"],
-        "budget": {"max_steps": 6},
+        "tools": [
+            "prepare_profile_update / commit_profile_update（幂等，基线哈希校验，失效追加记录）",
+            "get_research_context / query_observations / query_claims / query_calculations",
+            "read_evidence / list_conflicts / adjudicate_conflict",
+            "query_kb", "propose_thesis（Fact 兼容投影 + 带证据/limitations 的分析 Claim）",
+        ],
+        "plugins": ["thesis 版本化", "claim 分项核验状态（validated 仅=引用校验）",
+                    "依赖图与失效记录（claim_invalidations，旧快照不变）"],
+        "hooks": ["evidence-binding", "ProfileWriter 单写者",
+                  "裁决 fail-loud（获胜方定位不了不清标记）",
+                  "commit 基线过期拒绝（expected_base_hash）"],
+        "budget": {"max_steps": 12},
     },
     "decide": {
         "title": "S3 决策（DecisionCard）",
@@ -2468,12 +2874,17 @@ STEP_MANIFEST: dict[str, dict[str, Any]] = {
         "budget": {"max_steps": 8, "max_attempts": 2},
     },
     "synthesize": {
-        "title": "报告合成（CIO 综合 → 结构化研报）",
+        "title": "报告合成（CIO 综合 → 结构化研报；只读知识上下文）",
         "model_role": "research",
-        "tools": ["query_kb", "read_evidence"],
-        "plugins": ["结构化研报模板", "证据锚点内联"],
-        "hooks": ["数字与档案值一致（契约级）"],
-        "budget": {"max_steps": 8},
+        "tools": [
+            "get_research_context / query_observations / query_claims / query_calculations（只读，游标分页）",
+            "query_kb / read_evidence（批量） / list_conflicts",
+            "submit_report_document / submit_structures",
+        ],
+        "plugins": ["结构化研报模板", "结构产物按 kind 部分接受+归一层", "证据锚点内联"],
+        "hooks": ["数字与档案值一致（契约级）", "提交即校验（硬错当轮回报）",
+                  "只读阶段不装配裁决入口"],
+        "budget": {"max_steps": "16（v2）/ 8（legacy）"},
     },
     "process_eval": {
         "title": "过程评估（软反馈聚合）",

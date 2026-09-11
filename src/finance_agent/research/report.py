@@ -22,3 +22,8 @@ class IterationReport(BaseModel):
     calculations_done: list[str] = Field(default_factory=list)
     questions_advanced: list[str] = Field(default_factory=list)
     question_coverage: float | None = None  # 冻结计划的适用问题覆盖率（无计划 = None）
+    # 基线发现 F11：无正式产出但存在可验证探索（交题被拒后的修复尝试/高价值精读）
+    # 的轮次不立即判 stalled（有界，见 loop._MAX_EXPLORATION_ONLY_ROUNDS）
+    exploration_only: bool = False
+    close_reads: int = 0
+    answer_rejections: int = 0

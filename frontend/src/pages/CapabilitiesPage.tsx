@@ -31,6 +31,37 @@ export default function CapabilitiesPage() {
         </div>
       </section>
 
+      {cap.plugins && cap.plugins.plugins && (
+        <section className="rounded-lg border border-neutral-200 bg-white p-4">
+          <div className="mb-2 flex items-baseline gap-3">
+            <h2 className="text-sm font-semibold">插件编译视图（P1-C）</h2>
+            <span className="font-mono text-[10px] text-neutral-400">
+              stage={cap.plugins.stage} · config_hash={cap.plugins.config_hash}
+            </span>
+          </div>
+          <div className="space-y-1">
+            {cap.plugins.plugins.map((p) => (
+              <div key={p.id} className="flex items-center gap-2 rounded border border-neutral-100 bg-neutral-50/50 px-2 py-1 text-xs">
+                <span className="font-mono font-semibold">{p.id}</span>
+                <span className="font-mono text-[10px] text-neutral-400">v{p.version} · {p.kind}</span>
+                <span className={
+                  p.status === "enabled" ? "rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700"
+                  : p.status === "degraded" ? "rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
+                  : "rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500"
+                }>{p.status}</span>
+                {p.reason && <span className="text-[11px] text-neutral-500">{p.reason}</span>}
+                <span className="ml-auto font-mono text-[10px] text-neutral-400">
+                  {p.tools.join(" ")}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 text-[11px] text-neutral-400">
+            能力页从实际编译结果生成；缺凭证显示 missing_config 与原因，非关键源失败不阻断研究。
+          </div>
+        </section>
+      )}
+
       {cap.commands.map((c) => (
         <section key={c.name} className="rounded-lg border border-neutral-200 bg-white p-4">
           <div className="mb-1 flex items-baseline gap-3">

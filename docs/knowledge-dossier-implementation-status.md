@@ -4,6 +4,7 @@
 > 更新：2026-09-08 · 分支 `fix/research-audit-a2cce641-remediation`（上一分支已合并进 `main`）。
 > 状态口径：**已落地** = 有代码与测试；**部分** = 契约已落地但依赖数据/后续阶段；**未做** = 本期未实施（如实标注，不宣称 ready）。
 > 本轮增量：[ai-for-science-live-a2cce641 审计](ai-for-science-live-a2cce641-audit-and-optimization.md) 的 P0/P1 整改，逐项对照见 [整改状态](ai-for-science-audit-remediation.md)。
+> 2026-09-10 增量：[research-profile-tools-plugins 方案](research-profile-tools-plugins-plan-2026-09-09.md)两轮实施——第一轮（P0 可信度/统一知识读取/Document Read v2/SEC XBRL/哨兵脚手架）+ 哨兵基线 A/A' 真实运行与 F1–F13 整改 + 第二轮（P1-C 薄插件层/P2-A 证据核验与研究路径/P2-B profile.consolidator），对照见 [实施记录](research-profile-tools-implementation-2026-09-10.md)与[基线报告](sentinel-baseline-A-2026-09-10.md)。
 
 ## 里程碑完成度
 
@@ -88,7 +89,7 @@
 > 行业深研与生产质量验收进行中**。逐项整改对照见
 > [ai-for-science-audit-remediation.md](ai-for-science-audit-remediation.md)。
 
-1. **数据源未扩展**：guidance/consensus/电话会/A 股结构化披露依赖 §9.1 的 adapter 验证任务；相关模块当前按契约降级（missing + 原因），这是设计要求的行为，不是缺陷掩盖。
+1. **数据源未扩展** → **部分整改（2026-09-10）**：SEC XBRL companyfacts（`query_edgar_facts`，A 级 acceptance 时刻）与 EDGAR 历史分段遍历已接入；guidance/consensus/电话会/A 股结构化披露仍依赖方案第二批的 adapter 验证与授权接入，相关模块按契约降级（missing + 原因）。
 2. **事件溯源重建**：`metric/asserted` 事件带完整 payload 可重建观测索引，但「先事件后投影 + offset」的严格顺序与全量重放工具未实施；当前一致性靠幂等键（semantic_hash/input_hash/data_hash）。
 3. **历史裁决批量回填**（M4）与 HTML 导出：未做。旧 fact 冲突的时态裁决投影仅新观测通道具备；旧通道保持原 `resolve_conflict` 行为（新页面历史视图中旧字段裁决入口已设只读）。
 4. **浏览器 E2E**：前端逻辑经 vitest 覆盖（路由/数值边界），三档视口的截图验收（§13.3 / audit §5 用例 7）未跑真实浏览器。

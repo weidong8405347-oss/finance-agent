@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +34,9 @@ MODE_BUDGETS: dict[ResearchMode, dict[str, int]] = {
     "standard": {"max_parallel_workers": 4, "retrieval_calls": 30, "wall_clock_minutes": 15, "max_rounds": 3},
     "deep": {"max_parallel_workers": 4, "retrieval_calls": 80, "wall_clock_minutes": 40, "max_rounds": 5},
     "refresh": {"max_parallel_workers": 2, "retrieval_calls": 15, "wall_clock_minutes": 10, "max_rounds": 2},
-    "targeted": {"max_parallel_workers": 2, "retrieval_calls": 12, "wall_clock_minutes": 10, "max_rounds": 2},
+    # targeted 检索预算 12→20（基线发现 F9：文档工具时代 fetch/search 也扣检索预算，
+    # NVDA 题实测 12/12 打满；墙钟不变，成本由 RunBudget 继续封顶）
+    "targeted": {"max_parallel_workers": 2, "retrieval_calls": 20, "wall_clock_minutes": 10, "max_rounds": 2},
 }
 
 #: 模式 → 问题规模指引（§7.1）
@@ -43,6 +46,25 @@ MODE_QUESTION_RANGE: dict[ResearchMode, tuple[int, int]] = {
     "refresh": (2, 6),
     "targeted": (1, 4),
 }
+
+
+class SubQuestion(BaseModel):
+    """内部子问题/待查线索（方案 §8.1：冻结目标，允许内部研究路径演进）。
+
+    硬约束：子问题只追加到所属问题条目下，**不扩大投资范围或预算**；
+    带触发证据与退出条件（可审计的研究路径，不是自由发挥）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sub_id: str
+    parent_question_id: str
+    text: str
+    trigger_evidence: list[str] = Field(default_factory=list)  # 触发本子问题的证据/发现
+    priority: QuestionPriority = "medium"
+    exit_condition: str = ""  # 查到什么算完（防止无限发散）
+    status: Literal["open", "answered", "dropped"] = "open"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ResearchQuestion(BaseModel):
@@ -65,6 +87,12 @@ class ResearchQuestion(BaseModel):
     cost: int = 0  # 已花费检索调用数（调度启发式）
     module: str = ""  # 关联档案模块（business_engine/financials/...）
     attempts: list[str] = Field(default_factory=list)  # disputed/unavailable 的尝试记录
+    #: 内部子问题（§8.1）：版本化追加；不改预算与范围，调度器不单独分发
+    sub_questions: list[SubQuestion] = Field(default_factory=list)
+    #: 数值型问题（基线发现 F2）：answered 时 support_refs 必须含 typed 依据
+    #: （obs-/calc-）——关键数字必须沉淀进指标库（可重算/可画图/受门禁），
+    #: 不得只留在答案文本里。编译期冻结（模块/关键词判定），工具层执行。
+    expects_typed_evidence: bool = False
 
 
 class Budgets(BaseModel):
@@ -229,7 +257,28 @@ def _to_question(rq: RecipeQuestion) -> ResearchQuestion:
         acceptance=rq.acceptance,
         module=rq.module,
         computable_checks=list(rq.computable_checks),
+        expects_typed_evidence=(rq.module in NUMERIC_MODULES or bool(rq.computable_checks)),
     )
+
+
+#: 数值密集模块（基线发现 F2）：这些模块的问题 answered 必须有 typed 依据
+NUMERIC_MODULES = frozenset({
+    "financials", "financial_quality", "revenue_segments", "valuation", "expectations",
+})
+
+#: 自定义问题（targeted/focus）的数值题启发式：编译期判定后冻结进计划，
+#: 不在运行期对模型自报做推断
+_TYPED_TEXT_HINTS = re.compile(
+    r"(收入|营收|利润|现金流|订单|在手|backlog|金额|规模|增速|增长|市值|估值|单价|"
+    r"出货量|产能|装机|份额|毛利|净利|burn|revenue|margin|cash|sales|growth|"
+    r"valuation|market cap|guidance|指引)",
+    re.IGNORECASE,
+)
+
+
+def text_expects_typed(text: str) -> bool:
+    """自定义问题文本的数值题判定（确定性规则，可回放）。"""
+    return bool(_TYPED_TEXT_HINTS.search(text or ""))
 
 
 def build_plan(
@@ -284,6 +333,7 @@ def build_plan(
             why="用户指定的研究目标（targeted 模式）",
             priority="high",
             acceptance="结论有直接证据支撑；无法量化时明确「无法量化」并记录尝试",
+            expects_typed_evidence=text_expects_typed(target_text),
         ))
         for rq in recipe.core_questions:
             if focus and (focus.lower() in rq.text.lower() or rq.id.lower() in focus.lower()):
@@ -334,6 +384,26 @@ def build_plan(
         # 稳定排序：同优先级下保留插入顺序（目标题先于背景题）
         questions.sort(key=lambda q: rank[q.priority])
         questions = questions[:hi]
+    # focus 编译（基线发现 F1）：standard/deep 的 --focus 不再只存 scope——
+    # 用户显式关注点编译为高优先专门问题，排在最前（截断时背景题先让位）。
+    # 基线事故形态：BE --focus=订单口径与收入确认，计划仍是标准 12 题，
+    # 哨兵题的核心场景根本没被研究。
+    focus_key: str | None = None
+    if focus and mode in ("standard", "deep"):
+        f_digest = hashlib.sha256(f"{entity_id}:{focus}".encode()).hexdigest()[:8]
+        fq_id = f"focus-{f_digest}"
+        if fq_id not in seen:
+            questions.insert(0, ResearchQuestion(
+                question_id=fq_id,
+                text=focus,
+                why="用户指定的关注点（--focus；standard/deep 模式同样编译为专门问题）",
+                priority="high",
+                acceptance=("结论有直接证据支撑；涉及数值时以 typed 观测/计算为据；"
+                            "无法量化时明确说明并记录尝试"),
+                expects_typed_evidence=text_expects_typed(focus),
+            ))
+            seen.add(fq_id)
+            focus_key = fq_id
     budgets = Budgets(**MODE_BUDGETS[mode])
     if mode == "deep":
         budgets.question_coverage_target = 0.8
@@ -346,6 +416,8 @@ def build_plan(
             f"用户目标必须被直接回答（目标题 {len(objective_keys)} 道全部有结论或明确未解决原因）；"
             "背景题完成不能代替目标完成；" + acceptance
         )
+    if focus_key:
+        acceptance = f"用户关注点（focus 题 {focus_key}）必须被直接回答；" + acceptance
     return ResearchPlan(
         plan_id=f"plan-{uuid.uuid4().hex[:10]}",
         entity_kind=entity_kind,  # type: ignore[arg-type]
@@ -362,6 +434,7 @@ def build_plan(
             # 目标编译可回放（audit §3.4）：哪些题来自目标、判定依据是什么
             "objective_question_ids": objective_keys,
             "objective_decomposition": objective_basis,
+            "focus_question_id": focus_key,
         },
         base_snapshot_id=base_snapshot_id,
         created_at=now or datetime.now(UTC),

@@ -5,21 +5,27 @@ Grounding 纪律（DESIGN.md §4.3 防线 3）：模型是证据的分析者，�
 
 from __future__ import annotations
 
+import json
+
 from ..knowledge.gaps import GapReport
 
 GROUNDING_CONTRACT = """\
 你是一名投资研究分析师。纪律（违反即被拒绝）：
 1. 证据只能来自你实际检索到的内容：query_* 工具返回的记录自带 chunk_id；
-   需要 filing 正文时用 read_edgar_filing(chunk_id, query=关键词) 抓出原文窗口。
+   需要完整原文时用 fetch_document(chunk_id 或 url) 抓取存档，再用
+   read_document（按页/区段）与 search_document（文档内检索）读到关键位置；
+   read_edgar_filing 是旧契约兼容别名。搜索摘录不足以支撑结论时必须读原文。
 2. 登记证据用 register_evidence(chunk_id, verbatim_quote)：quote 必须是该 chunk
    的逐字原文（服务端校验子串，不符即拒）；来源与可知时刻由系统推导，不得自报。
    禁止凭你的记忆写入任何事实或数字——没读到原文就不要写。
 3. 数字必须与证据原文逐字一致，不允许换算或约估。
 4. 本轮只研究下方列出的缺口字段；找不到可靠证据就保持缺失，不要编造。
+   抓取失败不等于未披露（区分 access_denied/网络失败与真实无披露）。
 """
 
 
-def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | None = None) -> str:
+def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | None = None,
+                     round_no: int = 1) -> str:
     """冻结研究计划的问题队列投影（§7.3）：每轮 brief 附带，模型按问题推进。
 
     assigned_question_ids 给定时只投影本 worker 被分配的问题（调度器已下发，
@@ -40,16 +46,62 @@ def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | N
             lines.append(f"  为何影响判断：{q['why']}")
         if q.get("acceptance"):
             lines.append(f"  完成条件：{q['acceptance']}")
+        if q.get("expects_typed_evidence"):
+            # 基线发现 F2：数值题的关键数字必须进指标库，不得只留在答案文本里
+            lines.append(
+                "  ⚠ 数值题：answered 的 support_refs 必须含至少一个 obs-/calc- 引用"
+                "（先 propose_metric/calculate_metric 沉淀关键数字，再交题）"
+            )
+        qid = str(q.get("question_id") or "")
+        if "counter" in qid or "反" in str(q.get("text") or ""):
+            # 基线发现 F8：反证进了答案却没沉淀成带 counter_refs 的论断，
+            # 分析深度被低估且下游无法消费
+            lines.append(
+                "  反证题纪律：交题时把反方证据引用同时填入 counter_refs，"
+                "并沉淀一条带 counter_refs 的 propose_claim（kind=analysis）"
+            )
         if q.get("conclusion"):
             lines.append(f"  当前结论：{q['conclusion']}")
         if q.get("unresolved"):
             lines.append(f"  未解决项：{'；'.join(q['unresolved'])}")
+        # 内部子问题（§8.1）：已登记的待查线索回流上下文，不丢线索不重复登记
+        for s in q.get("sub_questions") or []:
+            if s.get("status") != "open":
+                continue
+            line = f"  └ 子问题[{s.get('sub_id')}]（{s.get('priority')}）{s.get('text')}"
+            if s.get("exit_condition"):
+                line += f" —— 退出条件：{s['exit_condition']}"
+            lines.append(line)
     lines.append(
         "推进纪律：结构化数值用 propose_metric（原文值+期间+证据）；分析结论用 propose_claim；"
         "可重算关系用 calculate_metric；每完成一个问题立即 answer_question"
         "（answered 需结论+可解析引用；找不到数据标 unavailable 并记录尝试，"
         "不能以模型猜测完成事实采集）。"
+        "一个题的观测/论断/答案用 submit_question_result 一次提交（逐项门禁不变，"
+        "新接受引用自动并入 support_refs，减少机械往返）；研究中冒出的新线索用 "
+        "track_sub_question 登记（不扩大范围与预算）；关键结论用 verify_claim 做"
+        "内容级核验（附 counter_search 反证检索记录）。"
     )
+    if str(plan_payload.get("entity_kind") or "") == "industry":
+        # 基线发现 F6：行业级 typed 观测为零——行业配方的数值题同样入指标库，
+        # 给出可用键与单位约定（公司财务指标写公司实体，行业总量写行业实体）
+        lines.append(
+            "行业级数值同样入 typed 库：market_size（金额：unit=规范币种代码+currency，"
+            "top-down/bottom-up 口径写 dimensions/note）、growth_rate（unit=percent，"
+            "行业主体合法）、capacity_supply（物理量 MW/GW…）；原文量表放 unit_text，"
+            "不要自造单位字符串（如 'RMB thousands' 会被拒）。"
+        )
+    if round_no > 1:
+        pending = [q for q in questions if q.get("status") in (None, "", "unanswered", "gathering")]
+        if pending:
+            # 基线发现 F5：deep 多轮场景提交率不稳（2228 只交 3/12）——后续轮次
+            # 明确「交题优先于新检索」，已登记证据直接支撑答案
+            lines.append(
+                f"⚠ 第 {round_no} 轮：仍有 {len(pending)} 题未交答案"
+                f"（{'、'.join(str(q.get('question_id')) for q in pending[:8])}）。"
+                "交题优先于新检索：已登记证据能支撑的直接 answer_question；"
+                "上轮被拒的提交按拒绝提示的修法示例修复后重交，不要换题重来。"
+            )
     return "\n".join(lines)
 
 
@@ -58,13 +110,24 @@ def build_plan_brief(plan_payload: dict, *, assigned_question_ids: list[str] | N
 #: 5 轮 576 次工具调用、0/9 问题推进。
 PLAN_MODE_CONTRACT = """\
 本轮是「问题驱动研究」，不是「档案字段补全」。交付物是下列问题的答案，逐题推进：
+0. 复用：开工前用 get_research_context 读已有成果（问题状态/观测/论断/计算/冲突），
+   已登记的数据用 query_observations/query_claims/read_evidence 直接取，
+   不重复搜索、不重新编写已有结论；发现开放冲突用 list_conflicts 查看并裁决。
 1. 证据：先用 query_* / read_* 拿到原文，再 register_evidence 登记逐字摘录；
    数字必须能在摘录里逐字定位（带规模词与表头，裸数字会被拒）。
 2. 分析：把证据整理成 propose_metric（结构化数值）/ propose_claim（结论句），
    每条都要写清 question_id 归属。
-3. 反证：主动找削弱结论的证据；找不到反证要在 limitations 里写明「未检索到反证」。
-4. 提交：每题完成立即 answer_question(question_id, status, conclusion, support_refs)；
+3. 反证：主动找削弱结论的证据；找不到反证要在 limitations 里写明「未检索到反证」，
+   并把查过的查询与范围用 verify_claim(counter_search=…) 留痕——不制造反对意见凑数。
+4. 提交：每题完成立即 answer_question(question_id, status, conclusion, support_refs)，
+   或用 submit_question_result 把一题的观测/论断/答案一次提交（逐项门禁不变）；
    查不到就标 unavailable 并记 attempts，不许留空拖到下一轮。
+   研究中冒出的新线索用 track_sub_question 登记到所属问题下（带触发证据与退出条件；
+   不扩大冻结计划的范围与预算）。
+   数值类结论交题前先 list_conflicts 查开放冲突：有则先 adjudicate_conflict 裁决
+   （给 rationale）或在 unresolved 里显式注明冲突未决——不得留着竞争值交无条件答案。
+5. 核验：支撑关键结论的论断用 verify_claim 做内容级核验（原文是否真正支持整句结论）；
+   被核验 contradicted/insufficient 的论断会被降级 draft，修正后重验。
 旧档案字段（propose_fact）只在回答问题的顺带产出时写；不要为了刷字段完整度而
 消耗本轮预算——字段 100% 不等于研究充分。
 """
@@ -80,6 +143,7 @@ def build_round_brief(
     plan_payload: dict | None = None,
     typed_tools: bool = False,
     assigned_question_ids: list[str] | None = None,
+    state_card: dict | None = None,
 ) -> str:
     parts = [
         f"研究目标：{objective}",
@@ -104,14 +168,32 @@ def build_round_brief(
         parts.append("存在冲突待裁决：" + ", ".join(gaps.conflicts))
     if judge_feedback:
         parts.append("上一轮评审反馈（软反馈，供参考）：" + judge_feedback)
-    tools_line = "可用工具：register_evidence / propose_fact / query_kb / 数据源查询工具。"
+    tools_line = (
+        "可用工具：register_evidence / propose_fact / query_kb / read_evidence / "
+        "list_conflicts / adjudicate_conflict / 数据源查询工具。"
+    )
     if typed_tools:
         tools_line = (
-            "可用工具：register_evidence / propose_fact / propose_metric / propose_claim / "
-            "answer_question / calculate_metric / query_kb / 数据源查询工具。"
+            "可用工具：get_research_context / register_evidence / propose_fact / "
+            "propose_metric / propose_claim / answer_question / submit_question_result / "
+            "track_sub_question / verify_claim / calculate_metric / "
+            "query_observations / query_claims / query_calculations / read_evidence / "
+            "list_conflicts / adjudicate_conflict / query_kb / 数据源查询工具。"
         )
     parts.append(tools_line)
+    if state_card:
+        # 语义压缩状态卡（§8.3）：上一轮的目标/问题状态/证据 ID/已存档文档/冲突/
+        # 下一步——投影裁剪丢的是旧工具结果全文，状态卡保证关键状态不被裁掉；
+        # 原事件日志可按 source_events 区间回放（不删除，可重建）
+        card_text = json.dumps(state_card, ensure_ascii=False, default=str)
+        if len(card_text) > 3000:
+            card_text = card_text[:3000] + "…（状态卡截断，全量见 research/context_compressed 事件）"
+        parts.append(
+            "上一轮状态卡（语义压缩；已存档文档与证据直接复用，不重新搜索重抓）："
+            + card_text
+        )
     if plan_payload:
         parts.append(PLAN_MODE_CONTRACT)
-        parts.append(build_plan_brief(plan_payload, assigned_question_ids=assigned_question_ids))
+        parts.append(build_plan_brief(plan_payload, assigned_question_ids=assigned_question_ids,
+                                      round_no=round_no))
     return "\n".join(parts)

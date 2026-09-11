@@ -28,6 +28,7 @@ from ..knowledge.store import BitemporalStore
 from ..knowledge.verify import STRUCTURED_LIST_FIELDS
 from ..knowledge.writer import ProfileWriter
 from .calc import CALC_TOOL_SCHEMA, calc_tool
+from .context_tools import CONTEXT_TOOL_SCHEMAS, make_context_tools
 from .evidence_desk import ChunkStore, EvidenceVerificationError, verify_and_build
 
 #: 抓取函数的签名：filing URL → 纯文本正文（HTML 已剥离）
@@ -67,6 +68,26 @@ class _Tracker:
         self.claims: list[str] = []
         self.calculations: list[str] = []
         self.questions_advanced: list[str] = []
+        #: 高价值精读计数（基线发现 F11）：文档工具/read_chunk 真实读到内容才计；
+        #: 停滞判定时作为「可验证探索」信号（有界），不把必要探索误判为空转
+        self.close_reads: list[str] = []
+
+    #: 提交类拒绝的键（F11）：模型真实尝试过交付但被门禁拦下 = 修复回环中；
+    #: 证据登记拒绝（evidence）不算——只囤证据不提交仍是空转形态
+    _SUBMISSION_KEYS = ("metric", "claim", "question", "field", "formula", "conflict")
+
+    @property
+    def submission_rejections(self) -> list[dict]:
+        """被门禁拦下的提交尝试（propose_metric/claim/fact、answer、calc、裁决）。
+
+        排除组级基础设施失败（field=group:* 的 LLM 异常/预算终止）——
+        那不是模型在修复回环里，给探索轮次只会反复锤死掉的 provider。
+        """
+        return [
+            r for r in self.rejected
+            if any(k in r for k in self._SUBMISSION_KEYS)
+            and not str(r.get("field", "")).startswith("group:")
+        ]
 
     @property
     def any_progress(self) -> bool:
@@ -120,6 +141,16 @@ def make_research_tools(
     calculations: Any | None = None,  # CalculationService
     plan_id: str | None = None,  # 冻结的研究计划（answer_question 的落点）
     allowed_question_ids: list[str] | None = None,  # 调度器下发的本 worker 问题集
+    doc_store: Any | None = None,  # DocumentStore（run 级共享；缺省时内部自建）
+    fetch_paged: Any | None = None,  # 分页抓取 f(url) -> FetchedDocument（Document Read v2）
+    verify_llm: Any | None = None,  # 内容级核验用 LLM（P2-A；缺省只做硬检查）
+    #: 二次独立核验者（§5.4 检查 4）：必须与 verify_llm 不同模型；缺省/同模型 →
+    #: 重大结论的二审跳过并留痕（同模型重问不构成独立复核）
+    second_verify_llm: Any | None = None,
+    #: 消融开关（方案 §10.2，仅评估运行）：with_verifier=False 不装配 verify_claim；
+    #: with_knowledge_context=False 不注入统一知识读取工具组
+    with_verifier: bool = True,
+    with_knowledge_context: bool = True,
 ) -> tuple[dict[str, Any], _Tracker]:
     tracker = _Tracker()
 
@@ -169,6 +200,7 @@ def make_research_tools(
         chunk = chunk_store.get(cid)
         if chunk is None:
             return {"content": f"error: 未知 chunk_id {cid}", "provenance": []}
+        tracker.close_reads.append(cid)  # F11：按需回读全文 = 可验证精读
         query = str(args.get("query") or "").strip()
         idxs = list(range(len(chunk.spans)))
         if query:
@@ -265,27 +297,63 @@ def make_research_tools(
         }
 
     def resolve_conflict(args: dict[str, Any]) -> dict[str, Any]:
-        """裁决字段冲突（Q2）：采集到更强证据后调用，清除该字段的竞争版本标记。"""
+        """裁决字段冲突（Q2 + tools-plugins 方案 P0）：真正选择并保存获胜版本。
+
+        旧缺陷：收 keep_evidence_id 却向 writer 传空 keep_fact_id，底层只清标记——
+        能显示「已处理」却没有保存获胜事实。现走 writer.adjudicate_conflict：
+        定位获胜版本 → 非最新则同值晋升 → 清标记，全部留痕；定位失败即拒。
+        """
         field = str(args["field"])
-        keep = str(args["keep_evidence_id"])
-        n = writer.resolve_conflict(
-            entity_kind, entity_id, field,
-            keep_fact_id="",  # 以证据为准的裁决（keep_fact_id 仅作审计记录）
-            note=str(args.get("note") or f"以证据 {keep} 为准"),
-            run=manifest,
-            namespace=namespace,
-        )
-        return {"content": json.dumps({"resolved": field, "cleared": n}, ensure_ascii=False),
-                "provenance": []}
+        keep_fact_id = str(args.get("keep_fact_id") or "")
+        keep_evidence_id = str(args.get("keep_evidence_id") or "")
+        if not keep_fact_id and not keep_evidence_id:
+            return {
+                "content": "rejected: 必须给出 keep_fact_id 或 keep_evidence_id（裁决需要明确的获胜方）",
+                "provenance": [],
+            }
+        try:
+            out = writer.adjudicate_conflict(
+                entity_kind, entity_id, field,
+                keep_fact_id=keep_fact_id,
+                keep_evidence_id=keep_evidence_id,
+                note=str(args.get("note") or ""),
+                run=manifest,
+                namespace=namespace,
+            )
+        except (KnowledgeError, KeyError, ValueError) as e:
+            tracker.rejected.append({"conflict": field, "reason": str(e)})
+            return {"content": f"rejected: {e}", "provenance": []}
+        return {
+            "content": json.dumps({
+                "resolved": field,
+                "winner_fact_id": out["winner_fact_id"],
+                "promoted_fact_id": out["promoted_fact_id"],
+                "cleared": out["cleared"],
+            }, ensure_ascii=False),
+            "provenance": [],
+        }
 
     tools: dict[str, Any] = {
         "register_evidence": register_evidence,
         "read_chunk": read_chunk,
         "propose_fact": propose_fact,
         "query_kb": query_kb,
-        "resolve_conflict": resolve_conflict,
+        "resolve_conflict": resolve_conflict,  # adjudicate_conflict(target=field) 的兼容别名
         "calc": calc_tool,  # §4.7：数字保护双保险（逐字 + 计算一致性）
     }
+
+    # ---------------- 统一知识读取（tools-plugins 方案 §5.3，S1/S2/合成共享模块） ----
+    # 复用已有 typed 数据（观测/论断/计算/冲突）与证据原文，减少重复搜索与重写结论；
+    # as_of/namespace/实体由运行上下文固定，模型参数只能缩小范围。
+    for name, fn in (
+        make_context_tools(
+            kb=store, metrics=metrics, entity_kind=entity_kind, entity_id=entity_id,
+            namespace=namespace, plan_id=plan_id, writer=writer, manifest=manifest,
+            events=events,
+        ).items()
+        if with_knowledge_context else {}
+    ):
+        tools.setdefault(name, fn)
 
     # ---------------- typed 工具（档案升级 §6.2/§7.3/§8.1；未装配新存储则不注入） ----------------
     if metrics is not None and metric_writer is not None:
@@ -363,7 +431,15 @@ def make_research_tools(
                 })
             except Exception as e:
                 tracker.rejected.append({"metric": metric_key, "reason": f"period 非法: {e}"})
-                return {"content": f"rejected: period 非法: {e}", "provenance": []}
+                return {
+                    "content": (
+                        f"rejected: period 非法: {e}。"
+                        "修法示例：{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                        "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}"
+                        "（Q/FY/H1/TTM 必须给 start，只有 instant 可省）"
+                    ),
+                    "provenance": [],
+                }
             try:
                 extra_steps = [
                     NormalizationStep.model_validate(s)
@@ -433,7 +509,21 @@ def make_research_tools(
                     }
             except Exception as e:
                 tracker.rejected.append({"metric": metric_key, "reason": f"模型校验失败: {e}"})
-                return {"content": f"rejected: {type(e).__name__}: {e}", "provenance": []}
+                hint = f"rejected: {type(e).__name__}: {e}"
+                if nature == "guidance":
+                    hint += (
+                        "。修法：guidance 必须形如 {\"issuer\":\"公司名\","
+                        "\"published_at\":\"2026-02-25\",\"target_period\":"
+                        "{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                        "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}}"
+                        "（target_period 是对象，不接受字符串标签）"
+                    )
+                elif nature == "consensus":
+                    hint += (
+                        "。修法：consensus 必须形如 {\"vendor\":\"供应商名\","
+                        "\"snapshot_at\":\"2026-08-01T00:00:00Z\"}"
+                    )
+                return {"content": hint, "provenance": []}
             try:
                 observation_id, created = metric_writer.write_observation(
                     obs, run=manifest, namespace=namespace
@@ -442,11 +532,35 @@ def make_research_tools(
                 tracker.rejected.append({"metric": metric_key, "reason": str(e)})
                 return {"content": f"rejected: {e}", "provenance": []}
             tracker.observations.append(metric_key)
+            # F10 量表离群预警（不拦截落库；响应可见，提示模型自查量表/维度）：
+            # 同 metric_key+期间+币种+口径下与已有观测存在 ~10^3/10^6 倍差异 → 列出双方
+            scale_warning: list[dict] = []
+            try:
+                from .assessment import numeric_consistency_scan
+
+                existing = metrics.observations_as_of(
+                    entity_kind, entity_id, datetime.now(UTC), namespace=namespace,
+                    metric_key=metric_key,
+                )
+                scan = numeric_consistency_scan(list(existing))
+                scale_warning = [
+                    p for p in scan["scale_suspect_pairs"]
+                    if observation_id in (p["a"]["observation_id"], p["b"]["observation_id"])
+                ]
+            except Exception as e:  # noqa: BLE001 - 预警失败不影响已落库主路径，但留痕可见
+                scale_warning = [{"warning_scan_error": f"{type(e).__name__}: {e}"}]
+            out_payload: dict[str, Any] = {
+                "observation_id": observation_id, "metric_key": metric_key,
+                "value": value, "created": created,
+            }
+            if scale_warning:
+                out_payload["scale_warning"] = scale_warning
+                out_payload["scale_hint"] = (
+                    "同指标同期间存在 ~1000/10^6 倍量表离群：核对两边的 unit_text/换算链/"
+                    "维度语义（千元原样 vs 归一至元？分部 vs 合并？）；确认错登记就用修订入口纠正"
+                )
             return {
-                "content": json.dumps({
-                    "observation_id": observation_id, "metric_key": metric_key,
-                    "value": value, "created": created,
-                }, ensure_ascii=False),
+                "content": json.dumps(out_payload, ensure_ascii=False),
                 "provenance": [
                     {"source_id": e.source_id,
                      "available_at": e.available_at.isoformat() if e.available_at else None,
@@ -456,8 +570,11 @@ def make_research_tools(
             }
 
         def propose_claim(args: dict[str, Any]) -> dict[str, Any]:
-            """研究论断（分析层）：支持/反方引用可解析 → validated，否则 draft 留痕。"""
+            """研究论断（分析层）：支持/反方引用可解析 → validated（仅引用校验），
+            否则 draft 留痕。分项核验状态写入 verification（方案 §5.4）：
+            validated 不得被下游当作「内容已核验」。"""
             from ..eventstore.events import RESEARCH_CLAIM_VALIDATED
+            from .artifacts import ClaimVerification
 
             statement = str(args.get("statement") or "").strip()
             support = [str(r) for r in (args.get("support_refs") or [])]
@@ -506,6 +623,16 @@ def make_research_tools(
                     support_refs=support, counter_refs=counter,
                     limitations=[str(x) for x in (args.get("limitations") or [])],
                     status=status,  # type: ignore[arg-type]
+                    # 分项核验状态（方案 §5.4）：本工具只做引用校验；内容级支持性、
+                    # 数值一致性、推理审查留给独立 verifier（P2），缺省 unchecked 诚实标记。
+                    verification=ClaimVerification(
+                        references_valid=status == "validated",
+                        evidence_support="unchecked",
+                        numeric_checks="unchecked",
+                        analysis_review="not_required" if kind == "fact_summary" else "unchecked",
+                        counter_evidence_search=bool(counter),
+                        verified_by="propose_claim:references",
+                    ),
                     evidence_cutoff=datetime.now(UTC),
                     run_id=manifest.run_id, namespace=namespace,
                 ).with_id()
@@ -520,6 +647,8 @@ def make_research_tools(
                 events.append(Event(run_id=manifest.run_id, type=RESEARCH_CLAIM_VALIDATED, payload={
                     "claim_id": claim.claim_id, "entity": f"{entity_kind}:{entity_id}",
                     "checks": ["support_refs_resolvable"],
+                    # 诚实标记：本事件只代表引用校验，不代表内容级核验已过
+                    "content_checked": False,
                 }))
             tracker.claims.append(claim.claim_id)
             note = ""
@@ -535,6 +664,8 @@ def make_research_tools(
                     )
                 elif not support:
                     note = "（draft：无支持引用）"
+            else:
+                note = "（validated = 引用可解析；内容级核验尚未执行，见 verification.evidence_support）"
             return {"content": json.dumps({"claim_id": claim.claim_id, "status": status, "note": note},
                                            ensure_ascii=False), "provenance": []}
 
@@ -562,6 +693,10 @@ def make_research_tools(
                     tracker, qid,
                     f"问题 {qid} 未分配给本 worker（本组待答：{sorted(allowed_question_ids)}）",
                 )
+            # 数值题门禁（基线发现 F2）：编译期冻结的 expects_typed_evidence 问题，
+            # answered 必须带 typed 依据（obs-/calc-）——关键数字只留在答案文本里
+            # 会旁路指标库的全部门禁（可重算/图表/量级校验）
+            expects_typed = bool(question.get("expects_typed_evidence"))
             del question  # 门禁只用计划判存在性；更新走存储层原子入口（review #8）
             status = str(args.get("status") or "")
             if status not in ("gathering", "answered", "disputed", "unavailable", "not_applicable"):
@@ -586,6 +721,16 @@ def make_research_tools(
                 if bad:
                     return _reject_answer(
                         tracker, qid, f"支持引用不可解析或跨上下文: {bad}"
+                    )
+                if expects_typed and not any(
+                    r.startswith(("obs-", "calc-")) for r in support
+                ):
+                    return _reject_answer(
+                        tracker, qid,
+                        "数值题（expects_typed_evidence）的 answered 必须在 support_refs 含"
+                        "至少一个 obs-/calc- 引用：先用 propose_metric/calculate_metric 把"
+                        "关键数字沉淀进指标库再交题；数字确实无法结构化（乱码/无披露/"
+                        "原文不可得）时改用 disputed/unavailable 并记录原因与尝试",
                     )
             if counter:
                 bad_counter = [r for r in counter if not _ref_resolvable(store, metrics, r, **ctx)]
@@ -627,6 +772,116 @@ def make_research_tools(
             "answer_question": answer_question,
         })
 
+        # ---------------- P2-A：批量提交 / 内部子问题 / 内容级核验（方案 §8.1/§5.4） ----
+
+        def _safe_json(content: str) -> dict[str, Any]:
+            try:
+                parsed = json.loads(content)
+                return parsed if isinstance(parsed, dict) else {"raw": content}
+            except json.JSONDecodeError:
+                return {"rejected": content}
+
+        def submit_question_result(args: dict[str, Any]) -> dict[str, Any]:
+            """批量提交（方案 §8.1）：观测/论断候选与答案一次往返；
+            内部仍逐项走现有门禁（不降低任何验证），逐项返回接受/拒绝与原因；
+            新接受的 obs/claim id 自动并入答案 support_refs（减少纯机械往返）。"""
+            out: dict[str, Any] = {"observations": [], "claims": [], "answer": None,
+                                   "accepted_refs": []}
+            provenance: list[dict[str, Any]] = []
+            for item in (args.get("observations") or [])[:20]:
+                if not isinstance(item, dict):
+                    out["observations"].append({"rejected": f"非法条目类型 {type(item).__name__}"})
+                    continue
+                res = propose_metric(item)
+                out["observations"].append(_safe_json(res["content"]))
+                provenance.extend(res.get("provenance") or [])
+                oid = _safe_json(res["content"]).get("observation_id")
+                if oid:
+                    out["accepted_refs"].append(str(oid))
+            for item in (args.get("claims") or [])[:10]:
+                if not isinstance(item, dict):
+                    out["claims"].append({"rejected": f"非法条目类型 {type(item).__name__}"})
+                    continue
+                res = propose_claim(item)
+                parsed = _safe_json(res["content"])
+                out["claims"].append(parsed)
+                if parsed.get("claim_id") and parsed.get("status") != "draft":
+                    out["accepted_refs"].append(str(parsed["claim_id"]))
+                elif parsed.get("claim_id"):
+                    # draft 论断也可作为答案支撑（引用可解析性由 answer 门禁复验）
+                    out["accepted_refs"].append(str(parsed["claim_id"]))
+            qid = args.get("question_id")
+            if qid:
+                support = list(dict.fromkeys([
+                    *out["accepted_refs"],
+                    *[str(r) for r in (args.get("support_refs") or [])],
+                ]))
+                answer_args = {k: v for k, v in args.items()
+                               if k in ("question_id", "status", "conclusion",
+                                        "counter_refs", "unresolved", "attempts")}
+                answer_args["support_refs"] = support
+                res = answer_question(answer_args)
+                out["answer"] = _safe_json(res["content"])
+                provenance.extend(res.get("provenance") or [])
+            return {"content": json.dumps(out, ensure_ascii=False), "provenance": provenance}
+
+        def track_sub_question(args: dict[str, Any]) -> dict[str, Any]:
+            """内部子问题（§8.1）：版本化追加到所属问题下；不扩大范围与预算。"""
+            from ..eventstore.events import RESEARCH_SUBQUESTION_ADDED
+
+            if not plan_id:
+                return {"content": "rejected: 本轮无冻结研究计划（plan 未装配）",
+                        "provenance": []}
+            parent = str(args.get("parent_question_id") or "")
+            text = str(args.get("text") or "").strip()
+            if not parent or not text:
+                return {"content": "rejected: parent_question_id 与 text 均必填",
+                        "provenance": []}
+            if allowed_question_ids is not None and parent not in allowed_question_ids:
+                return {"content": f"rejected: 问题 {parent} 未分配给本 worker",
+                        "provenance": []}
+            entry = metrics.append_plan_subquestion(plan_id, parent, {
+                "text": text,
+                "trigger_evidence": args.get("trigger_evidence") or [],
+                "priority": args.get("priority") or "medium",
+                "exit_condition": args.get("exit_condition") or "",
+            }, namespace=namespace)
+            if entry is None:
+                reason = f"问题不在冻结计划中: {parent}（计划范围不可扩展）"
+                tracker.rejected.append({"question": parent, "reason": reason})
+                return {"content": f"rejected: {reason}", "provenance": []}
+            if events is not None:
+                events.append(Event(
+                    run_id=manifest.run_id, type=RESEARCH_SUBQUESTION_ADDED,
+                    payload={"plan_id": plan_id, "parent_question_id": parent,
+                             "sub": entry, "entity": f"{entity_kind}:{entity_id}"},
+                ))
+            return {"content": json.dumps(
+                {"sub_question": entry,
+                 "note": "子问题不扩大预算与投资范围；退出条件达成即收敛"},
+                ensure_ascii=False), "provenance": []}
+
+        # verify_claim：共享工厂（S1/S2 同一实现）；拒绝计入 tracker 供停滞诊断归因
+        # （消融运行 with_verifier=False 时不装配——核验关闭必须是可见的装配事实）
+        if with_verifier:
+            from .verifier import make_verify_claim_tool
+
+            verify_claim_tool = make_verify_claim_tool(
+            kb=store, metrics=metrics, events=events, manifest=manifest,
+            namespace=namespace, entity_kind=entity_kind, entity_id=entity_id,
+            llm=verify_llm,
+            # 二次独立核验者（§5.4 检查 4）：主研究模型与核验模型不同才算独立
+            second_llm=second_verify_llm,
+            on_reject=lambda cid, reason: tracker.rejected.append(
+                {"verify": cid, "reason": reason}),
+            )
+
+        tools.update({
+            "submit_question_result": submit_question_result,
+            "track_sub_question": track_sub_question,
+            **({"verify_claim": verify_claim_tool} if with_verifier else {}),
+        })
+
     if metrics is not None and calculations is not None:
         from .calculations import CalculationError, InputRef
 
@@ -659,64 +914,397 @@ def make_research_tools(
 
         tools["calculate_metric"] = calculate_metric
 
-    if fetch_document is not None:
-        def read_edgar_filing(args: dict[str, Any]) -> dict[str, Any]:
-            """抓取 filing 正文并按 query 切窗口，窗口落 ChunkStore 供 register_evidence 引用。
+    # ---------------- 文档读取（Document Read v2，tools-plugins 方案 §5.1 P1-A） ----------
+    # 搜索用于发现资料，文档工具负责目录、正文、页与继续读取：
+    # - fetch_document：抓取并存档（内容哈希复用同版本），返回 document_id/目录/完整性/命中窗口；
+    # - read_document：按页/区段/关键词读取（超出首次解析上限的 PDF 页惰性续解）；
+    # - search_document：文档内关键词检索（页码+摘录 chunk，搜索范围显式）；
+    # - read_edgar_filing：兼容别名（旧契约 chunk_id+query → windows，方案 §11.1 旧工具保别名）。
+    if fetch_document is not None or fetch_paged is not None:
+        from ..gateway.documents import DocumentStore
 
-            抓取函数可返回 str 或 (str, TextQuality)；后者把抽取质量带进 chunk
-            （audit §3.5：乱码/扫描件单独标记，不得当作可靠数字来源）。
+        if doc_store is None:
+            doc_store = DocumentStore()
+
+        _WINDOW = 1600   # 命中窗口宽度（与旧 _windows 一致）
+        _PAGE_CHARS = 3200  # 返回文本单页上限（chunk 保存全文，超出显式标记可回读）
+
+        def _register_chunk(doc: Any, text: str, page: int | None) -> str:
+            return chunk_store.add(
+                source_id=doc.source_id, text=text, url=doc.url,
+                available_at=doc.available_at,  # PIT 元数据：记录 → 文档 → chunk 继承
+                pit_grade=doc.pit_grade, quality=doc.quality,
+                locator={"document_id": doc.document_id,
+                         **({"page": str(page)} if page is not None else {}),
+                         **doc.locator},
+            )
+
+        def _page_payload(doc: Any, page: int) -> dict[str, Any]:
+            text = doc.page_texts.get(page, "")
+            cid = _register_chunk(doc, text, page)
+            shown = text[:_PAGE_CHARS]
+            more = len(text) - len(shown)
+            return {
+                "chunk_id": cid, "page": page, "chars": len(text),
+                "text": shown + (
+                    f"…（本页余 {more} 字符，全文已存 chunk，read_chunk 可回读）"
+                    if more > 0 else ""
+                ),
+                "truncated": more > 0,
+            }
+
+        def _query_windows(doc: Any, query: str, pages: list[int] | None = None,
+                           *, max_windows: int = 4) -> list[dict[str, Any]]:
+            """逐页命中窗口（页码进 locator，证据可定位到页）。
+
+            只在命中的页上切窗口：未命中页不回退成「页首窗口」（_windows 的无命中
+            回退会挤掉真正命中页，定位语义就丢了）。
+            """
+            out: list[dict[str, Any]] = []
+            ql = query.lower()
+            for p in (pages if pages is not None else doc.parsed_pages):
+                text = doc.page_texts.get(p, "")
+                if query and ql not in text.lower():
+                    continue
+                for window in _windows(text, query, width=_WINDOW, max_windows=max_windows):
+                    out.append({"chunk_id": _register_chunk(doc, window, p),
+                                "page": p, "text": window})
+                    if len(out) >= max_windows:
+                        return out
+            return out
+
+        def _fetch_into_store(
+            target_url: str, *, source_id: str, available_at: Any, pit_grade: Any,
+            locator: dict[str, str] | None = None, freshness: str = "cached",
+        ) -> tuple[Any, dict[str, Any] | None]:
+            """抓取 → 文档库存档（同版本内容哈希复用）；失败返回 (None, 错误响应)。"""
+            if freshness != "refetch":
+                cached = doc_store.find_by_origin(
+                    target_url, source_id, available_at, pit_grade
+                )
+                if cached is not None:
+                    return cached, None
+            try:
+                if fetch_paged is not None:
+                    fetched = fetch_paged(target_url)
+                    doc = doc_store.add(
+                        url=target_url, source_id=source_id, fetched=fetched,
+                        available_at=available_at, pit_grade=pit_grade, locator=locator,
+                    )
+                else:
+                    legacy = fetch_document(target_url)
+                    if isinstance(legacy, tuple):
+                        text, tq = legacy[0], legacy[1]
+                        quality = getattr(tq, "quality", str(tq))
+                    else:
+                        from ..gateway.text_quality import assess_text_quality
+
+                        text = legacy
+                        quality = assess_text_quality(text).quality
+                    doc = doc_store.add_text(
+                        url=target_url, source_id=source_id, text=text, quality=quality,
+                        available_at=available_at, pit_grade=pit_grade, locator=locator,
+                    )
+                return doc, None
+            except Exception as e:
+                # 抓取失败 ≠ 未披露（方案 §5.1 实现顺序 6）：不把访问失败写成公司未披露
+                return None, {
+                    "content": (
+                        f"error: 抓取失败：{type(e).__name__}: {e}"
+                        "（抓取失败不等于未披露：可重试、换源，或标 unavailable 并记录 attempts）"
+                    ),
+                    "provenance": [],
+                }
+
+        def _quality_note(doc: Any) -> str:
+            if doc.quality in ("garbled", "needs_ocr"):
+                return (
+                    f"\n⚠ 抽取质量={doc.quality}：该正文不可作为结构化数值来源"
+                    "（propose_metric 会被拒）；需 OCR 或人工核对后重试。"
+                )
+            return ""
+
+        def _doc_provenance(doc: Any) -> list[dict[str, Any]]:
+            return [{
+                "source_id": doc.source_id,
+                "available_at": doc.available_at.isoformat() if doc.available_at else None,
+                "pit_grade": doc.pit_grade.value,
+            }]
+
+        def _fetch_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """抓取并存档一份文档：从检索记录（chunk_id，PIT 继承）或直接 URL（C 级降级）。"""
+            record = (chunk_store.get(str(args.get("chunk_id") or ""))
+                      if args.get("chunk_id") else None)
+            url = str(args.get("url") or "").strip()
+            if record is not None:
+                if not record.url:
+                    return {"content": "error: 该记录没有可抓取的 url", "provenance": []}
+                target, source_id = record.url, record.source_id
+                available_at, pit = record.available_at, record.pit_grade
+                locator: dict[str, str] = {"source_chunk": record.chunk_id}
+                pit_note = ""
+            elif url:
+                from ..knowledge.models import PitGrade
+
+                target, source_id = url, "web_fetch"
+                available_at, pit = None, PitGrade.C
+                locator = {"direct_url": "true"}
+                pit_note = (
+                    "直接 URL 抓取无时间保证（PIT C，available_at 未知）：仅生产研究可用，"
+                    "历史评估不得作为当时可知的证据；优先从 query_* 检索记录进入（继承 PIT）。"
+                )
+            else:
+                return {"content": "error: 必须给 chunk_id（query_* 返回的记录）或 url",
+                        "provenance": []}
+            doc, err = _fetch_into_store(
+                target, source_id=source_id, available_at=available_at, pit_grade=pit,
+                locator=locator, freshness=str(args.get("freshness") or "cached"),
+            )
+            if doc is None:
+                return err  # type: ignore[return-value]
+            query = str(args.get("query") or "").strip()
+            windows = _query_windows(doc, query) if query else []
+            query_note = ""
+            if query and not windows:
+                query_note = (
+                    f"'{query}' 在已解析 {len(doc.parsed_pages)}/{doc.total_pages} 页内未命中；"
+                    "可换关键词/同义词，或 read_document 按页区段继续读（空结果不等于不存在）"
+                )
+            if not windows:
+                windows = [_page_payload(doc, p) for p in doc.parsed_pages[:2]]
+            payload: dict[str, Any] = {
+                "document_id": doc.document_id, "url": doc.url, "source_id": doc.source_id,
+                "kind": doc.kind, "quality": doc.quality,
+                "completeness": doc.completeness_payload(),
+                "reused": doc.reuses > 0,
+                "toc": doc.toc[:40],
+                "windows": windows,
+                "next": (
+                    "read_document(document_id, page/page_range) 继续读；"
+                    "search_document(document_id, query) 文档内检索；"
+                    "窗口 chunk_id 可供 register_evidence（span_id 亦可）"
+                ),
+            }
+            if query_note:
+                payload["query_note"] = query_note
+            if pit_note:
+                payload["pit_note"] = pit_note
+            tracker.close_reads.append(f"{doc.document_id}#fetch")  # F11 精读信号
+            if doc.reuses > 0:
+                payload["reused_note"] = (
+                    f"文档已存档过（{doc.document_id}），本次未重新抓取；已有窗口/chunk 可直接引用，"
+                    "继续精读用 read_document/search_document，勿对同一文档反复 fetch"
+                )
+            return {
+                "content": json.dumps(payload, ensure_ascii=False) + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        def read_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """按页/区段/关键词读已存档文档；PDF 未解析页惰性续解（后半部可达）。"""
+            doc = doc_store.get(str(args.get("document_id") or ""))
+            if doc is None:
+                return {"content": "error: 未知 document_id（先用 fetch_document 取得）",
+                        "provenance": []}
+            query = str(args.get("query") or "").strip()
+            page_arg = args.get("page")
+            page_range = str(args.get("page_range") or "").strip()
+            pages: list[int] = []
+            try:
+                if page_arg is not None and str(page_arg).strip():
+                    pages = [int(page_arg)]
+                elif page_range:
+                    lo, _, hi = page_range.partition("-")
+                    start_p = int(lo)
+                    end_p = int(hi) if hi.strip() else start_p
+                    if start_p > end_p:
+                        start_p, end_p = end_p, start_p
+                    pages = list(range(start_p, min(end_p, start_p + 19) + 1))  # 单次 ≤20 页
+                    if end_p - start_p + 1 > 20:
+                        page_range_note = f"单次最多 20 页，本次返回 {pages[0]}-{pages[-1]}"
+                    else:
+                        page_range_note = ""
+                elif query:
+                    pages = list(doc.parsed_pages)
+                else:
+                    pages = doc.parsed_pages[:1] or [1]
+            except ValueError:
+                return {"content": "error: page/page_range 非法（如 page=12 或 page_range='12-20'）",
+                        "provenance": []}
+            # 惰性续解：请求的页在 total 内但未解析 → 现场补解（重要表在后半部必须可达）
+            if doc.raw is not None:
+                missing = [p for p in pages
+                           if p not in doc.page_texts and p not in doc.failed_pages]
+                if missing:
+                    doc_store.ensure_pages(doc, missing)
+            out_of_range = [p for p in pages if p > doc.total_pages]
+            body: dict[str, Any]
+            if query:
+                windows = _query_windows(doc, query, pages=pages, max_windows=6)
+                body = {"mode": "query", "windows": windows,
+                        "note": "" if windows else
+                        f"'{query}' 在指定 {len(pages)} 页内未命中（空结果不等于不存在）"}
+            else:
+                body = {
+                    "mode": "pages",
+                    "pages": [_page_payload(doc, p) for p in pages if p in doc.page_texts],
+                    "failed_pages": [p for p in pages if p in doc.failed_pages],
+                }
+            if out_of_range:
+                body["out_of_range_pages"] = out_of_range
+            if page_range:
+                body["page_range_note"] = page_range_note
+            if body.get("windows") or body.get("pages"):
+                tracker.close_reads.append(f"{doc.document_id}#read")  # F11 精读信号
+            payload = {
+                "document_id": doc.document_id, **body,
+                "completeness": doc.completeness_payload(),
+                # review R11：按实际页集合——惰性跳页留下的中间缺页不得被
+                # 「最大已解析页码」掩盖（3 页文档只读 1、3 页 ≠ 已读完）
+                "unread_pages": len(doc.missing_pages),
+                "unread_page_list": doc.missing_pages[:20],
+                "next": ("还有未读页时用 page_range 继续；定位关键词用 query 参数"
+                         "或 search_document"),
+            }
+            return {
+                "content": json.dumps(payload, ensure_ascii=False, default=str)
+                + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        def search_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """文档内关键词检索：页码 + 摘录 chunk；搜索范围与未命中都显式可见。"""
+            doc = doc_store.get(str(args.get("document_id") or ""))
+            if doc is None:
+                return {"content": "error: 未知 document_id（先用 fetch_document 取得）",
+                        "provenance": []}
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"content": "error: 必须给 query（文档内检索关键词）", "provenance": []}
+            try:
+                top_k = max(1, min(int(args.get("top_k") or 6), 12))
+            except (TypeError, ValueError):
+                top_k = 6
+            ql = query.lower()
+            scored = [(doc.page_texts.get(p, "").lower().count(ql), p)
+                      for p in doc.parsed_pages]
+            hits = [(c, p) for c, p in scored if c > 0]
+            mode = "phrase"
+            window_query = query
+            if not hits:
+                # 短语未命中 → 词元共现退化（中文无空格时 tokens 为空，保持空结果诚实返回）
+                tokens = [t for t in re.split(r"\s+", query) if len(t) >= 2]
+                if len(tokens) > 1:
+                    mode = "tokens"
+                    window_query = tokens[0]
+                    hits = [
+                        (sum(doc.page_texts.get(p, "").lower().count(t.lower()) for t in tokens), p)
+                        for p in doc.parsed_pages
+                        if all(t.lower() in doc.page_texts.get(p, "").lower() for t in tokens)
+                    ]
+            hits.sort(key=lambda cp: (-cp[0], cp[1]))
+            excerpts: list[dict[str, Any]] = []
+            for count, p in hits[:top_k]:
+                excerpts.extend(
+                    _query_windows(doc, window_query, pages=[p], max_windows=1)
+                )
+                if excerpts:
+                    excerpts[-1]["hit_count"] = count
+            if excerpts:
+                tracker.close_reads.append(f"{doc.document_id}#search")  # F11 精读信号
+            payload = {
+                "document_id": doc.document_id, "query": query, "mode": mode,
+                "hits": excerpts,
+                "pages_scanned": len(doc.parsed_pages),
+                "completeness": doc.completeness_payload(),
+                "note": "" if excerpts else (
+                    f"'{query}' 未命中（已扫 {len(doc.parsed_pages)}/{doc.total_pages} 页）——"
+                    "可能是术语差异（试同义词/英文/表头原词），或该文档确实未披露；"
+                    "空结果不等于不存在，未读完的页用 read_document 续读"
+                ),
+            }
+            return {
+                "content": json.dumps(payload, ensure_ascii=False) + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        def read_edgar_filing(args: dict[str, Any]) -> dict[str, Any]:
+            """兼容别名（旧契约不变）：chunk_id 记录 → 抓取正文 → query 命中窗口。
+
+            内部改走文档服务：同内容哈希复用（同一财报只抓解一次），窗口带页码
+            locator；返回保留旧 {windows, quality} 形态，新增 document_id/completeness。
             """
             record_chunk = chunk_store.get(str(args.get("chunk_id") or ""))
             if record_chunk is None:
-                return {"content": "error: 未知 chunk_id（先 query_edgar 拿 filing 记录）", "provenance": []}
+                return {"content": "error: 未知 chunk_id（先 query_edgar 拿 filing 记录）",
+                        "provenance": []}
             if not record_chunk.url:
                 return {"content": "error: 该记录没有可抓取的 url", "provenance": []}
-            try:
-                fetched = fetch_document(record_chunk.url)
-            except Exception as e:
-                return {"content": f"error: 抓取失败：{type(e).__name__}: {e}", "provenance": []}
-            quality = "ok"
-            if isinstance(fetched, tuple):
-                text, tq = fetched[0], fetched[1]
-                quality = getattr(tq, "quality", str(tq))
-            else:
-                from ..gateway.text_quality import assess_text_quality
-
-                text = fetched
-                quality = assess_text_quality(text).quality
-            out = []
-            for window in _windows(text, str(args.get("query") or "")):
-                cid = chunk_store.add(
-                    source_id=record_chunk.source_id,
-                    text=window,
-                    url=record_chunk.url,
-                    available_at=record_chunk.available_at,  # PIT 元数据从 filing 记录继承
-                    pit_grade=record_chunk.pit_grade,
-                    quality=quality,
-                    locator={"source_chunk": record_chunk.chunk_id},
-                )
-                out.append({"chunk_id": cid, "text": window, "quality": quality})
-            note = ""
-            if quality in ("garbled", "needs_ocr"):
-                note = (
-                    f"\n⚠ 抽取质量={quality}：该正文不可作为结构化数值来源"
-                    "（propose_metric 会被拒）；需 OCR 或人工核对后重试。"
+            doc, err = _fetch_into_store(
+                record_chunk.url, source_id=record_chunk.source_id,
+                available_at=record_chunk.available_at,  # PIT 元数据从 filing 记录继承
+                pit_grade=record_chunk.pit_grade,
+                locator={"source_chunk": record_chunk.chunk_id},
+                freshness=str(args.get("freshness") or "cached"),
+            )
+            if doc is None:
+                return err  # type: ignore[return-value]
+            query = str(args.get("query") or "")
+            windows = _query_windows(doc, query) if query else []
+            if not windows:
+                windows = [_page_payload(doc, p) for p in doc.parsed_pages[:2]]
+            out = [{"chunk_id": w["chunk_id"], "text": w["text"],
+                    "quality": doc.quality, "page": w.get("page")} for w in windows]
+            tracker.close_reads.append(f"{doc.document_id}#filing")  # F11 精读信号
+            body: dict[str, Any] = {
+                "windows": out, "quality": doc.quality,
+                "document_id": doc.document_id,
+                "completeness": doc.completeness_payload(),
+            }
+            if doc.reuses > 0:
+                body["reused_note"] = (
+                    "文档已存档过，未重新抓取；继续精读用 read_document/search_document"
                 )
             return {
-                "content": json.dumps({"windows": out, "quality": quality}, ensure_ascii=False)
-                + note,
-                "provenance": [
-                    {
-                        "source_id": record_chunk.source_id,
-                        "available_at": record_chunk.available_at.isoformat()
-                        if record_chunk.available_at
-                        else None,
-                        "pit_grade": record_chunk.pit_grade.value,
-                    }
-                ],
+                "content": json.dumps(body, ensure_ascii=False) + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
             }
 
+        def extract_table_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """表格候选抽取（方案 §5.1 extract_table 轻量路径）：行/单元格/表头/
+            币种/期间候选 + 校验问题；数字不直接写成事实（typed 准入不变）。"""
+            from ..gateway.tables import extract_tables
+
+            doc = doc_store.get(str(args.get("document_id") or ""))
+            if doc is None:
+                return {"content": "error: 未知 document_id（先用 fetch_document 取得）",
+                        "provenance": []}
+            pages: list[int] | None = None
+            page_arg = args.get("page")
+            if page_arg is not None and str(page_arg).strip():
+                try:
+                    pages = [int(page_arg)]
+                except (TypeError, ValueError):
+                    return {"content": "error: page 必须是整数页码", "provenance": []}
+                # 惰性续解纪律与 read_document 一致：请求页未解析且有原件 → 现场补解
+                if doc.raw is not None and any(
+                    p not in doc.page_texts and p not in doc.failed_pages for p in pages
+                ):
+                    doc_store.ensure_pages(doc, pages)
+            out = extract_tables(doc, pages=pages)
+            if out["tables"]:
+                tracker.close_reads.append(f"{doc.document_id}#tables")  # F11 精读信号
+            return {
+                "content": json.dumps(out, ensure_ascii=False, default=str)
+                + _quality_note(doc),
+                "provenance": _doc_provenance(doc),
+            }
+
+        tools["fetch_document"] = _fetch_document_tool
+        tools["read_document"] = read_document_tool
+        tools["search_document"] = search_document_tool
         tools["read_edgar_filing"] = read_edgar_filing
+        tools["extract_table"] = extract_table_tool
 
     return tools, tracker
 
@@ -828,46 +1416,118 @@ TOOL_SCHEMAS: dict[str, dict] = {
     },
     "resolve_conflict": {
         "name": "resolve_conflict",
-        "description": "裁决字段的开放冲突：采集到更强证据后调用，清除该字段的竞争版本标记",
+        "description": (
+            "裁决字段的开放冲突（adjudicate_conflict(target=field) 的兼容别名）："
+            "必须指定获胜方（keep_fact_id 或支撑保留值的 keep_evidence_id）。"
+            "服务端会真正保存获胜版本（非最新版时同值晋升为当前投影）"
+            "并清除竞争标记；获胜方不在版本链中会被拒绝，不会静默清标记。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "field": {"type": "string"},
-                "keep_evidence_id": {"type": "string", "description": "以哪条证据为准"},
+                "keep_fact_id": {"type": "string", "description": "保留哪个事实版本（优先）"},
+                "keep_evidence_id": {"type": "string",
+                                     "description": "或以哪条证据为准（服务端反查绑定该证据的版本）"},
                 "note": {"type": "string", "description": "裁决理由"},
             },
-            "required": ["field", "keep_evidence_id"],
+            "required": ["field"],
+        },
+    },
+    "fetch_document": {
+        "name": "fetch_document",
+        "description": (
+            "抓取并存档一份文档的正文/原件（内容哈希去重，同版本复用不重抓）："
+            "从 query_* 检索记录进入（chunk_id，PIT 元数据继承）或直接 url（无时间保证，C 级）。"
+            "返回 document_id、目录（toc）、完整性（full/partial/truncated/failed 与页数）、"
+            "抽取质量与 query 命中窗口（chunk_id 可直接 register_evidence）。"
+            "适用于任意检索到的长文（年报/公告/新闻/招股书），不限 SEC。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string", "description": "query_* 返回的记录 chunk_id（优先）"},
+                "url": {"type": "string", "description": "直接抓取 URL（无 PIT 继承，诚实降级）"},
+                "query": {"type": "string", "description": "可选：抓取后直接切命中窗口"},
+                "freshness": {"type": "string", "enum": ["cached", "refetch"],
+                              "description": "默认 cached（同来源同 URL 复用已存档版本）"},
+            },
+        },
+    },
+    "read_document": {
+        "name": "read_document",
+        "description": (
+            "读已存档文档：按页（page）、页区段（page_range 如 '85-100'，单次 ≤20 页）"
+            "或关键词（query，返回命中窗口）。PDF 超出首次解析上限的页惰性续解，"
+            "后半部表格可达；返回带页码 locator 的 chunk_id、完整性与未读页数（截断不静默）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "fetch_document 返回的文档 id"},
+                "page": {"type": "integer", "description": "读单页（1-based）"},
+                "page_range": {"type": "string", "description": "页区段，如 '85-100'"},
+                "query": {"type": "string", "description": "在指定页/全文内切命中窗口"},
+            },
+            "required": ["document_id"],
+        },
+    },
+    "extract_table": {
+        "name": "extract_table",
+        "description": (
+            "从已存档文档抽取候选表格（启发式，未经核验）：表头/行/单元格 + "
+            "币种/期间候选 + 校验问题（ragged_rows 等）与页/表/行/列定位。"
+            "数字不得直接写成观测——先 read_document 回读该页原文、"
+            "register_evidence 逐字绑定，再走 propose_metric。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "page": {"type": "integer",
+                         "description": "只抽某页（缺省扫全部已解析页；未解析页有原件时惰性补解）"},
+            },
+            "required": ["document_id"],
+        },
+    },
+    "search_document": {
+        "name": "search_document",
+        "description": (
+            "文档内关键词检索：返回命中页码 + 摘录窗口（chunk_id 可登记证据）。"
+            "短语未命中时退化词元共现；搜索范围（已扫页/总页）与未命中都显式返回，"
+            "空结果不等于不存在（可能需换术语或续读未解析页）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "query": {"type": "string", "description": "关键词（表头原词/术语同义词部可试）"},
+                "top_k": {"type": "integer", "description": "命中页上限（默认 6，最大 12）"},
+            },
+            "required": ["document_id", "query"],
         },
     },
     "read_edgar_filing": {
         "name": "read_edgar_filing",
         "description": (
-            "抓取一条 EDGAR filing 记录的正文，按 query 关键词切出原文窗口"
-            "（返回的窗口带新 chunk_id，供 register_evidence 引用）"
+            "兼容别名（新契约用 fetch_document/read_document/search_document）："
+            "抓取一条检索记录（如 query_edgar 返回的 filing）的正文，按 query 切出原文窗口"
+            "（窗口带页码与新 chunk_id，供 register_evidence 引用；同内容复用不重抓）"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "chunk_id": {"type": "string", "description": "query_edgar 返回的 filing 记录 chunk_id"},
                 "query": {"type": "string", "description": "定位关键词（如 'total revenue'）"},
+                "freshness": {"type": "string", "enum": ["cached", "refetch"]},
             },
             "required": ["chunk_id"],
         },
     },
-    # read_evidence 在多个 step 内动态注入（synthesize/committee/rank_report）；
-    # 缺 schema 时路由层回退空参 schema，模型会以 read_evidence({}) 空转——
-    # 2026-09-02 P4 验收实测：委员会 financial 视角 8 步全烧在空参调用上
-    "read_evidence": {
-        "name": "read_evidence",
-        "description": "读取一条已登记证据的原文（verbatim_quote）与来源，用于核对事实锚点",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "evidence_id": {"type": "string", "description": "证据 id（ev- 前缀）"},
-            },
-            "required": ["evidence_id"],
-        },
-    },
+    # read_evidence 已迁至共享上下文工具（context_tools.CONTEXT_TOOL_SCHEMAS，
+    # S1/S2/合成/委员会/rank_report 共用同一契约：单条 evidence_id 或批量 refs）。
+    # 此处引用同一 schema 对象，保持 TOOL_SCHEMAS 消费方（路由/测试）可见。
+    "read_evidence": CONTEXT_TOOL_SCHEMAS["read_evidence"],
     # ---- typed 工具（档案升级；未装配 MetricStore 时路由层不会绑定） ----
     "propose_metric": {
         "name": "propose_metric",
@@ -907,8 +1567,11 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 },
                 "period": {
                     "type": "object",
+                    "description": "业务期间；Q/FY/H1/TTM 必须给 start（只有 instant 可省）。"
+                                   "示例：{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                                   "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}",
                     "properties": {
-                        "start": {"type": "string", "description": "YYYY-MM-DD（instant 可省）"},
+                        "start": {"type": "string", "description": "YYYY-MM-DD（仅 instant 可省）"},
                         "end": {"type": "string", "description": "YYYY-MM-DD"},
                         "frequency": {"type": "string", "enum": ["FY", "Q", "H1", "TTM", "instant"]},
                         "fiscal_label": {"type": "string", "description": "如 FY2025/2025Q3"},
@@ -931,8 +1594,39 @@ TOOL_SCHEMAS: dict[str, dict] = {
                         "required": ["formula_id"],
                     },
                 },
-                "guidance": {"type": "object"},
-                "consensus": {"type": "object"},
+                "guidance": {
+                    "type": "object",
+                    "description": "nature=guidance 必填：发行人、指引发布时刻、目标期间（对象，"
+                                   "不是字符串标签）",
+                    "properties": {
+                        "issuer": {"type": "string", "description": "发布者（公司名/管理层角色）"},
+                        "published_at": {"type": "string",
+                                         "description": "指引发布日 YYYY-MM-DD（按 UTC 解释）或 ISO 时刻"},
+                        "target_period": {
+                            "type": "object",
+                            "description": "指引覆盖的未来期间（与 period 同构）：如 "
+                                           "{\"start\":\"2026-01-26\",\"end\":\"2026-04-26\","
+                                           "\"frequency\":\"Q\",\"fiscal_label\":\"FY2027Q1\"}",
+                            "properties": {
+                                "start": {"type": "string"}, "end": {"type": "string"},
+                                "frequency": {"type": "string",
+                                              "enum": ["FY", "Q", "H1", "TTM", "instant"]},
+                                "fiscal_label": {"type": "string"},
+                            },
+                            "required": ["end", "frequency"],
+                        },
+                    },
+                    "required": ["issuer", "published_at", "target_period"],
+                },
+                "consensus": {
+                    "type": "object",
+                    "description": "nature=consensus 必填：供应商与快照时点（缺快照不可回填）",
+                    "properties": {
+                        "vendor": {"type": "string"},
+                        "snapshot_at": {"type": "string", "description": "ISO 时刻"},
+                    },
+                    "required": ["vendor", "snapshot_at"],
+                },
                 "document_refs": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["metric_key", "value_text", "period", "evidence_ids"],
@@ -944,6 +1638,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "提交一条研究论断（分析层，与事实分离）：kind=fact_summary 事实摘要 / "
             "inference 推论 / hypothesis 待验证假设 / analysis 分析。"
             "support_refs 全部可解析（ev-/obs-/calc-/fact-/claim-）才标 validated，否则 draft。"
+            "注意：validated 仅表示引用校验通过；原文是否支持整句结论属于内容级核验"
+            "（verification.evidence_support），未核验前不得当作已证事实引用。"
         ),
         "parameters": {
             "type": "object",
@@ -979,6 +1675,88 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "attempts": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["question_id", "status"],
+        },
+    },
+    "submit_question_result": {
+        "name": "submit_question_result",
+        "description": (
+            "批量提交一个问题的全部产出（减少机械工具往返）：observations（同 "
+            "propose_metric 参数）/ claims（同 propose_claim 参数）/ 答案字段"
+            "（question_id/status/conclusion/counter_refs/unresolved/attempts）。"
+            "内部逐项走现有门禁（不降低任何验证），逐项返回接受/拒绝与具体原因；"
+            "新接受的 observation/claim id 自动并入答案 support_refs。"
+            "被拒条目按拒绝提示修复后重提（只需重提被拒部分）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "observations": {"type": "array", "items": {"type": "object"},
+                                 "description": "propose_metric 参数对象列表（≤20）"},
+                "claims": {"type": "array", "items": {"type": "object"},
+                           "description": "propose_claim 参数对象列表（≤10）"},
+                "question_id": {"type": "string"},
+                "status": {"type": "string",
+                           "enum": ["gathering", "answered", "disputed", "unavailable",
+                                    "not_applicable"]},
+                "conclusion": {"type": "string"},
+                "support_refs": {"type": "array", "items": {"type": "string"},
+                                 "description": "额外引用（新提交的 obs/claim 自动并入）"},
+                "counter_refs": {"type": "array", "items": {"type": "string"}},
+                "unresolved": {"type": "array", "items": {"type": "string"}},
+                "attempts": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    "track_sub_question": {
+        "name": "track_sub_question",
+        "description": (
+            "登记一个内部子问题/待查线索（版本化追加到所属问题下）：研究中冒出的"
+            "新线索不必丢弃也不必等下一轮——记下触发证据与退出条件，按优先级推进。"
+            "硬约束：子问题不扩大冻结计划的范围与预算；必须挂在分配给你的问题下。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "parent_question_id": {"type": "string"},
+                "text": {"type": "string", "description": "子问题一句话"},
+                "trigger_evidence": {"type": "array", "items": {"type": "string"},
+                                     "description": "触发本子问题的证据/发现引用"},
+                "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+                "exit_condition": {"type": "string", "description": "查到什么算完（防发散）"},
+            },
+            "required": ["parent_question_id", "text"],
+        },
+    },
+    "verify_claim": {
+        "name": "verify_claim",
+        "description": (
+            "对一条论断做内容级核验（区别于 propose_claim 的引用校验）：服务端组装"
+            "证据包（原文/数值/反证/冲突）→ 硬检查（引用/数字逐字/主体期间/冲突）"
+            "→ 原文支持性审查（逐条原子论断 supported/partially_supported/"
+            "contradicted/insufficient）。结果写回 claim.verification 并落审计事件；"
+            "contradicted/insufficient 的 validated 论断降级 draft。关键结论发布前"
+            "应核验；反证检索记录用 counter_search 传入（找不到反证也要留痕）。"
+            "数值型/重大结论自动触发第二模型独立复核（double_check=true 可强制）；"
+            "两审不一致按审慎方向收敛并留痕。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claim_id": {"type": "string"},
+                "double_check": {"type": "boolean",
+                                 "description": "强制二次独立核验（重大结论建议）"},
+                "counter_search": {
+                    "type": "object",
+                    "description": "反证检索记录（可选但强烈建议）",
+                    "properties": {
+                        "queries": {"type": "array", "items": {"type": "string"}},
+                        "sources": {"type": "array", "items": {"type": "string"}},
+                        "found": {"type": "boolean"},
+                        "notes": {"type": "string"},
+                    },
+                },
+            },
+            "required": ["claim_id"],
         },
     },
     "calculate_metric": {

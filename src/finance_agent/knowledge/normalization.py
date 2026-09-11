@@ -33,6 +33,9 @@ SCALE_WORDS: dict[str, int] = {
 
 _NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
 
+#: 财报表头的千位缩写：RMB'000 / US$’000 / €´000 / '000s（= thousand，基线 F10）
+_APOSTROPHE_THOUSANDS = re.compile(r"['\u2019\u02bc\u00b4]\s*000s?(?!\d)")
+
 
 class NormalizationStep(BaseModel):
     """一步显式换算：formula_id@version + 全字符串参数（Decimal 可重算）。"""
@@ -166,9 +169,15 @@ def parse_raw_number(value_text: str) -> Decimal:
 
 
 def detect_scale_word(value_text: str, unit_text: str) -> str | None:
-    """从原文值/单位文本中识别规模词（million/billion/亿…，含复数）；无则 None。"""
+    """从原文值/单位文本中识别规模词（million/billion/亿…，含复数）；无则 None。
+
+    财报表头缩写 "RMB'000 / US$'000 / 000s"（千元）同样识别为 thousand
+    （基线发现 F10：千元原样入库 → 同库 1000 倍量表漂移）。
+    """
     for text in (value_text, unit_text):
         low = text.strip().lower()
+        if _APOSTROPHE_THOUSANDS.search(low):
+            return "thousand"
         for word in sorted(SCALE_WORDS, key=len, reverse=True):
             if re.search(rf"(?<![a-z]){re.escape(word)}s?(?![a-z])", low):
                 return word
@@ -383,7 +392,9 @@ def assert_value_context(
     if len(distinct) >= 2 and not span:
         raise NormalizationError(
             f"摘录含多个数字 {distinct}，必须显式给出 value_span（cell/span 定位）——"
-            "不允许从如 '$73.7 million, or 37%' 这样的句子里猜要哪个数"
+            "不允许从如 '$73.7 million, or 37%' 这样的句子里猜要哪个数。"
+            "修法：重提同一观测并附 value_span=只含目标数字的逐字原文片段"
+            "（如 value_span=\"$81,615\" 或 \"Revenue is expected to be $78.0 billion\"）"
         )
 
     if value_kind in _MONEY_KINDS:

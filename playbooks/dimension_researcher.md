@@ -27,6 +27,22 @@
 - 关键数字双源交叉（calc cross_validate），不一致走冲突机制。
 
 ## 生产纪律（防囤证据空转，实测教训）
+两种模式，以本任务书尾部注入的「生产纪律」为准（分配到问题 = 问题驱动）：
+
+### 问题驱动（分配到研究问题时）
+- 按问题逐个推进：搜索发现 → 重要资料精读（用文档读取工具
+  read_document/read_edgar_filing/read_chunk 拿到全文与关键位置，
+  搜索摘录不足以支撑结论）→ 登记证据 → propose_metric/propose_claim
+  → 完成一题立即 answer_question；
+- 数值形态纪律（拒写即返工）：value_text 只写证据里逐字出现的数字原文
+  （如 "28.9%"），不拼标签/期间；摘录多数字时 value_span 选定原句；
+  nature=consensus 必须给 snapshot_at（没有快照日期就退化 reported 或不写）；
+  submit_question_result 的 arguments 必须是合法 JSON（先小批量验证形态）；
+- 禁止连续登记超过 3 条证据而不产出观测/论断/答案——登记本身不是产出；
+- 查不到就标 unavailable 并记录 attempts，不烧预算空转；
+- 旧字段（propose_fact）只在回答问题的顺带产出时写，不为刷字段完整度消耗预算。
+
+### legacy 补字段模式（无分配问题时）
 - 按字段逐个推进：搜索 → 登记 1-2 条关键证据 → **立即 propose_fact**；
 - 禁止连续登记超过 3 条证据而不写事实——登记本身不是产出；
 - 本组字段写完才准碰可选维度；写不出就留白，换下一个字段。

@@ -29,6 +29,7 @@ from .normalization import (
     assert_magnitude_bound,
     assert_typed_leaves,
     assert_value_context,
+    detect_scale_word,
     recompute_lineage,
 )
 from .store import BitemporalStore
@@ -236,6 +237,29 @@ class TypedMetricWriter:
                 # 表头/单位上下文（audit §3.2）：locator 里的 header/unit/table 声明的量表
                 # 与正文数字分开存放是财报正常形态，量级绑定得认它
                 unit_ctx = _unit_context(obs, evidences)
+                # 2c) 规模词必须已显式换算（基线发现 F10：千元/'000 原样入库 →
+                #     同库 1000 倍量表漂移，数值准确率命门）：原文值/单位/表头声明
+                #     了规模词而 normalization 没有对应步骤 = 疑漏乘，拒写并给修法。
+                #     先于量级绑定执行：拒绝信息更可操作（告知登记换算步骤）
+                scale_ctx = [obs.raw.value_text, obs.raw.unit_text, *unit_ctx]
+                word = next(
+                    (w for w in (detect_scale_word(t, "") for t in scale_ctx) if w is not None),
+                    None,
+                )
+                if word is not None:
+                    applied = any(
+                        str((s or {}).get("formula_id"))
+                        in ("unit_word_scale", "scale_by_power_of_ten")
+                        for s in obs.normalization
+                    )
+                    if not applied:
+                        raise KnowledgeInvariantError(
+                            f"观测 {obs.metric_key} 的原文/表头含规模词 {word!r}"
+                            f"（上下文：{[t for t in scale_ctx if t][:3]}），但 normalization "
+                            f"无换算步骤——疑量表漏乘（value={obs.value} 可能偏 10^3/10^6）："
+                            "在 normalization 登记 unit_word_scale（服务端重算），"
+                            "或修正 value_text/unit_text 使其反映原文真实量表"
+                        )
                 assert_magnitude_bound(
                     obs.raw.value_text,
                     obs.raw.unit_text,

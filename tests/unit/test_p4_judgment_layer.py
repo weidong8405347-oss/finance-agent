@@ -120,15 +120,18 @@ class TestCommitteeFailureVisibility:
         assert "\n## \n" not in text.replace("（该视角产出为空：步数耗尽或模型未产出，CIO 综合时降权）", "")
 
     def test_read_evidence_schema_registered(self):
-        """read_evidence 必须有 function schema（否则路由层回退空参 schema，模型 {} 空转）。"""
+        """read_evidence 必须有 function schema（否则路由层回退空参 schema，模型 {} 空转）。
+
+        共享上下文工具升级后支持两种形态：单条 evidence_id（兼容旧用法）或批量 refs；
+        防回退空参 schema 的断言改为「两个参数都在 properties 里」。"""
         from finance_agent.cli import _all_tool_schemas
         from finance_agent.research.tools import TOOL_SCHEMAS
 
         for table in (TOOL_SCHEMAS, _all_tool_schemas()):
             schema = table.get("read_evidence")
             assert schema, "read_evidence 缺 schema（路由将下发空参 schema）"
-            assert "evidence_id" in schema["parameters"]["properties"]
-            assert "evidence_id" in schema["parameters"]["required"]
+            props = schema["parameters"]["properties"]
+            assert "evidence_id" in props and "refs" in props
 
 
 class TestRankReportBriefIntegrity:

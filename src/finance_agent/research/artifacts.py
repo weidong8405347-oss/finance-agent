@@ -24,6 +24,47 @@ ClaimKind = Literal["fact_summary", "inference", "hypothesis", "analysis"]
 ClaimStatus = Literal["draft", "validated", "superseded"]
 ArtifactSufficiency = Literal["sufficient", "partial", "blocked"]
 
+#: 内容级核验结论（tools-plugins 方案 §5.4）：引用可解析 ≠ 原文支持结论。
+#: 四项检查独立记录，任何一项都不能被总评分抵消。
+EvidenceSupport = Literal[
+    "unchecked", "supported", "partially_supported", "contradicted", "insufficient"
+]
+NumericCheckState = Literal["not_applicable", "unchecked", "passed", "failed"]
+AnalysisReviewState = Literal["not_required", "unchecked", "passed", "failed"]
+
+
+class ClaimVerification(BaseModel):
+    """论断的分项核验状态（additive：旧数据缺省 = 只做过引用校验）。
+
+    历史语义映射（方案 §5.4）：旧 `status=validated` 只表示「引用校验已过」，
+    即 references_valid=True 而 evidence_support=unchecked——不得批量升级成
+    「内容已核验」。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: 引用可解析（存在性 + 命名空间 + 实体上下文）——propose_claim 服务端已做
+    references_valid: bool = False
+    #: 原文是否支持结论（内容级核验，verify_claim/P2 才产出非 unchecked 值）
+    evidence_support: EvidenceSupport = "unchecked"
+    #: 数值一致性检查（论断中的数字可否由引用观测/计算重算支撑）
+    numeric_checks: NumericCheckState = "unchecked"
+    #: 推理审查（前提/推理边界/替代解释；fact_summary 可标 not_required）
+    analysis_review: AnalysisReviewState = "unchecked"
+    #: 反证检索是否执行过（有记录即可，不要求必须找到反证）
+    counter_evidence_search: bool = False
+    #: 支持证据追溯到的独立来源族数（review P2-A：同文档/同址/转载 = 一族；
+    #: None = 未计算/旧数据）。1 族不等于虚假，但核验意见必须显式标注
+    independent_sources: int | None = None
+    verified_at: datetime | None = None
+    verified_by: str = ""  # 核验者标识（工具/模型/人工），不是真值担保
+    notes: list[str] = Field(default_factory=list)
+
+    @property
+    def content_checked(self) -> bool:
+        """是否做过内容级核验（区别于仅引用校验）。"""
+        return self.evidence_support != "unchecked"
+
 #: 段落内引用锚点：[ev-xxx]（证据）/{{metric:obs-id}}（数值插值）
 _EV_REF_RE = re.compile(r"\[(ev-[A-Za-z0-9_-]+)\]")
 _METRIC_REF_RE = re.compile(r"\{\{metric:([A-Za-z0-9_-]+)\}\}")
@@ -44,6 +85,9 @@ class ResearchClaim(BaseModel):
     counter_refs: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     status: ClaimStatus = "draft"
+    #: 分项核验状态（tools-plugins 方案 §5.4）：status=validated 仅表示引用校验过，
+    #: 内容级支持性看 verification.evidence_support（旧数据缺省 unchecked）
+    verification: ClaimVerification = Field(default_factory=ClaimVerification)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     evidence_cutoff: datetime | None = None
     run_id: str | None = None
@@ -187,6 +231,14 @@ class ValidationIssue(BaseModel):
         "unresolved_calculation", "uninterpolated_metric", "bare_number_unverified",
         "empty_document", "unsourced_metric_cell", "unresolved_claim_ref",
         "claim_context_mismatch",
+        # 内容级核验（方案 §5.4）：发布规则读硬检查与核验结果，不得用总评分抵消
+        "contradicted_claim_ref", "claim_evidence_insufficient",
+        # review R1：发布门禁直接消费数值/推理硬检查结果（不仅 evidence_support）；
+        # review R4：已被整合失效的论断不得进入正式产物
+        "claim_numeric_check_failed", "claim_analysis_review_failed",
+        "claim_evidence_partial", "invalidated_claim_ref",
+        # F15：报告引用的 validated 论断未经内容核验（可见性，不硬拦）
+        "claim_content_unchecked",
     ]
     block_index: int | None = None
     ref: str = ""
@@ -386,7 +438,10 @@ class ArtifactValidator:
         """论断的支持/反方引用逐条验证（review #5）：存在性 + 命名空间 + 实体上下文。
 
         只查 claim 存在无法阻止错误进入正式结论——validated 论断的两侧引用
-        都必须可在同一上下文解析。"""
+        都必须可在同一上下文解析。内容级核验状态（方案 §5.4）同样进发布规则：
+        contradicted 硬失败（不得进正式产物），insufficient/partially_supported 软问题
+        （降级可见）；review R1：数值/推理硬检查失败独立于 evidence_support 硬拦发布；
+        review R4：已被整合失效的论断引用硬失败（失效语义贯通到发布门禁）。"""
         issues: list[ValidationIssue] = []
         ns = claim.get("namespace", "prod")
         kind, eid = claim.get("entity_kind"), claim.get("entity_id")
@@ -401,6 +456,87 @@ class ArtifactValidator:
                         f"（namespace={ns}, entity={kind}:{eid}）"
                     ),
                 ))
+        verification = claim.get("verification") or {}
+        support_state = str(verification.get("evidence_support", "unchecked"))
+        if support_state == "contradicted":
+            issues.append(ValidationIssue(
+                code="contradicted_claim_ref", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 内容核验为 contradicted（原文与结论矛盾）"
+                    "——不得进入正式产物；修正论断或换证据后重新核验"
+                ),
+                hard=True,
+            ))
+        elif support_state == "insufficient":
+            issues.append(ValidationIssue(
+                code="claim_evidence_insufficient", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 内容核验为 insufficient（原文不足以支持"
+                    "整句结论）——建议补证或降级表述"
+                ),
+                hard=False,
+            ))
+        elif support_state == "partially_supported":
+            issues.append(ValidationIssue(
+                code="claim_evidence_partial", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 内容核验为 partially_supported"
+                    "（部分原子论断未获充分支持）——结论不得超出已支持范围"
+                ),
+                hard=False,
+            ))
+        # review R1：数值/推理硬检查是独立发布门禁——即使 evidence_support 非
+        # contradicted（如内容审查不可用、模型误判 supported），硬失败也直接拦发布
+        if str(verification.get("numeric_checks", "unchecked")) == "failed":
+            issues.append(ValidationIssue(
+                code="claim_numeric_check_failed", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 数值硬检查失败（论断数字与引用原文/"
+                    "观测不一致）——修正数字或换证据后重新核验，不得进入正式产物"
+                ),
+                hard=True,
+            ))
+        if str(verification.get("analysis_review", "unchecked")) == "failed":
+            issues.append(ValidationIssue(
+                code="claim_analysis_review_failed", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} 推理审查失败（前提/推理边界不成立）"
+                    "——不得进入正式产物"
+                ),
+                hard=True,
+            ))
+        # F15：validated 论断未经内容核验进正式产物 → 软问题逐条可见
+        #（覆盖推动由合成阶段的服务端批量核验执行；不硬拦——核验服务
+        # 不可用时不得把所有产物打成 draft）
+        if claim.get("status") == "validated" and support_state == "unchecked":
+            issues.append(ValidationIssue(
+                code="claim_content_unchecked", block_index=block_index,
+                ref=str(claim.get("claim_id") or ""),
+                message=(
+                    f"claim {claim.get('claim_id')} validated 但未经内容级核验"
+                    "（evidence_support=unchecked）——读者应按「只过引用校验」看待"
+                ),
+                hard=False,
+            ))
+        # review R4：失效语义贯通发布——已被 profile 整合失效的论断（claim_invalidations
+        # 已生效）引用进报告 = 硬失败，失效记录不再只是台账
+        claim_id = str(claim.get("claim_id") or "")
+        if claim_id and self._store.is_claim_invalidated(claim_id, namespace=ns):
+            inv = self._store.claim_invalidation(claim_id, namespace=ns) or {}
+            issues.append(ValidationIssue(
+                code="invalidated_claim_ref", block_index=block_index,
+                ref=claim_id,
+                message=(
+                    f"claim {claim_id} 已于 {inv.get('invalidated_at', '?')} 被整合失效"
+                    f"（{inv.get('reason', '')}）——失效论断不得进入正式产物"
+                ),
+                hard=True,
+            ))
         return issues
 
     def _check_paragraph(
