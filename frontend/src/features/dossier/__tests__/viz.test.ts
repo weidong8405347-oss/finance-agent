@@ -200,3 +200,75 @@ describe("rankedBarColumns（诚实护栏）", () => {
     expect(toBarNumber(null)).toBeNull();
   });
 });
+
+// ---------------- 候选四象限（§20：离散序网格，不造连续坐标） ----------------
+
+import { quadrantCells, shareToNumber } from "../viz";
+import type { ProfitPool, QuadrantPayload } from "../types";
+
+const qPoint = (id: string, x: number, y: number, tier = "included") => ({
+  entity_id: id, name: id, tier, x, y, x_stage: "clinical", y_stage: "pilot",
+  evidence_count: 1,
+});
+
+const quadrantPayload = (points: ReturnType<typeof qPoint>[]): QuadrantPayload => ({
+  x_axis: { key: "technology_stage", title: "技术/护城河验证",
+            order: ["early", "preclinical", "clinical", "commercial", "mature"],
+            labels: { early: "早期", clinical: "临床" } },
+  y_axis: { key: "commercial_stage", title: "商业验证",
+            order: ["none", "pilot", "early_revenue", "scaling", "profitable"],
+            labels: { none: "未商业化", pilot: "试点" } },
+  points,
+  unpositioned: [],
+});
+
+describe("quadrantCells", () => {
+  it("把点放进正确的网格单元格，y 降序（商业验证高者在上）", () => {
+    const rows = quadrantCells(quadrantPayload([
+      qPoint("a", 2, 3), qPoint("b", 2, 3), qPoint("c", 0, 0),
+    ]));
+    expect(rows.length).toBe(5);            // 5 个 y 层
+    expect(rows[0][0].y).toBe(4);           // 顶行 = y=4
+    const cell23 = rows.flat().find((c) => c.x === 2 && c.y === 3);
+    expect(cell23?.points.map((p) => p.entity_id)).toEqual(["a", "b"]); // 同格共存
+    const cell00 = rows.flat().find((c) => c.x === 0 && c.y === 0);
+    expect(cell00?.points.map((p) => p.entity_id)).toEqual(["c"]);
+    expect(rows.flat().filter((c) => c.points.length === 0).length).toBe(25 - 2);
+  });
+
+  it("空点集 → 全空格", () => {
+    const rows = quadrantCells(quadrantPayload([]));
+    expect(rows.flat().every((c) => c.points.length === 0)).toBe(true);
+  });
+});
+
+// ---------------- Profit Pool（§22/§48.4） ----------------
+
+describe("shareToNumber", () => {
+  it("只接受十进制百分数字符串", () => {
+    expect(shareToNumber("45")).toBe(45);
+    expect(shareToNumber("45.5")).toBe(45.5);
+    expect(shareToNumber("0")).toBe(0);
+    expect(shareToNumber("45%")).toBeNull();
+    expect(shareToNumber("")).toBeNull();
+    expect(shareToNumber("abc")).toBeNull();
+    expect(shareToNumber("-3")).toBeNull(); // 份额为负不是合法输入
+  });
+});
+
+const poolEntry = (node: string, share: string, estimated = false) => ({
+  node, label: node, layer: "midstream", share, estimated, evidence_refs: [], note: "",
+});
+
+describe("ProfitPoolBar 数据契约", () => {
+  it("份额为十进制字符串；estimated 标记透传（单源 §48.4）", () => {
+    const pool: ProfitPool = {
+      kind: "stacked_bar", unit: "percent",
+      entries: [poolEntry("a", "55"), poolEntry("b", "45", true)],
+      total_share: "100", notes: [],
+    };
+    expect(pool.entries[0].share).toBe("55");
+    expect(pool.entries[1].estimated).toBe(true);
+    expect(pool.entries.every((e) => shareToNumber(e.share) !== null)).toBe(true);
+  });
+});

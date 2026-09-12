@@ -375,3 +375,191 @@ export function MetricSmallMultiples({ series, height = 210, onPointClick, title
     </div>
   );
 }
+
+// ---------------- Price vs EPS Revision（§26：股价变动 = 盈利预期上修 or 估值扩张） ----------------
+
+import type { PricePoint, RevisionSeries } from "./types";
+
+export interface RevisionChartData {
+  option: echarts.EChartsCoreOption;
+  /** 实际绘制的修订序列（全部数值不可绘图的被剔除并记录） */
+  revisionKeys: string[];
+  dropped: string[];
+}
+
+/** 日期字符串 → yyyy-mm-dd（time 轴类别）；不可解析 → null（该点跳过不画）。 */
+export function revisionDateKey(iso: string): string | null {
+  const d = (iso ?? "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
+}
+
+/**
+ * Price vs Revision 双轴图配置（纯函数，可测）。
+ * - Price 腿：share_price 观测按交易日（左轴，墨色实线）；
+ * - Revision 腿：同一目标期间的 consensus 快照按可知时刻（右轴，一致预期蓝）；
+ * - 数值十进制字符串只在绘图边界转 number；不可转换的点跳过并记录（不静默）；
+ * - 两轴独立刻度（价格与 EPS 不同量纲）；不做对齐插值（缺期保留真实采样点）。
+ */
+export function buildPriceRevisionOption(
+  revision: RevisionSeries[],
+  price: PricePoint[],
+): RevisionChartData {
+  const dropped: string[] = [];
+  const echartsSeries: any[] = [];
+  const revisionKeys: string[] = [];
+
+  // 价格线（左轴 yAxisIndex 0）
+  const priceData: [string, number][] = [];
+  for (const p of price) {
+    const k = revisionDateKey(p.at);
+    const n = toChartNumber(p.value);
+    if (k === null || n === null) {
+      if (p.value !== null && p.value !== undefined) dropped.push(`股价 ${p.at}: ${p.value}`);
+      continue;
+    }
+    priceData.push([k, n]);
+  }
+  priceData.sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  if (priceData.length) {
+    echartsSeries.push({
+      name: "股价",
+      type: "line",
+      yAxisIndex: 0,
+      data: priceData,
+      connectNulls: false,
+      symbolSize: 6,
+      lineStyle: { color: "#3f3f46", width: 2 },
+      itemStyle: { color: "#3f3f46" },
+    });
+  }
+
+  // 一致预期修订线（右轴 yAxisIndex 1；consensus 蓝色分层 §4.5）
+  const REV_COLORS = ["#2563eb", "#7c3aed", "#0d9488", "#b45309"];
+  revision.forEach((s, si) => {
+    const data: [string, number][] = [];
+    for (const p of s.points) {
+      const k = revisionDateKey(p.at);
+      const n = toChartNumber(p.value);
+      if (k === null || n === null) {
+        dropped.push(`${s.metric_key} ${s.period_label} ${p.at}: ${p.value}`);
+        continue;
+      }
+      data.push([k, n]);
+    }
+    data.sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    if (!data.length) {
+      dropped.push(`${s.metric_key} ${s.period_label}: 全部数值不可绘图`);
+      return;
+    }
+    const name = `${s.metric_key.replace(/^consensus_/, "consensus ").replace(/_/g, " ")}`
+      + ` · ${s.period_label}${s.unit ? `（${s.unit}${s.currency ? `·${s.currency}` : ""}）` : ""}`;
+    revisionKeys.push(name);
+    echartsSeries.push({
+      name,
+      type: "line",
+      yAxisIndex: 1,
+      data,
+      connectNulls: false,
+      symbolSize: 7,
+      lineStyle: { color: REV_COLORS[si % REV_COLORS.length], width: 2 },
+      itemStyle: { color: REV_COLORS[si % REV_COLORS.length] },
+    });
+  });
+
+  const option: echarts.EChartsCoreOption = {
+    animation: false,
+    grid: { left: 64, right: 64, top: 30, bottom: 28 },
+    legend: {
+      data: [...(priceData.length ? ["股价"] : []), ...revisionKeys],
+      top: 0, textStyle: { fontSize: 11, color: "#52525b" }, itemWidth: 14, itemHeight: 8,
+    },
+    tooltip: {
+      trigger: "axis",
+      textStyle: { fontSize: 11 },
+      formatter: (params: any) => {
+        const list = Array.isArray(params) ? params : [params];
+        const lines = [`<b>${list[0]?.axisValueLabel ?? list[0]?.axisValue ?? ""}</b>`];
+        for (const item of list) {
+          lines.push(`${item.marker} ${item.seriesName}: <b>${item.value?.[1] ?? "—"}</b>`);
+        }
+        return lines.join("<br/>");
+      },
+    },
+    xAxis: {
+      type: "time",
+      axisLabel: { fontSize: 10, color: "#71717a" },
+      axisLine: { lineStyle: { color: "#e4e4e7" } },
+    },
+    yAxis: [
+      {
+        type: "value", name: "股价", nameTextStyle: { fontSize: 10, color: "#71717a" },
+        scale: true,
+        axisLabel: { fontSize: 10, color: "#71717a" },
+        splitLine: { lineStyle: { color: "#f4f4f5" } },
+      },
+      {
+        type: "value", name: "一致预期", nameTextStyle: { fontSize: 10, color: "#2563eb" },
+        scale: true,
+        axisLabel: { fontSize: 10, color: "#2563eb" },
+        splitLine: { show: false },
+      },
+    ],
+    series: echartsSeries,
+  };
+  return { option, revisionKeys, dropped };
+}
+
+/** Price vs EPS Revision 双线图（§26）。两条腿都 ≥2 点才画——缺一则由调用方
+ *  维持诚实降级（不画半张图冒充预期分析）。 */
+export function PriceVsRevisionChart({ revision, price, height = 280, title }: {
+  revision: RevisionSeries[];
+  price: PricePoint[];
+  height?: number;
+  title?: string;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const { option, dropped, drawableRevision, drawablePrice } = useMemo(() => {
+    const usableRevision = revision.filter((s) =>
+      s.points.filter((p) => revisionDateKey(p.at) && toChartNumber(p.value) !== null).length >= 2);
+    const usablePrice = price.filter((p) =>
+      revisionDateKey(p.at) && toChartNumber(p.value) !== null);
+    const built = buildPriceRevisionOption(usableRevision, usablePrice);
+    return {
+      option: built.option,
+      dropped: built.dropped,
+      drawableRevision: usableRevision.length > 0,
+      drawablePrice: usablePrice.length >= 2,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(revision), JSON.stringify(price)]);
+
+  const drawable = drawableRevision && drawablePrice;
+
+  useEffect(() => {
+    if (!drawable || ref.current === null) return;
+    const chart = echarts.init(ref.current);
+    chart.setOption(option);
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(ref.current);
+    return () => { ro.disconnect(); chart.dispose(); };
+  }, [option, drawable]);
+
+  if (!drawable) return null;
+
+  return (
+    <div className="rounded border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-3 py-1.5 text-xs font-semibold text-neutral-700">
+        {title ?? "股价 vs 一致预期修订"}
+        <span className="ml-2 font-normal text-neutral-400">
+          股价上涨/下跌是盈利预期上修还是估值扩张？（左轴股价 · 右轴一致预期，按快照可知时刻）
+        </span>
+      </div>
+      <div ref={ref} style={{ height }} role="img" aria-label={title ?? "股价与一致预期修订双线图"} />
+      {dropped.length > 0 && (
+        <div className="border-t border-amber-100 bg-amber-50 px-3 py-1 text-[11px] text-amber-800">
+          {dropped.length} 个数值不可安全绘图（非十进制/日期不可解析），未画出
+        </div>
+      )}
+    </div>
+  );
+}

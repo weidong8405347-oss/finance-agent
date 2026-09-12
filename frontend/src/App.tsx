@@ -59,9 +59,9 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-30 border-b border-neutral-200 bg-white">
-        <div className="mx-auto flex max-w-[1560px] items-center gap-6 px-6 py-2.5">
-          <span className="font-mono text-sm font-semibold tracking-tight">finance-agent</span>
-          <nav className="flex gap-1">
+        <div className="mx-auto flex max-w-[1560px] items-center gap-3 px-4 py-2.5 md:gap-6 md:px-6">
+          <span className="shrink-0 font-mono text-sm font-semibold tracking-tight">finance-agent</span>
+          <nav className="flex gap-1 overflow-x-auto">
             {NAV.map((n) => (
               <button
                 key={n.key}

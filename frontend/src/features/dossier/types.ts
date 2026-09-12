@@ -86,6 +86,105 @@ export interface ResearchCoverage {
   assessment_id: string | null;
 }
 
+/** What Changed 日志条目（§32：快照级 diff，发布时服务端冻结）。 */
+export interface ChangeLogEntry {
+  icon: "up" | "risk" | "new";
+  kind: "thesis" | "risk" | "metric" | "company_status" | "catalyst" | "module" | string;
+  tag: string;
+  text: string;
+  refs: string[];
+}
+
+/** Thesis 对象（§13/§14：服务端从 claims 确定性推导；无则前端回退 ClaimItem 渲染）。 */
+export interface ThesisObject {
+  id: string;
+  title: string;
+  summary: string;
+  kind: string;
+  status: string;
+  importance: number | null;   // 计划问题优先级映射；无归属 → null
+  confidence: number | null;   // claim 状态映射（非统计置信度；读 confidence_basis）
+  confidence_basis: string;
+  direction: string | null;    // 无确定性来源 → null（不从文本猜多空）
+  support_count: number;
+  counter_count: number;
+  unresolved_count: number;
+  supports: string[];
+  contradicts: string[];
+  monitor: string[];
+  related_companies: string[];
+  bear_case_status: "met" | "unmet";  // §14：unmet = 反证义务未履行
+}
+
+/** 护城河十维评估（§28：评分无证据时留空——不编造 1-5）。 */
+export interface MoatAssessment {
+  entity_id: string;
+  name: string;
+  tier: string;
+  dimensions: Record<string, {
+    score: number | null;
+    confidence: "low" | "medium" | "high" | null;
+    trend: "strengthening" | "stable" | "weakening" | "unknown" | null;
+    evidence_refs: string[];
+    note: string;
+  }>;
+  evidence_groups: Record<string, string[]>;
+  claim_refs: string[];
+  notes: string[];
+}
+
+/** 候选四象限（§20：离散阶段的规范序坐标，不是评分；未定位公司单列）。 */
+export interface QuadrantPoint {
+  entity_id: string;
+  name: string;
+  tier: string;
+  x: number;  // technology_stage 规范序 0-4
+  y: number;  // commercial_stage 规范序 0-4
+  x_stage: string;
+  y_stage: string;
+  evidence_count: number;
+}
+
+export interface QuadrantPayload {
+  x_axis: { key: string; title: string; order: string[]; labels: Record<string, string> };
+  y_axis: { key: string; title: string; order: string[]; labels: Record<string, string> };
+  points: QuadrantPoint[];
+  unpositioned: { entity_id: string; name: string; tier: string; evidence_count: number; reason: string }[];
+}
+
+/** Profit Pool（§22/§48.4：value_flow 边的定量份额；单一来源标 estimated）。 */
+export interface ProfitPool {
+  kind: "stacked_bar";
+  unit: "percent";
+  entries: {
+    node: string; label: string; layer: string;
+    share: string;  // 百分数十进制字符串（"45" = 45%）
+    estimated: boolean;
+    evidence_refs: string[];
+    note: string;
+  }[];
+  total_share: string;
+  notes: string[];
+}
+
+/** 一致预期修订视图（§26：同一目标期间的多时点快照，x=可知时刻）。 */
+export interface RevisionSeries {
+  metric_key: string;
+  period_label: string;
+  unit: string;
+  currency: string | null;
+  points: { at: string; value: string; observation_id: string; evidence_refs: string[] }[];
+}
+
+/** 价格序列点（§26 Price vs Revision 的 Price 腿，x=交易日）。 */
+export interface PricePoint {
+  at: string;
+  value: string;
+  currency: string | null;
+  observation_id: string;
+  evidence_refs: string[];
+}
+
 export interface DossierSnapshot {
   schema_version: string;
   entity: EntityRef;
@@ -103,6 +202,13 @@ export interface DossierSnapshot {
   structures?: Record<string, any>;
   /** 模块注册表（audit §3.6）：导航顺序与 renderer 由此决定，前端不硬编码 */
   module_registry?: ModuleRegistry;
+  /** What Changed 日志（§32：发布时冻结的快照级 diff；空 → 回退 summary.key_changes） */
+  change_log?: ChangeLogEntry[];
+  /** Investment Objects（§12-§15：投影层确定性推导的论点/护城河对象） */
+  investment_objects?: {
+    theses?: ThesisObject[];
+    moat_assessments?: MoatAssessment[];
+  };
 }
 
 // ---------------- 模块 payload ----------------

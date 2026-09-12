@@ -162,3 +162,69 @@ describe("groupByUnit（KPI small multiples，方案 §9）", () => {
     expect(groupByUnit([series("a", "USD", "USD"), series("b", "USD", "USD")])).toHaveLength(1);
   });
 });
+
+// ---------------- Price vs EPS Revision（§26） ----------------
+
+import { buildPriceRevisionOption, revisionDateKey } from "../charts";
+import type { PricePoint, RevisionSeries } from "../types";
+
+const revPoint = (at: string, value: string) => ({
+  at, value, observation_id: `obs-${at}-${value}`, evidence_refs: [],
+});
+const pricePoint = (at: string, value: string): PricePoint => ({
+  at, value, currency: "USD", observation_id: `obs-px-${at}`, evidence_refs: [],
+});
+
+describe("revisionDateKey", () => {
+  it("ISO 时间戳 → yyyy-mm-dd；不可解析 → null", () => {
+    expect(revisionDateKey("2025-03-01T10:00:00+00:00")).toBe("2025-03-01");
+    expect(revisionDateKey("2025-03-01")).toBe("2025-03-01");
+    expect(revisionDateKey("")).toBeNull();
+    expect(revisionDateKey("2025-03")).toBeNull();
+  });
+});
+
+describe("buildPriceRevisionOption", () => {
+  it("价格左腿 + 修订右腿，双轴；点按日期升序", () => {
+    const revision: RevisionSeries[] = [{
+      metric_key: "consensus_eps", period_label: "FY2026", unit: "USD", currency: "USD",
+      points: [revPoint("2025-03-01T00:00:00Z", "8.4"), revPoint("2025-01-15T00:00:00Z", "8.1")],
+    }];
+    const price = [pricePoint("2025-03-01", "95.5"), pricePoint("2025-01-02", "88.2")];
+    const { option, revisionKeys, dropped } = buildPriceRevisionOption(revision, price);
+    expect(dropped).toEqual([]);
+    expect(revisionKeys.length).toBe(1);
+    const series = (option as any).series;
+    expect(series.length).toBe(2);
+    const priceLine = series.find((s: any) => s.name === "股价");
+    expect(priceLine.yAxisIndex).toBe(0);
+    expect(priceLine.data).toEqual([["2025-01-02", 88.2], ["2025-03-01", 95.5]]);
+    const revLine = series.find((s: any) => s.name !== "股价");
+    expect(revLine.yAxisIndex).toBe(1);
+    expect(revLine.data).toEqual([["2025-01-15", 8.1], ["2025-03-01", 8.4]]);
+    expect(((option as any).yAxis as any[]).length).toBe(2);
+  });
+
+  it("不可绘图值被记录且不影响其余点", () => {
+    const revision: RevisionSeries[] = [{
+      metric_key: "consensus_eps", period_label: "FY2026", unit: "", currency: null,
+      points: [revPoint("2025-03-01", "8.4"), revPoint("bad-date", "8.1"),
+               revPoint("2025-02-01", "not-a-number")],
+    }];
+    const { option, dropped } = buildPriceRevisionOption(revision, []);
+    expect(dropped.length).toBe(2);
+    const series = (option as any).series;
+    expect(series.length).toBe(1); // 价格无数据 → 不出价格线
+    expect(series[0].data).toEqual([["2025-03-01", 8.4]]);
+  });
+
+  it("全不可绘图的修订序列被剔除并记录", () => {
+    const revision: RevisionSeries[] = [{
+      metric_key: "consensus_eps", period_label: "FY2026", unit: "", currency: null,
+      points: [revPoint("", "x")],
+    }];
+    const { revisionKeys, dropped } = buildPriceRevisionOption(revision, []);
+    expect(revisionKeys).toEqual([]);
+    expect(dropped.some((d) => d.includes("全部数值不可绘图"))).toBe(true);
+  });
+});

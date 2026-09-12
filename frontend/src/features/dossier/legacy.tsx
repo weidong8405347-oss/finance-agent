@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import { api, SeriesPoint } from "../../api";
+import { isOfflineExport } from "./api";
 
 // 存量兼容：硬门禁上线前落库的 JSON 字符串值，渲染层解析回结构化（历史不改写，投影可美化）
 export function parseLegacyJson(value: string): unknown | null {
@@ -95,6 +96,9 @@ export function ConflictResolver({ kind, id, field, factId, onResolved, readOnly
   const [busy, setBusy] = useState<string | null>(null);
   const [versions, setVersions] = useState<SeriesPoint[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 离线导出（§11.4）：裁决是写操作、版本链来自 v1 在线库——离线只读
+  const offline = isOfflineExport();
+  const ro = readOnly || offline;
 
   const resolve = async (keepFactId: string) => {
     setBusy(keepFactId);
@@ -118,9 +122,11 @@ export function ConflictResolver({ kind, id, field, factId, onResolved, readOnly
     <div className="space-y-1.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] text-amber-700">同一事件时点出现不同值，需人工裁决</span>
-        {readOnly ? (
+        {ro ? (
           <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">
-            历史视图只读——处理当前冲突请切回当前视图（不借用未来裁决）
+            {offline
+              ? "离线导出：冲突裁决与版本链需在线版（冻结文件不写回）"
+              : "历史视图只读——处理当前冲突请切回当前视图（不借用未来裁决）"}
           </span>
         ) : (
           <button disabled={busy !== null} onClick={() => resolve(factId)}
@@ -128,9 +134,11 @@ export function ConflictResolver({ kind, id, field, factId, onResolved, readOnly
             {busy === factId ? "裁决中…" : "以此版本为准"}
           </button>
         )}
-        <button onClick={toggleVersions} className="text-[11px] text-neutral-500 hover:underline">
-          {versions ? "收起版本链" : "查看版本链"}
-        </button>
+        {!offline && (
+          <button onClick={toggleVersions} className="text-[11px] text-neutral-500 hover:underline">
+            {versions ? "收起版本链" : "查看版本链"}
+          </button>
+        )}
         {readOnly && versions && (
           <span className="text-[10px] text-indigo-600">
             注意：版本链来自 v1 当前库，未按历史 as_of 过滤（仅供审计参考）

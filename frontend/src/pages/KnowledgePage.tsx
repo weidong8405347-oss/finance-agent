@@ -19,12 +19,12 @@ function fmtDate(iso: string | null): string {
 }
 
 function VerdictPill({ verdict }: { verdict: string | null }) {
-  if (!verdict) return <span className="text-[11px] text-neutral-400">未评估</span>;
+  if (!verdict) return <span className="text-[11px] text-ink-faint">未评估</span>;
   const meta = verdict === "sufficient"
-    ? { label: "充分", cls: "border-green-300 bg-green-50 text-green-700" }
+    ? { label: "充分", cls: "border-pos/40 bg-pos-soft text-pos" }
     : verdict === "blocked"
-      ? { label: "受阻", cls: "border-red-300 bg-red-50 text-red-700" }
-      : { label: "部分", cls: "border-amber-300 bg-amber-50 text-amber-700" };
+      ? { label: "受阻", cls: "border-risk/40 bg-risk-soft text-risk" }
+      : { label: "部分", cls: "border-warn/40 bg-warn-soft text-warn" };
   return (
     <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${meta.cls}`}>{meta.label}</span>
   );
@@ -175,17 +175,17 @@ export default function KnowledgePage() {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-semibold text-neutral-500">研究档案</h2>
+        <h2 className="text-sm font-semibold text-ink-mute">研究档案</h2>
         <div className="flex gap-1">
           {([["all", "全部"], ["stock", "股票"], ["industry", "行业"]] as [KindFilter, string][]).map(([k, label]) => (
             <button key={k} onClick={() => setKindFilter(k)}
-                    className={`rounded px-2 py-0.5 text-xs ${kindFilter === k ? "bg-neutral-900 text-white" : "border border-neutral-200 text-neutral-600"}`}>
+                    className={`rounded px-2 py-0.5 text-xs ${kindFilter === k ? "bg-ink text-white" : "border border-line text-ink-soft"}`}>
               {label}
             </button>
           ))}
         </div>
         <select value={issueFilter} onChange={(e) => setIssueFilter(e.target.value as IssueFilter)}
-                className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs text-neutral-600">
+                className="rounded border border-line px-1.5 py-0.5 text-xs text-ink-soft">
           <option value="all">全部状态</option>
           <option value="conflict">有冲突</option>
           <option value="stale">待更新</option>
@@ -195,31 +195,31 @@ export default function KnowledgePage() {
         <div className="ml-auto flex gap-1">
           <button onClick={() => setShowPurged((v) => !v)}
                   className={`rounded px-2 py-0.5 text-xs ${
-                    showPurged ? "bg-neutral-900 text-white" : "border border-neutral-200 text-neutral-500"
+                    showPurged ? "bg-ink text-white" : "border border-line text-ink-mute"
                   }`}
                   title="已删除（墓碑）清单：可审计、可恢复">
             已删除
           </button>
           {(["table", "cards"] as const).map((v) => (
             <button key={v} onClick={() => setView(v)}
-                    className={`rounded px-2 py-0.5 text-xs ${view === v ? "bg-neutral-100 font-semibold text-neutral-800" : "text-neutral-400"}`}>
+                    className={`rounded px-2 py-0.5 text-xs ${view === v ? "bg-line/50 font-semibold text-ink" : "text-ink-faint"}`}>
               {v === "table" ? "紧凑表格" : "阅读列表"}
             </button>
           ))}
           {checked.size > 0 && (
-            <div className="flex flex-wrap items-center gap-1 rounded border border-neutral-200 bg-neutral-50/70 px-2 py-1.5">
-              <span className="text-[11px] text-neutral-600">已选 {checked.size} 个：</span>
+            <div className="flex flex-wrap items-center gap-1 rounded border border-line bg-paper/70 px-2 py-1.5">
+              <span className="text-[11px] text-ink-soft">已选 {checked.size} 个：</span>
               <button onClick={() => void onDeleteBatch("tombstone")}
-                      className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 hover:bg-red-100">
+                      className="rounded border border-risk/40 bg-risk-soft px-2 py-0.5 text-[11px] font-semibold text-risk hover:bg-risk-soft">
                 删除所选（墓碑，可恢复）
               </button>
               <button onClick={() => void onDeleteBatch("hard")}
                       title="真删行 + 孤儿证据 + 磁盘存档；不可恢复"
-                      className="rounded border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800 hover:bg-red-200">
+                      className="rounded border border-risk/40 bg-risk-soft px-2 py-0.5 text-[11px] font-semibold text-risk hover:bg-risk-soft">
                 彻底删除所选
               </button>
               <button onClick={() => setChecked(new Set())}
-                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-100">
+                      className="rounded border border-line bg-white px-2 py-0.5 text-[11px] text-ink-mute hover:bg-line/50">
                 清空选择
               </button>
             </div>
@@ -227,16 +227,16 @@ export default function KnowledgePage() {
           <div className="flex flex-wrap gap-1">
             <button onClick={() => quickSelect((r) => r.quality_status === "draft" && r.observation_count === 0)}
                     title="选中所有「待验收且无 typed 观测」的档案（只有旧文本字段）"
-                    className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-amber-300 hover:text-amber-700">
+                    className="rounded border border-line bg-white px-1.5 py-0.5 text-[10px] text-ink-soft hover:border-warn/40 hover:text-warn">
               选无 typed 观测
             </button>
             <button onClick={() => quickSelect((r) => r.quality_score < 0.6)}
                     title="选中当前过滤结果里质量分 < 0.6 的档案"
-                    className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-red-300 hover:text-red-700">
+                    className="rounded border border-line bg-white px-1.5 py-0.5 text-[10px] text-ink-soft hover:border-risk/40 hover:text-risk">
               选质量分&lt;0.6
             </button>
             <button onClick={() => setChecked(new Set(filtered.map(keyOf)))}
-                    className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400">
+                    className="rounded border border-line bg-white px-1.5 py-0.5 text-[10px] text-ink-soft hover:border-ink-faint">
               全选当前过滤
             </button>
           </div>
@@ -244,38 +244,38 @@ export default function KnowledgePage() {
       </div>
 
       {purgeMsg && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700">
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-card border border-line bg-paper px-3 py-2 text-xs text-ink-soft">
           <span>{purgeMsg}</span>
           <button onClick={() => setPurgeMsg(null)}
-                  className="ml-auto text-neutral-400 hover:text-neutral-600">✕</button>
+                  className="ml-auto text-ink-faint hover:text-ink-soft">✕</button>
         </div>
       )}
 
       {showPurged && (
-        <div className="mb-3 rounded-lg border border-neutral-200 bg-white p-3">
-          <div className="mb-2 text-xs font-semibold text-neutral-500">
+        <div className="mb-3 rounded-card border border-line bg-white p-3">
+          <div className="mb-2 text-xs font-semibold text-ink-mute">
             已删除（墓碑）——事件日志保留删除审计；tombstone 可恢复，hard 不可恢复
           </div>
           {purged.length === 0
-            ? <div className="text-xs text-neutral-400">（无已删除实体）</div>
+            ? <div className="text-xs text-ink-faint">（无已删除实体）</div>
             : (
               <ul className="space-y-1">
                 {purged.map((p) => (
                   <li key={`${p.entity_kind}:${p.entity_id}`}
                       className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="font-mono text-neutral-700">{p.entity_kind}:{p.entity_id}</span>
+                    <span className="font-mono text-ink-soft">{p.entity_kind}:{p.entity_id}</span>
                     <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
                       p.mode === "hard"
-                        ? "border-red-200 bg-red-50 text-red-700"
-                        : "border-neutral-200 bg-neutral-50 text-neutral-600"
+                        ? "border-risk/40 bg-risk-soft text-risk"
+                        : "border-line bg-paper text-ink-soft"
                     }`}>
                       {p.mode === "hard" ? "已彻底删除" : "墓碑"}
                     </span>
-                    <span className="text-neutral-400">{fmtDate(p.purged_at)}</span>
-                    {p.reason && <span className="text-neutral-500">原因：{p.reason}</span>}
+                    <span className="text-ink-faint">{fmtDate(p.purged_at)}</span>
+                    {p.reason && <span className="text-ink-mute">原因：{p.reason}</span>}
                     {p.mode === "tombstone" && (
                       <button onClick={() => void onRestore(p.entity_kind, p.entity_id)}
-                              className="rounded border border-neutral-200 px-1.5 py-0.5 text-[11px] text-neutral-600 hover:border-green-300 hover:text-green-700">
+                              className="rounded border border-line px-1.5 py-0.5 text-[11px] text-ink-soft hover:border-pos/50 hover:text-pos">
                         恢复
                       </button>
                     )}
@@ -287,10 +287,10 @@ export default function KnowledgePage() {
       )}
 
       {error && (
-        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+        <div className="mb-3 rounded-card border border-risk/40 bg-risk-soft p-3 text-xs text-risk">
           <span className="font-semibold">档案列表读取失败：</span>{error}
           <button onClick={() => setTick((t) => t + 1)}
-                  className="ml-3 rounded border border-red-300 bg-white px-2 py-0.5 hover:bg-red-100">
+                  className="ml-3 rounded border border-risk/40 bg-white px-2 py-0.5 hover:bg-risk-soft">
             重试
           </button>
           <span className="ml-2 text-red-400">（不伪装成「暂无档案」）</span>
@@ -298,21 +298,21 @@ export default function KnowledgePage() {
       )}
 
       {!rows && !error && (
-        <div className="py-12 text-center text-sm text-neutral-400">档案库加载中…</div>
+        <div className="py-12 text-center text-sm text-ink-faint">档案库加载中…</div>
       )}
 
       {rows && rows.length === 0 && !error && (
-        <div className="rounded-lg border border-dashed border-neutral-300 py-12 text-center text-sm text-neutral-400">
+        <div className="rounded-card border border-dashed border-line py-12 text-center text-sm text-ink-faint">
           暂无档案——在对话里说「研究一下 BE」或用 /research 开始
         </div>
       )}
 
       {filtered.length > 0 && view === "table" && (
-        <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+        <div className="overflow-hidden rounded-card border border-line bg-white">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[11px] text-neutral-500">
+                <tr className="border-b border-line bg-paper text-left text-[11px] text-ink-mute">
                   <th className="w-8 px-2 py-2">
                     <input type="checkbox"
                            checked={filtered.length > 0 && checked.size === filtered.length}
@@ -333,8 +333,8 @@ export default function KnowledgePage() {
               <tbody>
                 {filtered.map((r) => (
                   <tr key={`${r.kind}:${r.id}`} onClick={() => openDossier(r)}
-                      className={`cursor-pointer border-b border-neutral-100 hover:bg-neutral-50 ${
-                        checked.has(keyOf(r)) ? "bg-red-50/40" : ""
+                      className={`cursor-pointer border-b border-line/60 hover:bg-paper ${
+                        checked.has(keyOf(r)) ? "bg-risk-soft/40" : ""
                       }`}>
                     <td className="w-8 px-2 py-2" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={checked.has(keyOf(r))}
@@ -343,19 +343,19 @@ export default function KnowledgePage() {
                              className="h-3.5 w-3.5 accent-red-600" />
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-mono text-xs font-semibold text-neutral-800">{r.id}</div>
-                      <div className="text-[10px] text-neutral-400">
+                      <div className="font-mono text-xs font-semibold text-ink">{r.id}</div>
+                      <div className="text-[10px] text-ink-faint">
                         {r.kind === "stock" ? "股票" : "行业"}
                         {r.recipe_id ? ` · ${r.recipe_id}` : ""}
                       </div>
                     </td>
                     <td className="max-w-xs px-3 py-2">
-                      <div className="truncate text-xs text-neutral-700" title={r.latest_artifact_title ?? ""}>
-                        {r.latest_artifact_title ?? <span className="text-neutral-400">（尚无研究产物）</span>}
+                      <div className="truncate text-xs text-ink-soft" title={r.latest_artifact_title ?? ""}>
+                        {r.latest_artifact_title ?? <span className="text-ink-faint">（尚无研究产物）</span>}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5">
                         <VerdictPill verdict={r.research_coverage.verdict} />
-                        <span className="font-mono text-[10px] text-neutral-400">
+                        <span className="font-mono text-[10px] text-ink-faint">
                           观测 {r.observation_count}
                         </span>
                       </div>
@@ -369,7 +369,7 @@ export default function KnowledgePage() {
                       <div className="flex flex-wrap gap-1">
                         {r.conflict_count > 0 && (
                           <button onClick={(e) => { e.stopPropagation(); setIssueFilter("conflict"); }}
-                                  className="rounded-full border border-red-300 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700"
+                                  className="rounded-full border border-risk/40 bg-red-50 px-1.5 py-0.5 text-[10px] text-risk"
                                   title="点击过滤有冲突的档案">
                             ⚠ {r.conflict_count} 冲突
                           </button>
@@ -381,35 +381,35 @@ export default function KnowledgePage() {
                           </button>
                         )}
                         {r.quality_status === "verified" ? (
-                          <span className="rounded-full border border-green-300 bg-green-50 px-1.5 py-0.5 text-[10px] text-green-700">✓ 基础校验</span>
+                          <span className="rounded-full border border-green-300 bg-green-50 px-1.5 py-0.5 text-[10px] text-pos">✓ 基础校验</span>
                         ) : (
-                          <span className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
+                          <span className="rounded-full border border-warn/40 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
                                 title={r.quality_issues.join("\n")}>◔ 待验收</span>
                         )}
                       </div>
                     </td>
                     <td className="px-3 py-2">
-                      <span className="mr-1 inline-block h-1.5 w-14 overflow-hidden rounded bg-neutral-100 align-middle">
-                        <span className={`block h-full ${r.quality_status === "verified" ? "bg-green-600" : "bg-amber-500"}`}
+                      <span className="mr-1 inline-block h-1.5 w-14 overflow-hidden rounded bg-line/50 align-middle">
+                        <span className={`block h-full ${r.quality_status === "verified" ? "bg-pos" : "bg-warn"}`}
                               style={{ width: `${(r.completeness * 100).toFixed(0)}%` }} />
                       </span>
-                      <span className="text-xs text-neutral-500">{(r.completeness * 100).toFixed(0)}%</span>
+                      <span className="text-xs text-ink-mute">{(r.completeness * 100).toFixed(0)}%</span>
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-neutral-500">{fmtDate(r.last_knowledge_time)}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-ink-mute">{fmtDate(r.last_knowledge_time)}</td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1">
                         <button onClick={(e) => { e.stopPropagation(); openDossier(r); }}
-                                className="rounded border border-neutral-200 px-2 py-0.5 text-xs hover:border-neutral-400">
+                                className="rounded border border-line px-2 py-0.5 text-xs hover:border-ink-faint">
                           阅读 →
                         </button>
                         <button onClick={(e) => { e.stopPropagation(); void onDelete(r, "tombstone"); }}
                                 title="删除（墓碑：列表与档案页不再出现，可在「已删除」恢复）"
-                                className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs text-neutral-400 hover:border-red-300 hover:text-red-600">
+                                className="rounded border border-line px-1.5 py-0.5 text-xs text-ink-faint hover:border-risk/40 hover:text-risk">
                           删除
                         </button>
                         <button onClick={(e) => { e.stopPropagation(); void onDelete(r, "hard"); }}
                                 title="彻底删除（真删行 + 孤儿证据 + 磁盘存档；不可恢复）"
-                                className="rounded border border-neutral-200 px-1.5 py-0.5 text-xs text-neutral-400 hover:border-red-400 hover:bg-red-50 hover:text-red-700">
+                                className="rounded border border-line px-1.5 py-0.5 text-xs text-ink-faint hover:border-risk/60 hover:bg-risk-soft hover:text-risk">
                           彻底删
                         </button>
                       </div>
@@ -426,20 +426,20 @@ export default function KnowledgePage() {
         <div className="grid gap-3 md:grid-cols-2">
           {filtered.map((r) => (
             <button key={`${r.kind}:${r.id}`} onClick={() => openDossier(r)}
-                    className="rounded-lg border border-neutral-200 bg-white p-4 text-left hover:border-neutral-400">
+                    className="rounded-card border border-line bg-white p-4 text-left hover:border-ink-faint">
               <div className="mb-1 flex items-center gap-2">
-                <span className="font-mono text-sm font-bold text-neutral-900">{r.id}</span>
-                <span className="text-[10px] text-neutral-400">{r.kind === "stock" ? "股票" : "行业"}{r.recipe_id ? ` · ${r.recipe_id}` : ""}</span>
+                <span className="font-mono text-sm font-bold text-ink">{r.id}</span>
+                <span className="text-[10px] text-ink-faint">{r.kind === "stock" ? "股票" : "行业"}{r.recipe_id ? ` · ${r.recipe_id}` : ""}</span>
                 <span className="ml-auto"><VerdictPill verdict={r.research_coverage.verdict} /></span>
               </div>
-              <div className="mb-2 line-clamp-2 text-xs text-neutral-600">
+              <div className="mb-2 line-clamp-2 text-xs text-ink-soft">
                 {r.latest_artifact_title ?? "尚无研究产物——发起研究后这里显示一句话结论"}
               </div>
-              <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
+              <div className="flex flex-wrap items-center gap-2 text-[10px] text-ink-faint">
                 <span>问题覆盖 {r.research_coverage.answered}/{r.research_coverage.required || "—"}</span>
                 <span>观测 {r.observation_count}</span>
-                {r.conflict_count > 0 && <span className="text-red-600">⚠ {r.conflict_count} 冲突</span>}
-                {r.stale_count > 0 && <span className="text-orange-600">陈旧 {r.stale_count}</span>}
+                {r.conflict_count > 0 && <span className="text-risk">⚠ {r.conflict_count} 冲突</span>}
+                {r.stale_count > 0 && <span className="text-warn">陈旧 {r.stale_count}</span>}
                 <span className="ml-auto font-mono">{fmtDate(r.last_knowledge_time)}</span>
               </div>
             </button>
@@ -448,10 +448,10 @@ export default function KnowledgePage() {
       )}
 
       {rows && filtered.length === 0 && rows.length > 0 && (
-        <div className="rounded-lg border border-dashed border-neutral-300 py-8 text-center text-xs text-neutral-400">
+        <div className="rounded-card border border-dashed border-line py-8 text-center text-xs text-ink-faint">
           当前过滤条件下无档案
           <button onClick={() => { setKindFilter("all"); setIssueFilter("all"); }}
-                  className="ml-2 text-blue-700 hover:underline">清除过滤</button>
+                  className="ml-2 text-accent hover:underline">清除过滤</button>
         </div>
       )}
     </div>

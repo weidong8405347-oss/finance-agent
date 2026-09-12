@@ -5,18 +5,24 @@
 import { useEffect, useRef, useState } from "react";
 
 import { navigate } from "../../app/route";
-import { dossierApi } from "./api";
-import { MetricChart, MetricSmallMultiples, NATURE_STYLE, SeriesTable, formatMetricValue } from "./charts";
-import { ClaimCard } from "./components";
-import { ConflictResolver, FactValue } from "./legacy";
+import { dossierApi, isOfflineExport } from "./api";
 import {
-  LAYER_LABELS, RankedBars, RELATION_LABELS, StageLadder, TierStrip, TimelineStrip,
-  ValueChainGraph, rankedBarColumns, type NumericCell,
+  MetricChart, MetricSmallMultiples, NATURE_STYLE, PriceVsRevisionChart, SeriesTable,
+  formatMetricValue,
+} from "./charts";
+import { CitationChips, RawRefChips } from "./citations";
+import { ConflictResolver, FactValue } from "./legacy";
+import { splitTextRefs, stripRefsDeep, STAGE_LABEL_CN } from "./overview";
+import { ThesisList } from "./thesis";
+import {
+  CandidateQuadrant, LAYER_LABELS, ProfitPoolBar, RankedBars, RELATION_LABELS,
+  StageLadder, TierStrip, TimelineStrip, ValueChainGraph, rankedBarColumns,
+  type NumericCell,
 } from "./viz";
 import type {
   BusinessGraph, CandidateItem, ClaimItem, DossierSnapshot, EvidenceItem,
   IndustryMapEdge, IndustryMapNode, LegacyFactItem, MetricSeries, MetricSeriesSet,
-  ModulePayload, ValidationItem,
+  ModulePayload, PricePoint, ProfitPool, QuadrantPayload, RevisionSeries, ValidationItem,
 } from "./types";
 
 export interface ModuleProps {
@@ -29,6 +35,8 @@ export interface ModuleProps {
   params?: Record<string, string>;
   /** 跳到另一章节（可带参数）：产业链节点 ↔ 公司行联动用 */
   onNavigateSection?: (section: string, params?: Record<string, string | null>) => void;
+  /** 投资者/审计视图（§3：审计面显示 raw ref、运行时字段；投资者面只有 [n] 引用） */
+  view?: "investor" | "audit";
 }
 
 // ---------------- 通用件 ----------------
@@ -36,7 +44,7 @@ export interface ModuleProps {
 function Notes({ notes }: { notes?: string[] }) {
   if (!notes?.length) return null;
   return (
-    <ul className="mt-2 space-y-0.5 text-[11px] text-neutral-500">
+    <ul className="mt-2 space-y-0.5 text-meta text-ink-mute">
       {notes.map((n, i) => <li key={i}>· {n}</li>)}
     </ul>
   );
@@ -44,40 +52,42 @@ function Notes({ notes }: { notes?: string[] }) {
 
 function LegacyNeedsNormBadge() {
   return (
-    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
+    <span className="rounded bg-warn-soft px-1.5 py-0.5 text-[11px] text-warn"
           title="旧文本含数字但单位/期间口径不明——不进图表（不猜数），待补研标准化">
-      needs_normalization
+      待标准化
     </span>
   );
 }
 
-function LegacyFacts({ items, kind, id, onResolved, readOnly = false }: {
+function LegacyFacts({ items, kind, id, onResolved, readOnly = false, view = "audit" }: {
   items: LegacyFactItem[]; kind: string; id: string; onResolved?: () => void;
   /** 历史/eval 视图只读（review #9）：不得从这里调用生产 v1 裁决入口 */
   readOnly?: boolean;
+  /** 投资者视图不显示 raw evidence id（§16：raw ID 只在抽屉/审计模式） */
+  view?: "investor" | "audit";
 }) {
   if (!items.length) return null;
   return (
-    <div className="mt-3 rounded border border-neutral-200 bg-neutral-50/50 p-3">
-      <div className="mb-1.5 text-[11px] font-semibold text-neutral-500">
+    <div className="mt-3 rounded-card border border-line bg-paper/60 p-4">
+      <div className="mb-1.5 text-meta font-semibold text-ink-mute">
         旧字段（数据与审计）
-        {readOnly && <span className="ml-2 font-normal text-indigo-600">历史/隔离视图只读</span>}
+        {readOnly && <span className="ml-2 font-normal text-accent">历史/隔离视图只读</span>}
       </div>
       {items.map((f) => (
-        <div key={f.field} className="border-b border-neutral-100 py-2 last:border-0">
+        <div key={f.field} className="border-b border-line/60 py-2 last:border-0">
           <div className="mb-0.5 flex flex-wrap items-baseline gap-2">
-            <span className="font-mono text-xs font-semibold text-neutral-600">{f.field}</span>
-            <span className="font-mono text-[10px] text-neutral-400">
+            <span className="font-mono text-meta font-semibold text-ink-soft">{f.field}</span>
+            <span className="font-mono text-[11px] text-ink-faint">
               v{f.version} · 可知 {f.knowledge_time.slice(0, 10)}
             </span>
             {f.needs_normalization && <LegacyNeedsNormBadge />}
-            {f.conflict && <span className="text-[10px] text-amber-600">⚠冲突</span>}
-            {f.evidence_ids.map((e) => (
-              <span key={e} className="font-mono text-[10px] text-neutral-400">{e}</span>
+            {f.conflict && <span className="text-meta text-warn">⚠冲突</span>}
+            {view === "audit" && f.evidence_ids.map((e) => (
+              <span key={e} className="font-mono text-[11px] text-ink-faint">{e}</span>
             ))}
           </div>
-          <div className="text-xs leading-relaxed text-neutral-800">
-            <FactValue value={f.value} />
+          <div className="text-sm leading-relaxed text-ink">
+            <FactValue value={view === "investor" ? stripRefsDeep(f.value) : f.value} />
           </div>
           {f.conflict && (
             <div className="mt-1.5">
@@ -93,27 +103,27 @@ function LegacyFacts({ items, kind, id, onResolved, readOnly = false }: {
 
 function CalculationCard({ calc }: { calc: Record<string, any> }) {
   const [open, setOpen] = useState(false);
-  const statusCls = calc.status === "ok" ? "text-green-700"
-    : calc.status === "not_meaningful" ? "text-neutral-500" : "text-red-600";
+  const statusCls = calc.status === "ok" ? "text-pos"
+    : calc.status === "not_meaningful" ? "text-ink-mute" : "text-risk";
   return (
-    <div className="rounded border border-neutral-200 bg-white p-2.5 text-xs">
+    <div className="rounded-card border border-line bg-white p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="font-mono font-semibold text-neutral-700">
-          {calc.formula_id}<span className="text-neutral-400">@v{calc.formula_version}</span>
+        <span className="font-mono text-meta font-semibold text-ink-soft">
+          {calc.formula_id}<span className="text-ink-faint">@v{calc.formula_version}</span>
         </span>
-        <span className={`font-mono ${statusCls}`}>
+        <span className={`font-mono dos-num ${statusCls}`}>
           {calc.status === "ok"
             ? `= ${calc.result ?? "—"}${calc.unit ? ` ${calc.unit}` : ""}`
             : calc.status === "not_meaningful" ? "N/M" : "计算失败"}
         </span>
-        <span className="font-mono text-[10px] text-neutral-400">{calc.calculation_id}</span>
-        <button onClick={() => setOpen(!open)} className="ml-auto text-[11px] text-neutral-500 hover:underline">
+        <span className="font-mono text-[11px] text-ink-faint">{calc.calculation_id}</span>
+        <button onClick={() => setOpen(!open)} className="ml-auto text-meta text-ink-mute hover:underline">
           {open ? "收起" : "输入与假设"}
         </button>
       </div>
-      {calc.error && <div className="mt-1 text-[11px] text-red-600">{calc.error}</div>}
+      {calc.error && <div className="mt-1 text-meta text-risk">{calc.error}</div>}
       {(calc.warnings ?? []).map((w: string, i: number) => (
-        <div key={i} className="mt-1 text-[11px] text-amber-700">⚠ {w}</div>
+        <div key={i} className="mt-1 text-meta text-warn">⚠ {w}</div>
       ))}
       {open && (
         <div className="mt-2 space-y-1 border-t border-neutral-100 pt-2">
@@ -174,37 +184,35 @@ function SensitivityGrid({ extra }: { extra: Record<string, any> }) {
 }
 
 function ClaimsList({ claims, onEvidenceClick }: { claims: ClaimItem[]; onEvidenceClick: (id: string) => void }) {
-  if (!claims.length) return <div className="text-xs text-neutral-400">（尚无论断——补研后出现）</div>;
-  return (
-    <div className="space-y-2">
-      {claims.map((c) => <ClaimCard key={c.claim_id} claim={c} onRefClick={onEvidenceClick} />)}
-    </div>
-  );
+  // 论点卡（§13/§14）：事实分层 + 支撑/反证计数 + [n] 引用（替代旧 ClaimCard 的 raw ref 墙）
+  return <ThesisList claims={claims} onCite={onEvidenceClick} />;
 }
 
 // ---------------- 模块 registry ----------------
 
-function InvestmentSnapshotModule({ payload, onEvidenceClick }: ModuleProps) {
+function InvestmentSnapshotModule({ payload, onEvidenceClick, view }: ModuleProps) {
+  // 注意：页面默认将 investment_snapshot 渲染为 OverviewPage 撕页 + ThesisList（见
+  // StockDossierPage）；本渲染器是 registry 完整性的兜底（评估行阐只在审计视图显示）。
   const claims = (payload.payload.claims ?? []) as ClaimItem[];
   const assessment = payload.payload.assessment as Record<string, any> | null;
   return (
     <div className="space-y-3">
-      {assessment && (
-        <div className="rounded border border-neutral-200 bg-white p-3 text-xs">
-          <div className="mb-1 font-semibold text-neutral-700">研究充分度评估（硬门禁由代码运行）</div>
-          <div className="flex flex-wrap gap-3 font-mono text-[11px] text-neutral-600">
+      {view === "audit" && assessment && (
+        <div className="dos-panel text-sm">
+          <div className="mb-1 font-semibold text-ink">研究充分度评估（硬门禁由代码运行）</div>
+          <div className="flex flex-wrap gap-3 dos-num text-meta text-ink-soft">
             <span>verdict: <b>{assessment.verdict}</b></span>
             <span>问题覆盖: {assessment.question_coverage?.answered}/{assessment.question_coverage?.applicable}</span>
             <span>硬门禁: {assessment.hard_gate_passed ? "✓ 通过" : "✗ 未过"}</span>
             {assessment.stop_reason && <span>stop: {assessment.stop_reason}</span>}
           </div>
           {(assessment.gaps ?? []).length > 0 && (
-            <ul className="mt-1.5 space-y-0.5 text-[11px] text-amber-700">
+            <ul className="mt-1.5 space-y-0.5 text-meta text-warn">
               {assessment.gaps.slice(0, 5).map((g: string, i: number) => <li key={i}>· {g}</li>)}
             </ul>
           )}
           {(assessment.notes ?? []).map((n: string, i: number) => (
-            <div key={i} className="mt-1 text-[11px] text-neutral-500">{n}</div>
+            <div key={i} className="mt-1 text-meta text-ink-mute">{n}</div>
           ))}
         </div>
       )}
@@ -221,37 +229,32 @@ function BusinessEngineModule({ payload, onEvidenceClick }: ModuleProps) {
   return (
     <div className="space-y-3">
       {graph.narrative ? (
-        <div className="rounded-lg border border-neutral-200 bg-white p-4">
-          <div className="mb-1 text-xs font-semibold text-neutral-500">谁付钱，公司怎样赚钱</div>
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-800">{graph.narrative}</p>
-          <div className="mt-2 flex flex-wrap gap-1 font-mono text-[10px]">
-            {graph.narrative_refs.map((r) => (
-              r.startsWith("ev-")
-                ? <button key={r} onClick={() => onEvidenceClick(r)}
-                          className="rounded border border-neutral-200 px-1 py-0.5 text-neutral-600 hover:border-neutral-400">{r}</button>
-                : <span key={r} className="rounded border border-neutral-100 px-1 py-0.5 text-neutral-400">{r}</span>
-            ))}
+        <div className="dos-card">
+          <div className="mb-1 dos-h">谁付钱，公司怎样赚钱</div>
+          <p className="max-w-[76ch] whitespace-pre-wrap text-sm leading-[1.8] text-ink-soft">{graph.narrative}</p>
+          <div className="mt-2">
+            <CitationChips refs={graph.narrative_refs} onCite={onEvidenceClick} className="ml-0" />
           </div>
         </div>
       ) : (
-        <div className="text-xs text-neutral-400">（无业务描述——待补研 business-model 问题）</div>
+        <div className="text-sm text-ink-faint">（无业务描述——待补研 business-model 问题）</div>
       )}
       {graph.nodes.length > 0 && (
-        <div className="rounded-lg border border-neutral-200 bg-white p-3">
-          <div className="mb-2 text-xs font-semibold text-neutral-500">
-            业务流（客户 → 产品 → 收费 → 成本 → 现金流）
+        <div className="dos-card">
+          <div className="mb-2 dos-h">
+            业务流<span className="ml-2 text-meta font-normal text-ink-faint">客户 → 产品 → 收费 → 成本 → 现金流</span>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <div className="flex flex-wrap items-center gap-1.5 text-sm">
             {graph.nodes.map((n, i) => (
               <span key={n.node_id} className="flex items-center gap-1.5">
-                {i > 0 && <span className="text-neutral-300">→</span>}
-                <span className="rounded border border-neutral-300 bg-neutral-50 px-2 py-1" title={n.note}>
+                {i > 0 && <span className="text-ink-faint">→</span>}
+                <span className="rounded border border-line bg-paper px-2.5 py-1" title={n.note}>
                   {n.label}
                 </span>
               </span>
             ))}
           </div>
-          <div className="mt-1 text-[10px] text-neutral-400">
+          <div className="mt-1 text-meta text-ink-faint">
             流量宽度仅在有带来源数值时展示（不编造 Sankey 宽度）
           </div>
         </div>
@@ -268,7 +271,7 @@ function RevenueSegmentsModule({ payload }: ModuleProps) {
     <div className="space-y-3">
       {total?.series.length
         ? <MetricChart series={total.series} title="总收入：增长来自哪一块？" />
-        : <div className="text-xs text-neutral-400">（无总收入 typed 观测）</div>}
+        : <div className="text-sm text-ink-faint">（无总收入 typed 观测）</div>}
       {segments.length > 0 && (
         <MetricSmallMultiples series={segments} title="分部收入（同口径；合计与总额差异见未分配/抵销说明）" />
       )}
@@ -284,27 +287,27 @@ function KeyKpiModule({ payload }: ModuleProps) {
     <div className="space-y-3">
       {set?.series.length
         ? <MetricSmallMultiples series={set.series} title="什么领先指标决定未来？（按单位分面）" />
-        : <div className="text-xs text-neutral-400">（无 KPI typed 观测——未披露项保留缺口，不从文本猜数）</div>}
+        : <div className="text-sm text-ink-faint">（无 KPI typed 观测——未披露项保留缺口，不从文本猜数）</div>}
       <Notes notes={set?.notes} />
       {defs.length > 0 && (
-        <details className="rounded border border-neutral-200 bg-white p-2 text-xs">
-          <summary className="cursor-pointer font-semibold text-neutral-600">
+        <details className="dos-panel text-sm">
+          <summary className="cursor-pointer font-semibold text-ink-soft">
             KPI 定义与口径（行业配方 {defs.length} 项）
           </summary>
-          <table className="mt-2 w-full border-collapse text-[11px]">
+          <table className="mt-2 w-full border-collapse text-meta">
             <thead>
-              <tr className="border-b border-neutral-200 text-left text-neutral-400">
+              <tr className="border-b border-line text-left text-ink-faint">
                 <th className="px-1.5 py-1">键</th><th className="px-1.5 py-1">名称</th>
                 <th className="px-1.5 py-1">必需</th><th className="px-1.5 py-1">定义</th>
               </tr>
             </thead>
             <tbody>
               {defs.map((d) => (
-                <tr key={d.key} className="border-b border-neutral-100">
+                <tr key={d.key} className="border-b border-line/60">
                   <td className="px-1.5 py-1 font-mono">{d.key}</td>
                   <td className="px-1.5 py-1">{d.label}</td>
                   <td className="px-1.5 py-1">{d.required ? "✓" : "—"}</td>
-                  <td className="px-1.5 py-1 text-neutral-500">{d.definition || "—"}</td>
+                  <td className="px-1.5 py-1 text-ink-mute">{d.definition || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -315,7 +318,7 @@ function KeyKpiModule({ payload }: ModuleProps) {
   );
 }
 
-function FinancialQualityModule({ snap, payload, onResolved }: ModuleProps) {
+function FinancialQualityModule({ snap, payload, onResolved, view = "investor" }: ModuleProps) {
   const [freq, setFreq] = useState<"fy" | "quarterly">("fy");
   const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const set = (freq === "fy" ? payload.payload.fy : payload.payload.quarterly) as MetricSeriesSet | undefined;
@@ -325,11 +328,11 @@ function FinancialQualityModule({ snap, payload, onResolved }: ModuleProps) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <span className="text-xs text-neutral-500">利润是否变成现金？</span>
+        <span className="text-sm text-ink-mute">利润是否变成现金？</span>
         <div className="ml-auto flex gap-1">
           {(["fy", "quarterly"] as const).map((f) => (
             <button key={f} onClick={() => setFreq(f)}
-                    className={`rounded border px-2 py-0.5 text-[11px] ${freq === f ? "border-neutral-800 bg-neutral-900 text-white" : "border-neutral-200 text-neutral-600"}`}>
+                    className={`rounded border px-2.5 py-1 text-meta ${freq === f ? "border-ink bg-ink text-white" : "border-line text-ink-soft"}`}>
               {f === "fy" ? "年度" : "季度"}
             </button>
           ))}
@@ -337,16 +340,16 @@ function FinancialQualityModule({ snap, payload, onResolved }: ModuleProps) {
       </div>
       {set?.series.length
         ? <MetricSmallMultiples series={set.series} title={freq === "fy" ? "年度：收入 / 利润 / 现金流（按单位分面）" : "季度序列（缺期保留断点）"} />
-        : <div className="text-xs text-neutral-400">（无标准化报表观测——旧字段见下方审计区，缺期不补零）</div>}
+        : <div className="text-sm text-ink-faint">（无标准化报表观测——旧字段见下方审计区，缺期不补零）</div>}
       <Notes notes={notes} />
       {calcs.length > 0 && (
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-neutral-600">计算链（每个值可回指输入与公式版本）</div>
+          <div className="text-meta font-semibold text-ink-mute">计算链（每个值可回指输入与公式版本）</div>
           {calcs.slice(0, 8).map((c) => <CalculationCard key={c.calculation_id} calc={c} />)}
         </div>
       )}
       <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
-                   onResolved={onResolved} readOnly={auditReadOnly} />
+                   onResolved={onResolved} readOnly={auditReadOnly} view={view} />
     </div>
   );
 }
@@ -356,11 +359,34 @@ function ExpectationsModule({ payload }: ModuleProps) {
   const actuals = payload.payload.actuals as MetricSeriesSet | undefined;
   const deltas = (payload.payload.guidance_delta ?? []) as Record<string, any>[];
   const notes = (payload.payload.notes ?? []) as string[];
+  // §26 Price vs EPS Revision：服务端按可知时刻排好的修订序列 + 价格序列；
+  // 两腿都 ≥2 点才会出图（组件内部护栏），缺一则如实不进图
+  const revision = (payload.payload.revision_series ?? []) as RevisionSeries[];
+  const price = (payload.payload.price_series ?? []) as PricePoint[];
   return (
     <div className="space-y-3">
+      <PriceVsRevisionChart revision={revision} price={price}
+                            title="Price vs EPS Revision（预期上修 or 估值扩张）" />
       {gc?.series.length
-        ? <MetricChart series={gc.series} title="公司表现与预期差在哪里？（指引/一致预期分层）" />
-        : <div className="rounded border border-dashed border-neutral-300 bg-neutral-50 p-3 text-xs text-neutral-500">
+        ? (
+          // 按指标键分面（EPS/收入/EBITDA 量级悬殊，同轴会压扁小量级序列——
+          // 2026-09-12 BE 实测：consensus_eps 2.7-4.9 与 consensus_revenue 4.1B 同轴，
+          // EPS 线被压成零线）
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-neutral-700">公司表现与预期差在哪里？（指引/一致预期分层，按指标分面）</div>
+            <div className="grid gap-2 xl:grid-cols-2">
+              {Object.entries(
+                gc.series.reduce<Record<string, MetricSeries[]>>((acc, s) => {
+                  (acc[s.metric_key] ??= []).push(s);
+                  return acc;
+                }, {}),
+              ).map(([key, list]) => (
+                <MetricChart key={key} series={list} title={list[0]?.label ?? key} height={220} />
+              ))}
+            </div>
+          </div>
+        )
+        : <div className="rounded-card border border-dashed border-line bg-paper p-4 text-sm text-ink-mute">
             预期模块降级：无指引/一致预期观测。没有 consensus 就只比较指引；两者都缺时如实显示能力缺口。
           </div>}
       {actuals?.series.length ? <SeriesTable series={actuals.series} /> : null}
@@ -392,6 +418,8 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
   const [result, setResult] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 离线导出（§11.4）：试算/保存情景是服务器计算与写入——离线冻结展示，不做新计算
+  const offline = isOfflineExport();
   const [saved, setSaved] = useState<{ artifact_id: string; name: string } | null>(null);
   const reqSeq = useRef(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -411,6 +439,7 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
 
   // 200ms debounce → 后端确定性计算；请求序号取消过期响应（慢响应不覆盖新值，§8.5）
   useEffect(() => {
+    if (offline) return; // 离线导出：不发计算请求
     if (!inputsReady) {
       // 清空必填输入 → 结果一并清除，不得残留可保存的旧值（review #28）
       reqSeq.current += 1;
@@ -472,33 +501,39 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
 
   const num = (v: string) => Number(v);
   return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-4">
-      <div className="mb-1 flex items-center gap-2">
-        <h4 className="text-xs font-semibold text-neutral-700">研究假设实验：Reverse DCF（FCFF 模型）</h4>
-        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+    <div className="dos-card">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h4 className="dos-h">研究假设实验：Reverse DCF（FCFF 模型）</h4>
+        <span className="rounded bg-warn-soft px-1.5 py-0.5 text-meta text-warn">
           预览计算——滑动不写事实；保存后是模型 artifact，不是披露事实或建议
         </span>
+        {offline && (
+          <span className="rounded bg-paper px-1.5 py-0.5 text-meta text-ink-mute">
+            离线导出：试算与情景保存需在线版（冻结文件不做新计算）
+          </span>
+        )}
       </div>
-      <div className="grid gap-3 text-xs md:grid-cols-2">
+      <fieldset disabled={offline} className={offline ? "opacity-60" : ""}>
+      <div className="grid gap-3 text-sm md:grid-cols-2">
         <div className="space-y-2">
           <label className="block">
-            <span className="mb-0.5 block text-neutral-500">基期收入 revenue_0（十进制字符串，或填观测 ref）</span>
+            <span className="mb-0.5 block text-meta text-ink-mute">基期收入 revenue_0（十进制字符串，或填观测 ref）</span>
             <div className="flex gap-1.5">
               <input value={revenue0} onChange={(e) => { invalidate(); setRevenue0(e.target.value); setRevenueRef(""); }}
-                     placeholder="如 1500000000" className="w-1/2 rounded border border-neutral-200 px-2 py-1 font-mono" />
+                     placeholder="如 1500000000" className="w-1/2 rounded border border-line px-2 py-1 font-mono text-meta" />
               <input value={revenueRef} onChange={(e) => { invalidate(); setRevenueRef(e.target.value); setRevenue0(""); }}
-                     placeholder="obs-…（引用观测，服务端解析）" className="w-1/2 rounded border border-neutral-200 px-2 py-1 font-mono" />
+                     placeholder="obs-…（引用观测，服务端解析）" className="w-1/2 rounded border border-line px-2 py-1 font-mono text-meta" />
             </div>
           </label>
           <label className="block">
-            <span className="mb-0.5 block text-neutral-500">目标 EV（经调整的市场企业价值）</span>
+            <span className="mb-0.5 block text-meta text-ink-mute">目标 EV（经调整的市场企业价值）</span>
             <input value={targetEv} onChange={(e) => { invalidate(); setTargetEv(e.target.value); }}
-                   placeholder="如 4000000000" className="w-full rounded border border-neutral-200 px-2 py-1 font-mono" />
+                   placeholder="如 4000000000" className="w-full rounded border border-line px-2 py-1 font-mono text-meta" />
           </label>
           <label className="block">
-            <span className="mb-0.5 block text-neutral-500">预测年数</span>
+            <span className="mb-0.5 block text-meta text-ink-mute">预测年数</span>
             <input value={years} onChange={(e) => { invalidate(); setYears(e.target.value); }}
-                   className="w-24 rounded border border-neutral-200 px-2 py-1 font-mono" />
+                   className="w-24 rounded border border-line px-2 py-1 font-mono text-meta" />
           </label>
           <button
             onClick={() => {
@@ -506,63 +541,64 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
               setAssumptions(Object.fromEntries(DCF_ASSUMPTION_SPEC.map((a) => [a.key, a.def])));
               setYears("10");
             }}
-            className="rounded border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-500 hover:border-neutral-400"
+            className="rounded border border-line px-2 py-0.5 text-meta text-ink-mute hover:border-ink-faint"
           >
             重置假设（恢复默认值）
           </button>
-          <div className="text-[10px] text-neutral-400">
+          <div className="text-meta text-ink-faint">
             净债务未知不默认零：未提供时不输出 Equity_model。买卖评级/目标价区间归 /decide。
           </div>
         </div>
         <div className="space-y-1.5">
           {DCF_ASSUMPTION_SPEC.map((a) => (
             <label key={a.key} className="flex items-center gap-2">
-              <span className="w-24 shrink-0 text-[11px] text-neutral-600">{a.label}</span>
+              <span className="w-24 shrink-0 text-meta text-ink-soft">{a.label}</span>
               <input type="range" min={a.min} max={a.max} step={a.step} value={num(assumptions[a.key])}
                      onChange={(e) => { invalidate(); setAssumptions((s) => ({ ...s, [a.key]: e.target.value })); }}
                      className="flex-1 accent-neutral-800" aria-label={a.label} />
               <input value={assumptions[a.key]}
                      onChange={(e) => { invalidate(); setAssumptions((s) => ({ ...s, [a.key]: e.target.value })); }}
-                     className="w-16 rounded border border-neutral-200 px-1 py-0.5 text-right font-mono text-[11px]" />
+                     className="w-16 rounded border border-line px-1 py-0.5 text-right font-mono dos-num text-meta" />
             </label>
           ))}
         </div>
       </div>
-      <div className="mt-3 border-t border-neutral-100 pt-2">
-        {busy && <div className="text-xs text-neutral-400">计算中（后端确定性公式，非前端估算）…</div>}
-        {error && <div className="text-xs text-red-600">{error}</div>}
+      </fieldset>
+      <div className="mt-3 border-t border-line pt-3">
+        {busy && <div className="text-sm text-ink-faint">计算中（后端确定性公式，非前端估算）…</div>}
+        {error && <div className="text-sm text-risk">{error}</div>}
         {result && result.status === "ok" && (
           <div className="flex flex-wrap items-center gap-3">
-            <div className="font-mono text-xl font-semibold tabular-nums text-neutral-900">
+            <div className="font-mono dos-num text-2xl font-semibold text-ink">
               隐含 g = {(Number(result.result) * 100).toFixed(2)}%
             </div>
-            <div className="text-[10px] text-neutral-400">
+            <div className="text-meta text-ink-faint">
               <div>calculation {result.calculation_id} · assumption_hash {String(result.input_hash).slice(0, 20)}…</div>
               <div>求解区间 {JSON.stringify(result.extra?.solve_interval)} · 残差 {String(result.extra?.residual ?? "").slice(0, 12)}</div>
             </div>
             <button onClick={saveScenario}
-                    className="ml-auto rounded border border-neutral-300 px-2.5 py-1 text-[11px] font-semibold hover:border-neutral-500">
+                    className="ml-auto rounded border border-line px-2.5 py-1 text-meta font-semibold text-ink-soft hover:border-ink-faint">
               保存情景（建立模型 artifact）
             </button>
           </div>
         )}
         {result && result.status !== "ok" && (
-          <div className="text-xs text-amber-700">
+          <div className="text-sm text-warn">
             {result.status === "not_meaningful" ? "N/M" : "计算失败"}：{result.error}
             {(result.warnings ?? []).map((w: string, i: number) => <div key={i}>⚠ {w}</div>)}
           </div>
         )}
         {result !== null && result.status === "ok" && (result.warnings ?? []).length > 0 && (
-          <div className="mt-1 text-[10px] text-amber-700">
+          <div className="mt-1 text-meta text-warn">
             {result.warnings.map((w: string, i: number) => <div key={i}>⚠ {w}</div>)}
           </div>
         )}
         {saved && (
-          <div className="mt-2 rounded border border-green-200 bg-green-50 px-2 py-1.5 text-[11px] text-green-800">
+          <div className="mt-2 rounded border border-pos/40 bg-pos-soft px-2 py-1.5 text-meta text-pos">
             已保存情景 {saved.name}（不改变发布快照）
             <button onClick={() => navigate({ page: "research", artifactId: saved.artifact_id, params: {} })}
-                    className="ml-2 text-blue-700 hover:underline">查看 →</button>
-            <button onClick={() => setSaved(null)} className="ml-2 text-neutral-500 hover:underline">继续实验</button>
+                    className="ml-2 text-accent hover:underline">查看 →</button>
+            <button onClick={() => setSaved(null)} className="ml-2 text-ink-mute hover:underline">继续实验</button>
           </div>
         )}
       </div>
@@ -570,7 +606,7 @@ function ReverseDcfPanel({ snap }: { snap: DossierSnapshot }) {
   );
 }
 
-function ValuationLabModule({ snap, payload, onResolved }: ModuleProps) {
+function ValuationLabModule({ snap, payload, onResolved, view = "investor" }: ModuleProps) {
   const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const calcs = (payload.payload.calculations ?? []) as Record<string, any>[];
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
@@ -580,38 +616,38 @@ function ValuationLabModule({ snap, payload, onResolved }: ModuleProps) {
   return (
     <div className="space-y-3">
       {dcf && dcf.status === "ok" && (
-        <div className="rounded-lg border border-neutral-200 bg-white p-4">
-          <div className="text-xs font-semibold text-neutral-600">价格要求怎样的经营表现？（反向求解）</div>
-          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-neutral-900">
+        <div className="dos-card">
+          <div className="text-meta font-semibold text-ink-mute">价格要求怎样的经营表现？（反向求解）</div>
+          <div className="mt-1 font-mono dos-num text-3xl font-semibold text-ink">
             g = {(Number(dcf.result) * 100).toFixed(1)}%
-            <span className="ml-2 text-xs font-normal text-neutral-400">隐含收入增速（在下列假设下）</span>
+            <span className="ml-2 text-sm font-normal text-ink-faint">隐含收入增速（在下列假设下）</span>
           </div>
-          <div className="mt-1 text-[11px] text-neutral-500">
+          <div className="mt-1 text-meta text-ink-mute">
             这是「在这些条件下价格隐含的增长率」，不是从股价唯一反推增长/利润率/倍数三项。
           </div>
         </div>
       )}
       {!dcfDisabled && <ReverseDcfPanel snap={snap} />}
       {dcfDisabled && (
-        <div className="rounded border border-neutral-200 bg-neutral-50 p-3 text-xs text-neutral-500">
+        <div className="dos-panel text-sm text-ink-mute">
           行业配方禁用通用 EV/FCFF 模型（未盈利/现金流不可建模）——不硬套，见配方说明。
         </div>
       )}
       {calcs.length
         ? calcs.map((c) => <CalculationCard key={c.calculation_id} calc={c} />)
         : !dcfDisabled && (
-          <div className="text-[11px] text-neutral-400">
+          <div className="text-meta text-ink-faint">
             尚无已登记的正式估值计算（上方实验为预览；保存后成为模型 artifact）。
           </div>
         )}
       <Notes notes={notes} />
       <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
-                   onResolved={onResolved} readOnly={auditReadOnly} />
+                   onResolved={onResolved} readOnly={auditReadOnly} view={view} />
     </div>
   );
 }
 
-function PeersModule({ snap, payload, onResolved }: ModuleProps) {
+function PeersModule({ snap, payload, onResolved, view = "investor" }: ModuleProps) {
   const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const peerSeries = (payload.payload.peer_series ?? []) as Record<string, any>[];
@@ -619,21 +655,21 @@ function PeersModule({ snap, payload, onResolved }: ModuleProps) {
   return (
     <div className="space-y-3">
       {peerSeries.length > 0 ? (
-        <div className="overflow-x-auto rounded border border-neutral-200 bg-white">
-          <table className="w-full border-collapse text-xs">
+        <div className="overflow-x-auto rounded-card border border-line bg-white">
+          <table className="w-full border-collapse text-[13px]">
             <thead>
-              <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[10px] uppercase text-neutral-500">
-                <th className="px-2 py-1.5">实体</th><th className="px-2 py-1.5">指标</th>
-                <th className="px-2 py-1.5">值</th><th className="px-2 py-1.5">期间</th>
+              <tr className="border-b border-line bg-paper text-left text-meta text-ink-mute">
+                <th className="px-2.5 py-2 font-medium">实体</th><th className="px-2.5 py-2 font-medium">指标</th>
+                <th className="px-2.5 py-2 font-medium">值</th><th className="px-2.5 py-2 font-medium">期间</th>
               </tr>
             </thead>
             <tbody>
               {peerSeries.flatMap((p) => (p.metrics ?? []).map((m: Record<string, any>, i: number) => (
-                <tr key={`${p.entity_id}-${i}`} className="border-b border-neutral-100">
-                  <td className="px-2 py-1 font-mono">{p.entity_id}</td>
-                  <td className="px-2 py-1 font-mono text-neutral-500">{m.metric_key}</td>
-                  <td className="px-2 py-1 font-mono tabular-nums">{formatMetricValue(m.value, "", null)}</td>
-                  <td className="px-2 py-1 font-mono text-[10px] text-neutral-400">{m.period_label}</td>
+                <tr key={`${p.entity_id}-${i}`} className="border-b border-line/60">
+                  <td className="px-2.5 py-2 font-mono">{p.entity_id}</td>
+                  <td className="px-2.5 py-2 font-mono text-ink-mute">{m.metric_key}</td>
+                  <td className="px-2.5 py-2 font-mono dos-num">{formatMetricValue(m.value, "", null)}</td>
+                  <td className="px-2.5 py-2 font-mono dos-num text-meta text-ink-faint">{m.period_label}</td>
                 </tr>
               )))}
             </tbody>
@@ -642,7 +678,7 @@ function PeersModule({ snap, payload, onResolved }: ModuleProps) {
       ) : null}
       <Notes notes={notes} />
       <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
-                   onResolved={onResolved} readOnly={auditReadOnly} />
+                   onResolved={onResolved} readOnly={auditReadOnly} view={view} />
     </div>
   );
 }
@@ -651,24 +687,16 @@ function PeersModule({ snap, payload, onResolved }: ModuleProps) {
 // 层级/关系标签已迁至 viz.tsx（LAYER_LABELS 含 demand，RELATION_LABELS 含 value_flow；
 // 未知关系保留原文显示，不硬译）
 
-function EvidenceChips({ refs, onEvidenceClick }: {
-  refs?: string[]; onEvidenceClick: (id: string) => void;
+/** 引用 chips（§16/§48.3）：投资者视图只给 [n] 编号；审计视图给 raw ref。
+ *  raw evidence ID 是数据库主键，不是阅读界面元素。 */
+function EvidenceChips({ refs, onEvidenceClick, view = "investor" }: {
+  refs?: string[]; onEvidenceClick: (id: string) => void; view?: "investor" | "audit";
 }) {
-  const list = (refs ?? []).filter(Boolean);
-  if (!list.length) return null;
-  return (
-    <span className="flex flex-wrap gap-1 font-mono text-[10px]">
-      {list.map((r) => (
-        r.startsWith("ev-")
-          ? <button key={r} onClick={() => onEvidenceClick(r)}
-                    className="rounded border border-neutral-200 px-1 py-0.5 text-neutral-600 hover:border-neutral-400">{r}</button>
-          : <span key={r} className="rounded border border-neutral-100 px-1 py-0.5 text-neutral-400">{r}</span>
-      ))}
-    </span>
-  );
+  if (view === "audit") return <RawRefChips refs={refs} onCite={onEvidenceClick} />;
+  return <CitationChips refs={refs} onCite={onEvidenceClick} className="ml-0" />;
 }
 
-function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSection }: ModuleProps) {
+function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSection, view = "investor" }: ModuleProps) {
   const graph = (payload.payload.graph ?? EMPTY_GRAPH) as BusinessGraph;
   const nodes = (payload.payload.nodes ?? graph.nodes ?? []) as IndustryMapNode[];
   const edges = (payload.payload.edges ?? graph.edges ?? []) as IndustryMapEdge[];
@@ -683,6 +711,9 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
   // 点节点则高亮它的上下游边（本地状态，不污染路由）
   const highlightCompany = params?.highlight ?? "";
   const [activeNode, setActiveNode] = useState<string | null>(null);
+  // 瓶颈红标只在可分辨时（0<瓶颈数<节点总数）；全标=未标，红失效为噪音
+  const bnCount = nodes.filter((n) => n.bottleneck).length;
+  const bnDiscriminate = bnCount > 0 && bnCount < nodes.length;
   const companyNodes = new Set(
     nodes.filter((n) => (n.company_refs ?? []).some((c) => c.toUpperCase() === highlightCompany.toUpperCase()))
           .map((n) => n.node_id),
@@ -702,9 +733,10 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
   return (
     <div className="space-y-3">
       {nodes.length > 0 ? (
-        <div className="rounded-lg border border-neutral-200 bg-white p-3">
-          <div className="mb-2 text-xs font-semibold text-neutral-500">
-            产业链分层流图（升级方案 §27：从文字变成图；节点带证据，边带关系标签）
+        <div className="dos-card">
+          <div className="mb-3 dos-h">
+            产业链分层流图
+            <span className="ml-2 text-meta font-normal text-ink-faint">节点带证据，边带关系标签；点击节点聚焦</span>
           </div>
           <ValueChainGraph
             nodes={nodes} edges={edges} layers={ordered} layerLabels={layerLabels}
@@ -715,16 +747,30 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
             highlightCompany={highlightCompany}
           />
           {bottlenecks.length > 0 && (
-            <div className="mt-2 text-[11px] text-red-700">瓶颈环节：{bottlenecks.map(label).join("、")}</div>
+            <div className="mt-2 text-meta text-risk">
+              瓶颈环节：
+              {view === "investor"
+                // 投资者视图：剥离内嵌 raw ID（§16），引用进 [n] 芯片不丢链
+                ? bottlenecks.map((b, i) => {
+                  const { clean, refs } = splitTextRefs(label(b));
+                  return (
+                    <span key={i}>
+                      {i > 0 && "、"}{clean}
+                      <CitationChips refs={refs} onCite={onEvidenceClick} className="ml-1" />
+                    </span>
+                  );
+                })
+                : bottlenecks.map(label).join("、")}
+            </div>
           )}
           <details className="mt-2">
-            <summary className="cursor-pointer text-[11px] font-semibold text-neutral-500">
-              节点与关系数据表（流图的键盘可达等价物，含全部公司/证据芯片）
+            <summary className="cursor-pointer text-meta font-semibold text-ink-mute">
+              节点与关系数据表（流图的键盘可达等价物，含全部公司/证据引用）
             </summary>
           <div className="mt-2 flex flex-col gap-2 md:flex-row md:items-stretch md:gap-3">
             {(ordered.length ? ordered : Array.from(byLayer.keys())).map((layer) => (
-              <div key={layer} className="min-w-0 flex-1 rounded border border-neutral-100 bg-neutral-50/60 p-2">
-                <div className="mb-1.5 text-[11px] font-semibold text-neutral-500">
+              <div key={layer} className="min-w-0 flex-1 rounded border border-line bg-paper/60 p-2">
+                <div className="mb-1.5 text-meta font-semibold text-ink-mute">
                   {LAYER_LABELS[layer] ?? layer}
                 </div>
                 <div className="space-y-1.5">
@@ -736,21 +782,21 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
                          onKeyDown={(e) => { if (e.key === "Enter") setActiveNode(n.node_id); }}
                          title={activeNode === n.node_id ? "再点一次取消高亮关联边"
                            : "点击高亮该节点的上下游关系"}
-                         className={`cursor-pointer rounded border px-2 py-1.5 text-xs ${
+                         className={`cursor-pointer rounded border px-2 py-1.5 text-[13px] ${
                            companyNodes.has(n.node_id)
-                             ? "border-blue-400 bg-blue-50 ring-1 ring-blue-300"
-                             : n.bottleneck ? "border-red-200 bg-red-50/60" : "border-neutral-200 bg-white"
-                         } ${activeNode === n.node_id ? "ring-2 ring-neutral-800" : ""}`}>
+                             ? "border-accent/50 bg-accent-soft ring-1 ring-accent/30"
+                             : bnDiscriminate && n.bottleneck ? "border-risk/40 bg-risk-soft/60" : "border-line bg-white"
+                         } ${activeNode === n.node_id ? "ring-2 ring-ink" : ""}`}>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium text-neutral-800">{n.label}</span>
-                        {n.bottleneck && (
-                          <span className="rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-700">瓶颈</span>
+                        <span className="font-medium text-ink">{n.label}</span>
+                        {bnDiscriminate && n.bottleneck && (
+                          <span className="rounded bg-risk px-1 py-0.5 text-[11px] font-semibold text-white">瓶颈</span>
                         )}
                         {companyNodes.has(n.node_id) && (
-                          <span className="rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-700">已定位</span>
+                          <span className="rounded bg-accent px-1 py-0.5 text-[11px] text-white">已定位</span>
                         )}
                       </div>
-                      {n.note && <div className="mt-0.5 text-[11px] text-neutral-500">{n.note}</div>}
+                      {n.note && <div className="mt-0.5 text-meta text-ink-mute">{n.note}</div>}
                       {(n.company_refs ?? []).length > 0 && (
                         <div className="mt-1 flex flex-wrap gap-1">
                           {n.company_refs.map((c) => (
@@ -761,15 +807,15 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
                                 // 公司芯片 → 候选矩阵同一行（联动高亮，不丢快照上下文）
                                 onNavigateSection?.("candidate_pool", { highlight: c });
                               }}
-                              title="在「公司与护城河」里定位这一行"
-                              className="rounded border border-neutral-200 px-1 py-0.5 font-mono text-[10px] text-neutral-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                              title="在「公司」章节里定位这一行"
+                              className="rounded border border-line px-1 py-0.5 font-mono text-[11px] text-ink-soft hover:border-accent hover:bg-accent-soft hover:text-accent"
                             >
                               {c}
                             </button>
                           ))}
                         </div>
                       )}
-                      <div className="mt-1"><EvidenceChips refs={n.evidence_refs} onEvidenceClick={onEvidenceClick} /></div>
+                      <div className="mt-1"><EvidenceChips refs={n.evidence_refs} onEvidenceClick={onEvidenceClick} view={view} /></div>
                     </div>
                   ))}
                 </div>
@@ -777,22 +823,22 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
             ))}
           </div>
           {edges.length > 0 && (
-            <ul className="mt-3 space-y-1 border-t border-neutral-100 pt-2 text-[11px] text-neutral-600">
+            <ul className="mt-3 space-y-1 border-t border-line pt-2 text-meta text-ink-soft">
               {edges.map((e, i) => (
                 <li key={i} className={`flex flex-wrap items-center gap-1.5 ${
                   edgeLit(e) ? "" : "opacity-30"
                 }`}>
                   <span className="font-mono">{label(e.source)} → {label(e.target)}</span>
-                  <span className="rounded bg-neutral-100 px-1 py-0.5 text-[10px] text-neutral-600">
+                  <span className="rounded bg-paper px-1 py-0.5 text-[11px] text-ink-soft">
                     {RELATION_LABELS[e.relation] ?? e.relation}
                   </span>
                   {!e.flow_known && (
-                    <span className="text-[10px] text-neutral-400" title="流量/份额未知：等宽边，不估算">
+                    <span className="text-[11px] text-ink-faint" title="流量/份额未知：等宽边，不估算">
                       流量未知
                     </span>
                   )}
-                  {e.note && <span className="text-neutral-500">{e.note}</span>}
-                  <EvidenceChips refs={e.evidence_refs} onEvidenceClick={onEvidenceClick} />
+                  {e.note && <span className="text-ink-mute">{e.note}</span>}
+                  <EvidenceChips refs={e.evidence_refs} onEvidenceClick={onEvidenceClick} view={view} />
                 </li>
               ))}
             </ul>
@@ -800,29 +846,42 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
           </details>
         </div>
       ) : (
-        <div className="rounded-lg border border-dashed border-neutral-300 bg-white p-4 text-xs text-neutral-500">
+        <div className="dos-card border-dashed text-sm text-ink-mute">
           尚无结构化产业链图（nodes/edges）——不拿旧字段文本冒充关系图。
         </div>
       )}
-      {valueFlowNote && (
-        <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs leading-relaxed text-violet-900">
-          <span className="mr-1 font-semibold">价值流/利润池：</span>{valueFlowNote}
-        </div>
-      )}
+      {/* Profit Pool（§22）：value_flow 边有定量份额时画堆叠条；单一来源
+          标 Estimated（§48.4）；无定量证据时维持下方定性文本（不伪造精确图） */}
+      {(() => {
+        const pool = (payload.payload.profit_pool ?? null) as ProfitPool | null;
+        return pool && pool.entries.length > 0
+          ? <ProfitPoolBar pool={pool} onEvidenceClick={onEvidenceClick} />
+          : null;
+      })()}
+      {valueFlowNote && (() => {
+        // 文本内嵌的 ev-*/claim-* 转为 [n] 引用芯片（§16：正文不出现 raw ID）
+        const { clean, refs } = splitTextRefs(valueFlowNote);
+        return (
+          <div className="dos-card border-accent/30 bg-accent-soft/50 text-sm leading-[1.8] text-ink">
+            <span className="mr-1 font-semibold">价值流/利润池：</span>{clean}
+            <CitationChips refs={refs} onCite={onEvidenceClick} />
+          </div>
+        );
+      })()}
       {routes.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white p-3">
-          <div className="mb-1.5 text-xs font-semibold text-neutral-500">技术路线对比</div>
-          <table className="w-full text-xs">
+        <div className="overflow-x-auto dos-card">
+          <div className="mb-1.5 dos-h">技术路线对比</div>
+          <table className="w-full text-[13px]">
             <thead>
-              <tr className="border-b border-neutral-200 text-left text-[11px] text-neutral-500">
+              <tr className="border-b border-line text-left text-meta text-ink-mute">
                 {Object.keys(routes[0]).map((k) => <th key={k} className="py-1 pr-3 font-medium">{k}</th>)}
               </tr>
             </thead>
             <tbody>
               {routes.map((r, i) => (
-                <tr key={i} className="border-b border-neutral-100 last:border-0">
+                <tr key={i} className="border-b border-line/60 last:border-0">
                   {Object.keys(routes[0]).map((k) => (
-                    <td key={k} className="py-1.5 pr-3 align-top text-neutral-700">{r[k]}</td>
+                    <td key={k} className="py-1.5 pr-3 align-top text-ink-soft">{r[k]}</td>
                   ))}
                 </tr>
               ))}
@@ -831,16 +890,16 @@ function IndustryChainModule({ payload, onEvidenceClick, params, onNavigateSecti
         </div>
       )}
       {graph.narrative && (
-        <details className="rounded-lg border border-neutral-200 bg-neutral-50/50 p-3">
-          <summary className="cursor-pointer text-xs font-semibold text-neutral-500">
+        <details className="dos-panel bg-paper/60">
+          <summary className="cursor-pointer text-meta font-semibold text-ink-mute">
             旧字段叙述（兼容区，不是关系图）
           </summary>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-neutral-700">{graph.narrative}</p>
-          <div className="mt-2"><EvidenceChips refs={graph.narrative_refs} onEvidenceClick={onEvidenceClick} /></div>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">{graph.narrative}</p>
+          <div className="mt-2"><EvidenceChips refs={graph.narrative_refs} onEvidenceClick={onEvidenceClick} view={view} /></div>
         </details>
       )}
       {limitations.length > 0 && (
-        <ul className="space-y-0.5 text-[11px] text-amber-700">
+        <ul className="space-y-0.5 text-meta text-warn">
           {limitations.map((l, i) => <li key={i}>· {l}</li>)}
         </ul>
       )}
@@ -859,11 +918,13 @@ const TIER_CLS: Record<string, string> = {
   needs_review: "bg-amber-50 text-amber-700 border-amber-200",
 };
 
-function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSection }: ModuleProps) {
+function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSection, view = "investor" }: ModuleProps) {
   const candidates = (payload.payload.candidates ?? []) as CandidateItem[];
   const criteria = (payload.payload.criteria ?? []) as string[];
   const objective = (payload.payload.objective ?? "") as string;
   const stageDefs = (payload.payload.stage_definitions ?? {}) as Record<string, string>;
+  // 四象限（§20）：服务端离散序映射；无可定位公司时为 null（不画空图）
+  const quadrant = (payload.payload.quadrant ?? null) as QuadrantPayload | null;
   const comparison = (payload.payload.comparison ?? {}) as Record<string, any>;
   const numerics = (payload.payload.comparison_numerics ?? []) as {
     label: string; cells: Record<string, NumericCell>;
@@ -872,6 +933,8 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
   const limitations = (payload.payload.limitations ?? []) as string[];
   const notes = (payload.payload.notes ?? []) as string[];
   const [tier, setTier] = useState<string>("all");
+  // 密度规则（§9/§19：默认 Top 5-8，点击「查看全部」展开）：按 tier 序（入选→观察→待核实→淘汰）
+  const [showAll, setShowAll] = useState(false);
   // 阶段阶梯芯片点击 → 本模块内定位（不污染路由）；从产业链节点跳过来时
   // highlight=<entity_id> 优先：该行高亮 + 自动滚到可见
   const [locate, setLocate] = useState("");
@@ -883,36 +946,46 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
     }
   }, [highlight]);
   const tiers = Array.from(new Set(candidates.map((c) => c.tier)));
-  const shown = tier === "all" ? candidates : candidates.filter((c) => c.tier === tier);
+  const TIER_RANK: Record<string, number> = { included: 0, watchlist: 1, needs_review: 2, excluded: 3 };
+  const tierSorted = [...candidates].map((c, i) => ({ c, i }))
+    .sort((a, b) => (TIER_RANK[a.c.tier] ?? 9) - (TIER_RANK[b.c.tier] ?? 9) || a.i - b.i)
+    .map((x) => x.c);
+  const filtered = tier === "all" ? tierSorted : tierSorted.filter((c) => c.tier === tier);
+  // 有过滤/定位时显示全部命中（折叠只在默认全览时生效）
+  const collapse = !showAll && tier === "all" && !highlight && filtered.length > 8;
+  const shown = collapse ? filtered.slice(0, 8) : filtered;
   const rows = (comparison.rows ?? []) as Record<string, any>[];
   const cols = (comparison.columns ?? []) as Record<string, string>[];
   return (
     <div className="space-y-3">
-      {(objective || criteria.length > 0) && (
-        <div className="rounded-lg border border-neutral-200 bg-white p-3 text-xs text-neutral-600">
-          {objective && <div className="mb-1"><span className="font-semibold text-neutral-500">目标：</span>{objective}</div>}
+      {(objective || criteria.length > 0) && view === "audit" && (
+        <div className="dos-panel text-sm text-ink-soft">
+          {objective && <div className="mb-1"><span className="font-semibold text-ink">筛选目标：</span>{objective}</div>}
           {criteria.length > 0 && (
-            <div><span className="font-semibold text-neutral-500">筛选标准：</span>{criteria.join("；")}</div>
+            <div><span className="font-semibold text-ink">筛选标准：</span>{criteria.join("；")}</div>
           )}
         </div>
       )}
       {candidates.length > 0 && (
-        <div className="rounded-lg border border-neutral-200 bg-white p-3">
-          <div className="mb-1.5 text-xs font-semibold text-neutral-500">
+        <div className="dos-panel">
+          <div className="mb-1.5 text-meta font-semibold text-ink-mute">
             候选分层（条宽 = 数量占比；点击过滤下表）
           </div>
           <TierStrip candidates={candidates} active={tier} onSelect={setTier} />
         </div>
       )}
+      {quadrant && quadrant.points.length > 0 && (
+        <CandidateQuadrant payload={quadrant} onLocate={setLocate} />
+      )}
       <StageLadder candidates={candidates} onLocate={setLocate} />
       {candidates.length > 0 ? (
-        <div className="rounded-lg border border-neutral-200 bg-white">
+        <div className="overflow-hidden rounded-card border border-line bg-white">
           {tiers.length > 1 && (
-            <div className="flex flex-wrap gap-1.5 border-b border-neutral-100 p-2">
+            <div className="flex flex-wrap gap-1.5 border-b border-line p-3">
               {["all", ...tiers].map((t) => (
                 <button key={t} onClick={() => setTier(t)}
-                        className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                          tier === t ? "border-neutral-800 bg-neutral-900 text-white" : "border-neutral-200 text-neutral-600 hover:border-neutral-400"
+                        className={`rounded-full border px-2.5 py-1 text-meta ${
+                          tier === t ? "border-ink bg-ink text-white" : "border-line text-ink-soft hover:border-ink-faint"
                         }`}>
                   {t === "all" ? `全部 ${candidates.length}` : `${TIER_LABELS[t] ?? t} ${candidates.filter((c) => c.tier === t).length}`}
                 </button>
@@ -920,9 +993,9 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
             </div>
           )}
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[880px] text-xs">
+            <table className="w-full min-w-[880px] text-[13px]">
               <thead>
-                <tr className="border-b border-neutral-200 text-left text-[11px] text-neutral-500">
+                <tr className="border-b border-line bg-paper text-left text-meta text-ink-mute">
                   <th className="px-3 py-2 font-medium">公司</th>
                   <th className="px-3 py-2 font-medium">可投资范围</th>
                   <th className="px-3 py-2 font-medium">技术验证阶段</th>
@@ -936,81 +1009,120 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
                 {shown.map((c) => (
                   <tr key={c.entity_id}
                       ref={c.entity_id.toUpperCase() === highlight ? rowRef : undefined}
-                      className={`border-b border-neutral-100 align-top last:border-0 ${
-                        c.entity_id.toUpperCase() === highlight ? "bg-blue-50/70 ring-1 ring-inset ring-blue-200" : ""
+                      className={`border-b border-line/60 align-top last:border-0 ${
+                        c.entity_id.toUpperCase() === highlight ? "bg-accent-soft/70 ring-1 ring-inset ring-accent/30" : ""
                       }`}>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium text-neutral-800">{c.name || c.entity_id}</span>
-                        <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${TIER_CLS[c.tier] ?? TIER_CLS.needs_review}`}>
+                        <span className="font-medium text-ink">{c.name || c.entity_id}</span>
+                        <span className={`rounded-full border px-1.5 py-0.5 text-[11px] ${TIER_CLS[c.tier] ?? TIER_CLS.needs_review}`}>
                           {TIER_LABELS[c.tier] ?? c.tier}
                         </span>
                       </div>
-                      <div className="mt-0.5 font-mono text-[10px] text-neutral-400">{c.entity_id}</div>
+                      <div className="mt-0.5 font-mono text-meta text-ink-faint">{c.entity_id}</div>
                       {onNavigateSection && (
                         <button
                           onClick={() => onNavigateSection("industry_chain", { highlight: c.entity_id })}
                           title="在产业链图里高亮包含该公司的环节"
-                          className="mt-1 rounded border border-neutral-200 px-1 py-0.5 text-[10px] text-neutral-500 hover:border-blue-300 hover:text-blue-700"
+                          className="mt-1 rounded border border-line px-1 py-0.5 text-[11px] text-ink-mute hover:border-accent hover:text-accent"
                         >
                           在产业链中定位
                         </button>
                       )}
-                      <div className="mt-1"><EvidenceChips refs={c.evidence_refs} onEvidenceClick={onEvidenceClick} /></div>
+                      <div className="mt-1"><EvidenceChips refs={c.evidence_refs} onEvidenceClick={onEvidenceClick} view={view} /></div>
                     </td>
-                    <td className="px-3 py-2 text-neutral-600">
+                    <td className="px-3 py-2.5 text-ink-soft">
                       {c.listing_status === "listed"
                         ? <>已上市·{c.market || "市场未注明"}</>
                         : c.listing_status === "private" ? "未上市（技术参照）"
                         : c.listing_status === "subsidiary" ? "子公司/关联主体"
                         : "上市状态待核实"}
-                      {c.security_relation && <div className="mt-0.5 text-[10px] text-neutral-400">{c.security_relation}</div>}
-                      {c.investable === false && <div className="mt-0.5 text-[10px] text-amber-700">不混入可交易候选</div>}
+                      {c.security_relation && (
+                        <div className="mt-0.5 text-meta text-ink-faint">
+                          {view === "investor" ? splitTextRefs(c.security_relation).clean : c.security_relation}
+                        </div>
+                      )}
+                      {c.investable === false && <div className="mt-0.5 text-meta text-warn">不混入可交易候选</div>}
                     </td>
-                    <td className="px-3 py-2 text-neutral-700">
-                      {c.technology_stage || <span className="text-neutral-400">未判定</span>}
+                    <td className="px-3 py-2.5 text-ink-soft">
+                      {c.technology_stage
+                        ? (STAGE_LABEL_CN[c.technology_stage] ?? c.technology_stage)
+                        : <span className="text-ink-faint">未判定</span>}
                       {stageDefs[c.technology_stage] && (
-                        <div className="mt-0.5 text-[10px] text-neutral-400" title={stageDefs[c.technology_stage]}>
+                        <div className="mt-0.5 text-meta text-ink-faint" title={stageDefs[c.technology_stage]}>
                           {stageDefs[c.technology_stage]}
                         </div>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-neutral-700">
-                      {c.commercial_stage || <span className="text-neutral-400">未判定</span>}
+                    <td className="px-3 py-2.5 text-ink-soft">
+                      {c.commercial_stage
+                        ? (STAGE_LABEL_CN[c.commercial_stage] ?? c.commercial_stage)
+                        : <span className="text-ink-faint">未判定</span>}
                       {(c.commercial_evidence ?? []).length > 0 && (
-                        <ul className="mt-1 space-y-0.5 text-[11px] text-neutral-500">
-                          {c.commercial_evidence.map((x, i) => <li key={i}>· {x}</li>)}
+                        <ul className="mt-1 space-y-0.5 text-meta text-ink-mute">
+                          {c.commercial_evidence.map((x, i) => (
+                            <li key={i}>· {view === "investor" ? splitTextRefs(x).clean : x}</li>
+                          ))}
                         </ul>
                       )}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5">
                       {(c.moat_evidence ?? []).length
-                        ? <ul className="space-y-0.5 text-[11px] text-neutral-600">
-                            {c.moat_evidence.map((x, i) => <li key={i}>· {x}</li>)}
+                        ? <ul className="space-y-0.5 text-meta text-ink-soft">
+                            {c.moat_evidence.map((x, i) => (
+                              <li key={i}>· {view === "investor" ? splitTextRefs(x).clean : x}</li>
+                            ))}
                           </ul>
-                        : <span className="text-[11px] text-neutral-400">无一手证据</span>}
+                        : <span className="text-meta text-ink-faint">无一手证据</span>}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5">
                       {(c.counter_evidence ?? []).length
-                        ? <ul className="space-y-0.5 text-[11px] text-red-800">
-                            {c.counter_evidence.map((x, i) => <li key={i}>· {x}</li>)}
+                        ? <ul className="space-y-0.5 text-meta text-risk">
+                            {c.counter_evidence.map((x, i) => (
+                              <li key={i}>· {view === "investor" ? splitTextRefs(x).clean : x}</li>
+                            ))}
                           </ul>
-                        : <span className="text-[11px] text-neutral-400">未检索到反证</span>}
+                        : <span className="text-meta text-ink-faint">未检索到反证</span>}
                     </td>
-                    <td className="px-3 py-2 text-neutral-700">
-                      <div className="text-[11px]">{c.reason || "（未给原因）"}</div>
-                      {c.next_validation && (
-                        <div className="mt-1 text-[11px] text-blue-800">下次验证：{c.next_validation}</div>
-                      )}
+                    <td className="px-3 py-2.5 text-ink-soft">
+                      {/* 内嵌 raw ID 剥离子（§16）；剥离出的引用并入该行 chips */}
+                      {(() => {
+                        const reason = splitTextRefs(c.reason || "（未给原因）");
+                        const nextV = c.next_validation ? splitTextRefs(c.next_validation) : null;
+                        return (
+                          <>
+                            <div className="text-meta leading-relaxed">
+                              {reason.clean}
+                              {view === "investor" && (
+                                <CitationChips refs={reason.refs} onCite={onEvidenceClick} className="ml-1" />
+                              )}
+                            </div>
+                            {nextV && (
+                              <div className="mt-1 text-meta text-accent">
+                                下次验证：{nextV.clean}
+                                {view === "investor" && (
+                                  <CitationChips refs={nextV.refs} onCite={onEvidenceClick} className="ml-1" />
+                                )}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          {(collapse || (showAll && tier === "all" && filtered.length > 8)) && (
+            <button onClick={() => setShowAll((v) => !v)}
+                    className="block w-full border-t border-line bg-paper/60 px-3 py-2 text-center text-meta font-medium text-accent hover:bg-accent-soft">
+              {collapse ? `查看全部 ${filtered.length} 家 ↓` : "收起为 Top 8 ↑"}
+            </button>
+          )}
         </div>
       ) : (
-        <div className="rounded-lg border border-dashed border-neutral-300 bg-white p-4 text-xs text-neutral-500">
+        <div className="dos-card border-dashed text-sm text-ink-mute">
           尚无结构化候选评估（CandidateAssessment）——下方旧字段不能当作筛选结果（入选/淘汰/待核实原因缺失）。
         </div>
       )}
@@ -1030,101 +1142,108 @@ function CandidatePoolModule({ payload, onEvidenceClick, params, onNavigateSecti
               <span className="ml-2 font-normal text-neutral-400">（存在不可比行：只给表，不绘图）</span>
             )}
           </div>
-          <table className="w-full text-xs">
+          <table className="w-full text-[13px]">
             <thead>
-              <tr className="border-b border-neutral-200 text-left text-[11px] text-neutral-500">
-                <th className="py-1 pr-3 font-medium">项目</th>
+              <tr className="border-b border-line text-left text-meta text-ink-mute">
+                <th className="py-1.5 pr-3 font-medium">项目</th>
                 {cols.map((c) => (
-                  <th key={c.id} className="py-1 pr-3 font-medium">
-                    {c.label}{c.period ? <span className="ml-1 text-neutral-400">{c.period}</span> : null}
+                  <th key={c.id} className="py-1.5 pr-3 font-medium">
+                    {c.label}{c.period ? <span className="ml-1 text-ink-faint">{c.period}</span> : null}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className="border-b border-neutral-100 last:border-0">
-                  <td className="py-1.5 pr-3 text-neutral-700">
+                <tr key={i} className="border-b border-line/60 last:border-0">
+                  <td className="py-2 pr-3 text-ink">
                     {r.label}
                     {r.comparable === false && (
-                      <span className="ml-1 text-[10px] text-amber-700" title={r.incomparable_reason}>不可比</span>
+                      <span className="ml-1 text-meta text-warn" title={r.incomparable_reason}>不可比</span>
                     )}
                   </td>
-                  {cols.map((c) => (
-                    <td key={c.id} className="py-1.5 pr-3 font-mono text-neutral-700">
-                      {(r.cells ?? {})[c.id] ?? <span className="text-neutral-300">—</span>}
-                    </td>
-                  ))}
+                  {cols.map((c) => {
+                    const rawCell = (r.cells ?? {})[c.id];
+                    const cell = typeof rawCell === "string" && view === "investor"
+                      ? splitTextRefs(rawCell).clean
+                      : rawCell;
+                    return (
+                      <td key={c.id} className="py-2 pr-3 font-mono dos-num text-ink-soft">
+                        {cell ?? <span className="text-line">—</span>}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
           </table>
           {(comparison.incomparable_reasons ?? []).length > 0 && (
-            <ul className="mt-2 space-y-0.5 text-[11px] text-amber-700">
+            <ul className="mt-2 space-y-0.5 text-meta text-warn">
               {(comparison.incomparable_reasons as string[]).map((x, i) => <li key={i}>· {x}</li>)}
             </ul>
           )}
         </div>
       )}
       {Object.keys(stageDefs).length > 0 && (
-        <details className="rounded border border-neutral-200 bg-neutral-50/50 p-2">
-          <summary className="cursor-pointer text-[11px] font-semibold text-neutral-500">阶段定义（不是评分）</summary>
-          <ul className="mt-1.5 space-y-0.5 text-[11px] text-neutral-600">
+        <details className="rounded-card border border-line bg-paper/60 p-3">
+          <summary className="cursor-pointer text-meta font-semibold text-ink-mute">阶段定义（不是评分）</summary>
+          <ul className="mt-1.5 space-y-0.5 text-meta text-ink-soft">
             {Object.entries(stageDefs).map(([k, v]) => <li key={k}>· <b>{k}</b>：{v}</li>)}
           </ul>
         </details>
       )}
       {limitations.length > 0 && (
-        <ul className="space-y-0.5 text-[11px] text-amber-700">
+        <ul className="space-y-0.5 text-meta text-warn">
           {limitations.map((l, i) => <li key={i}>· {l}</li>)}
         </ul>
       )}
-      <LegacyFacts items={legacy} kind="industry" id={String(payload.snapshot_id ?? "")} readOnly />
+      <LegacyFacts items={legacy} kind="industry" id={String(payload.snapshot_id ?? "")} readOnly view={view} />
       <Notes notes={notes} />
     </div>
   );
 }
 
-function ValidationTimeline({ items, onEvidenceClick }: {
-  items: ValidationItem[]; onEvidenceClick: (id: string) => void;
+function ValidationTimeline({ items, onEvidenceClick, view = "investor" }: {
+  items: ValidationItem[]; onEvidenceClick: (id: string) => void; view?: "investor" | "audit";
 }) {
   if (!items.length) return null;
   const badge = (status: string) =>
-    status === "occurred" ? "bg-green-50 text-green-700 border-green-200"
-    : status === "expected" ? "bg-blue-50 text-blue-700 border-blue-200"
-    : "bg-neutral-100 text-neutral-500 border-neutral-200";
+    status === "occurred" ? "bg-pos-soft text-pos border-pos/40"
+    : status === "expected" ? "bg-accent-soft text-accent border-accent/40"
+    : "bg-paper text-ink-mute border-line";
   const label = (status: string) =>
     status === "occurred" ? "已发生" : status === "expected" ? "预计" : "时间未知";
   return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-3">
-      <div className="mb-2 text-xs font-semibold text-neutral-500">
-        验证时间线（展示条件，不给无依据的概率）
+    <div className="dos-card">
+      <div className="mb-2 dos-h">
+        验证时间线
+        <span className="ml-2 text-meta font-normal text-ink-faint">展示条件，不给无依据的概率</span>
       </div>
       <TimelineStrip items={items} />
-      <ol className="mt-2 space-y-2 border-l border-neutral-200 pl-3">
+      <ol className="mt-3 space-y-3 border-l border-line pl-4">
         {items.map((it, i) => (
           <li key={i} className="relative">
-            <span className="absolute -left-[17px] top-1.5 h-2 w-2 rounded-full bg-neutral-300" />
+            <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full bg-ink-faint" />
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs font-medium text-neutral-800">{it.event}</span>
-              <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${badge(it.status)}`}>{label(it.status)}</span>
+              <span className="text-sm font-medium text-ink">{it.event}</span>
+              <span className={`rounded-full border px-1.5 py-0.5 text-[11px] ${badge(it.status)}`}>{label(it.status)}</span>
               {(it.window_start || it.window_end) && (
-                <span className="font-mono text-[10px] text-neutral-500">
+                <span className="font-mono dos-num text-meta text-ink-mute">
                   {it.window_start}{it.window_end ? ` → ${it.window_end}` : ""}
                 </span>
               )}
             </div>
             {it.trigger_condition && (
-              <div className="mt-0.5 text-[11px] text-neutral-600">触发条件：{it.trigger_condition}</div>
+              <div className="mt-0.5 text-meta text-ink-soft">触发条件：{it.trigger_condition}</div>
             )}
             {it.affected_judgment && (
-              <div className="mt-0.5 text-[11px] text-neutral-500">影响判断：{it.affected_judgment}</div>
+              <div className="mt-0.5 text-meta text-ink-mute">影响判断：{it.affected_judgment}</div>
             )}
             <div className="mt-1 flex flex-wrap items-center gap-2">
               {(it.company_refs ?? []).map((c) => (
-                <span key={c} className="rounded border border-neutral-200 px-1 py-0.5 font-mono text-[10px] text-neutral-600">{c}</span>
+                <span key={c} className="rounded border border-line px-1 py-0.5 font-mono text-[11px] text-ink-soft">{c}</span>
               ))}
-              <EvidenceChips refs={it.evidence_refs} onEvidenceClick={onEvidenceClick} />
+              <EvidenceChips refs={it.evidence_refs} onEvidenceClick={onEvidenceClick} view={view} />
             </div>
           </li>
         ))}
@@ -1133,7 +1252,7 @@ function ValidationTimeline({ items, onEvidenceClick }: {
   );
 }
 
-function CatalystsRisksModule({ snap, payload, onEvidenceClick, onResolved }: ModuleProps) {
+function CatalystsRisksModule({ snap, payload, onEvidenceClick, onResolved, view = "investor" }: ModuleProps) {
   const auditReadOnly = snap.context.mode !== "live" || snap.context.namespace !== "prod";
   const legacy = (payload.payload.legacy ?? []) as LegacyFactItem[];
   const claims = (payload.payload.claims ?? []) as ClaimItem[];
@@ -1141,23 +1260,23 @@ function CatalystsRisksModule({ snap, payload, onEvidenceClick, onResolved }: Mo
   const notes = (payload.payload.notes ?? []) as string[];
   const limitations = (payload.payload.limitations ?? []) as string[];
   return (
-    <div className="space-y-3">
-      <div className="text-xs text-neutral-500">何时验证？什么情况下失效？</div>
-      <ValidationTimeline items={items} onEvidenceClick={onEvidenceClick} />
+    <div className="space-y-4">
+      <div className="text-sm text-ink-mute">何时验证？什么情况下失效？</div>
+      <ValidationTimeline items={items} onEvidenceClick={onEvidenceClick} view={view} />
       <ClaimsList claims={claims} onEvidenceClick={onEvidenceClick} />
       {limitations.length > 0 && (
-        <ul className="space-y-0.5 text-[11px] text-amber-700">
+        <ul className="space-y-0.5 text-meta text-warn">
           {limitations.map((l, i) => <li key={i}>· {l}</li>)}
         </ul>
       )}
       <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
-                   onResolved={onResolved} readOnly={auditReadOnly} />
+                   onResolved={onResolved} readOnly={auditReadOnly} view={view} />
       <Notes notes={notes} />
     </div>
   );
 }
 
-function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact, onResolved }: ModuleProps) {
+function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact, onResolved, view = "investor" }: ModuleProps) {
   const artifacts = (payload.payload.artifacts ?? []) as Record<string, any>[];
   const scenarios = (payload.payload.scenarios ?? []) as Record<string, any>[];
   const plans = (payload.payload.plans ?? []) as Record<string, any>[];
@@ -1174,20 +1293,20 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
     <div className="space-y-4">
       {artifacts.length > 0 && (
         <section>
-          <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">研究产物（冻结研报）</h4>
+          <h4 className="mb-1.5 text-[13px] font-semibold text-ink-soft">研究产物（冻结研报）</h4>
           <div className="space-y-1.5">
             {artifacts.map((a) => (
-              <div key={a.artifact_id} className="flex flex-wrap items-center gap-2 rounded border border-neutral-200 bg-white px-3 py-2 text-xs">
-                <button onClick={() => onOpenArtifact(a.artifact_id)} className="font-semibold text-blue-700 hover:underline">
+              <div key={a.artifact_id} className="flex flex-wrap items-center gap-2 rounded border border-line bg-white px-3 py-2 text-xs">
+                <button onClick={() => onOpenArtifact(a.artifact_id)} className="font-semibold text-accent hover:underline">
                   {a.title || a.artifact_id}
                 </button>
-                <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
-                  a.status === "validated" ? "border-green-300 text-green-700" : "border-amber-300 text-amber-700"
+                <span className={`rounded-full border px-1.5 py-0.5 text-[11px] ${
+                  a.status === "validated" ? "border-pos/40 text-pos" : "border-warn/40 text-warn"
                 }`}>{a.status === "validated" ? "通过基础校验" : a.status}</span>
-                <span className="rounded-full border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-500">
+                <span className="rounded-full border border-line px-1.5 py-0.5 text-[11px] text-ink-mute">
                   充分度 {a.sufficiency}
                 </span>
-                <span className="font-mono text-[10px] text-neutral-400">{(a.created_at ?? "").slice(0, 10)}</span>
+                <span className="font-mono text-[11px] text-ink-faint">{(a.created_at ?? "").slice(0, 10)}</span>
               </div>
             ))}
           </div>
@@ -1195,16 +1314,16 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
       )}
       {scenarios.length > 0 && (
         <section>
-          <h4 className="mb-1.5 text-xs font-semibold text-neutral-500">
+          <h4 className="mb-1.5 text-[13px] font-semibold text-ink-mute">
             用户情景（非发布版，不参与默认结论）
           </h4>
           <div className="space-y-1">
             {scenarios.map((s) => (
-              <div key={s.artifact_id} className="flex items-center gap-2 rounded border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs">
-                <button onClick={() => onOpenArtifact(s.artifact_id)} className="text-blue-700 hover:underline">
+              <div key={s.artifact_id} className="flex items-center gap-2 rounded border border-line bg-paper px-3 py-1.5 text-xs">
+                <button onClick={() => onOpenArtifact(s.artifact_id)} className="text-accent hover:underline">
                   {s.title || s.artifact_id}
                 </button>
-                <span className="font-mono text-[10px] text-neutral-400">{String(s.created_at ?? "").slice(0, 10)}</span>
+                <span className="font-mono text-[11px] text-ink-faint">{String(s.created_at ?? "").slice(0, 10)}</span>
               </div>
             ))}
           </div>
@@ -1212,51 +1331,51 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
       )}
       {latestPlan && (
         <section>
-          <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">
+          <h4 className="mb-1.5 text-[13px] font-semibold text-ink-soft">
             研究计划问题队列
-            <span className="ml-2 font-mono text-[10px] font-normal text-neutral-400">
+            <span className="ml-2 font-mono text-[11px] font-normal text-ink-faint">
               {latestPlan.mode} · {latestPlan.recipe_id}@{latestPlan.recipe_version} · {latestPlan.plan_id}
             </span>
           </h4>
           {planNotes.map((n, i) => (
-            <div key={i} className="mb-1 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] text-indigo-700">
+            <div key={i} className="mb-1 rounded border border-accent/30 bg-accent-soft px-2 py-1 text-[11px] text-accent">
               {n}
             </div>
           ))}
-          <div className="overflow-x-auto rounded border border-neutral-200 bg-white">
+          <div className="overflow-x-auto rounded border border-line bg-white">
             <table className="w-full border-collapse text-xs">
               <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[10px] uppercase text-neutral-400">
+                <tr className="border-b border-line bg-paper text-left text-[11px] uppercase text-ink-faint">
                   <th className="px-2 py-1.5">问题</th><th className="px-2 py-1.5">优先级</th>
                   <th className="px-2 py-1.5">状态</th><th className="px-2 py-1.5">结论/原因</th>
                 </tr>
               </thead>
               <tbody>
                 {(latestPlan.questions ?? []).map((q: Record<string, any>) => (
-                  <tr key={q.question_id} className="border-b border-neutral-100 align-top">
+                  <tr key={q.question_id} className="border-b border-line/60 align-top">
                     <td className="max-w-xs px-2 py-1.5">
                       {q.text}
-                      <div className="font-mono text-[10px] text-neutral-400">{q.question_id}</div>
+                      <div className="font-mono text-[11px] text-ink-faint">{q.question_id}</div>
                     </td>
                     <td className="px-2 py-1.5">{q.priority}</td>
                     <td className="px-2 py-1.5">
-                      <span className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
-                        q.status === "answered" ? "border-green-300 text-green-700"
-                        : q.status === "disputed" ? "border-red-300 text-red-700"
-                        : q.status === "unavailable" ? "border-neutral-300 text-neutral-500"
-                        : q.status === "historical_unknown" ? "border-indigo-300 text-indigo-600"
-                        : "border-amber-300 text-amber-700"
+                      <span className={`rounded-full border px-1.5 py-0.5 text-[11px] ${
+                        q.status === "answered" ? "border-pos/40 text-pos"
+                        : q.status === "disputed" ? "border-red-300 text-risk"
+                        : q.status === "unavailable" ? "border-neutral-300 text-ink-mute"
+                        : q.status === "historical_unknown" ? "border-accent/40 text-accent"
+                        : "border-warn/40 text-warn"
                       }`} title={q.status === "historical_unknown" ? "历史投影不可分辨当时进展（不借用今日状态）" : undefined}>
                         {q.status === "historical_unknown" ? "历史不可分辨" : q.status}
                       </span>
                     </td>
-                    <td className="max-w-sm px-2 py-1.5 text-neutral-600">
+                    <td className="max-w-sm px-2 py-1.5 text-ink-soft">
                       {q.conclusion ?? ""}
                       {(q.unresolved ?? []).map((u: string, i: number) => (
-                        <div key={i} className="text-[10px] text-neutral-400">未解决：{u}</div>
+                        <div key={i} className="text-[11px] text-ink-faint">未解决：{u}</div>
                       ))}
                       {(q.attempts ?? []).map((a: string, i: number) => (
-                        <div key={i} className="text-[10px] text-neutral-400">尝试：{a}</div>
+                        <div key={i} className="text-[11px] text-ink-faint">尝试：{a}</div>
                       ))}
                     </td>
                   </tr>
@@ -1267,14 +1386,14 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
         </section>
       )}
       {assessment && (
-        <section className="rounded border border-neutral-200 bg-white p-3 text-xs">
-          <h4 className="mb-1 font-semibold text-neutral-600">充分度评估明细</h4>
+        <section className="rounded border border-line bg-white p-3 text-xs">
+          <h4 className="mb-1 font-semibold text-ink-soft">充分度评估明细</h4>
           <div className="grid gap-2 md:grid-cols-2">
             {(assessment.integrity_checks ?? []).map((c: Record<string, any>) => (
               <div key={c.name} className="flex items-start gap-1.5">
                 <span className={c.passed ? "text-green-600" : "text-red-600"}>{c.passed ? "✓" : "✗"}</span>
-                <span className="font-mono text-[11px] text-neutral-600">{c.name}</span>
-                <span className="text-[11px] text-neutral-400">{c.detail}</span>
+                <span className="font-mono text-[11px] text-ink-soft">{c.name}</span>
+                <span className="text-[11px] text-ink-faint">{c.detail}</span>
               </div>
             ))}
           </div>
@@ -1282,18 +1401,18 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
       )}
       {claims.length > 0 && (
         <section>
-          <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">研究论断（{claims.length}）</h4>
+          <h4 className="mb-1.5 text-[13px] font-semibold text-ink-soft">研究论断（{claims.length}）</h4>
           <ClaimsList claims={claims} onEvidenceClick={onEvidenceClick} />
         </section>
       )}
       {obsConflicts.length > 0 && (
         <section>
-          <h4 className="mb-1.5 text-xs font-semibold text-red-700">观测冲突（同语义键竞争值，待裁决）</h4>
+          <h4 className="mb-1.5 text-[13px] font-semibold text-risk">观测冲突（同语义键竞争值，待裁决）</h4>
           {obsConflicts.map((c) => (
-            <details key={c.semantic_hash} className="mb-1 rounded border border-red-200 bg-red-50/40 p-2 text-xs">
-              <summary className="cursor-pointer font-mono text-[11px] text-red-700">{c.semantic_hash}</summary>
+            <details key={c.semantic_hash} className="mb-1 rounded border border-risk/40 bg-risk-soft/60 p-2 text-xs">
+              <summary className="cursor-pointer font-mono text-[11px] text-risk">{c.semantic_hash}</summary>
               {(c.history ?? []).map((o: Record<string, any>, i: number) => (
-                <div key={i} className="mt-1 font-mono text-[11px] text-neutral-600">
+                <div key={i} className="mt-1 font-mono text-[11px] text-ink-soft">
                   v? {o.value} {o.unit} · 可知 {String(o.knowledge_time).slice(0, 10)} · {o.observation_id}
                 </div>
               ))}
@@ -1302,12 +1421,12 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
         </section>
       )}
       <section>
-        <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">来源目录（{evidence.length}，点击看原文）</h4>
+        <h4 className="mb-1.5 text-[13px] font-semibold text-ink-soft">来源目录（{evidence.length}，点击看原文）</h4>
         {evidence.length ? (
-          <div className="overflow-x-auto rounded border border-neutral-200 bg-white">
+          <div className="overflow-x-auto rounded border border-line bg-white">
             <table className="w-full border-collapse text-xs">
               <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-[10px] uppercase text-neutral-400">
+                <tr className="border-b border-line bg-paper text-left text-[11px] uppercase text-ink-faint">
                   <th className="px-2 py-1.5">证据</th><th className="px-2 py-1.5">摘录</th>
                   <th className="px-2 py-1.5">供应商</th><th className="px-2 py-1.5">可知</th>
                   <th className="px-2 py-1.5">PIT</th><th className="px-2 py-1.5">被引用</th>
@@ -1315,27 +1434,27 @@ function ResearchSourcesModule({ snap, payload, onEvidenceClick, onOpenArtifact,
               </thead>
               <tbody>
                 {evidence.map((e) => (
-                  <tr key={e.evidence_id} className="cursor-pointer border-b border-neutral-100 hover:bg-neutral-50"
+                  <tr key={e.evidence_id} className="cursor-pointer border-b border-line/60 hover:bg-paper"
                       onClick={() => onEvidenceClick(e.evidence_id)}>
-                    <td className="px-2 py-1.5 font-mono text-[10px] text-blue-700">{e.evidence_id}</td>
-                    <td className="max-w-md px-2 py-1.5 text-neutral-700">
+                    <td className="px-2 py-1.5 font-mono text-[11px] text-accent">{e.evidence_id}</td>
+                    <td className="max-w-md px-2 py-1.5 text-ink">
                       「{e.verbatim_quote.length > 90 ? `${e.verbatim_quote.slice(0, 90)}…` : e.verbatim_quote}」
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-[10px]">{e.provider_id}</td>
-                    <td className="px-2 py-1.5 font-mono text-[10px]">{e.available_at?.slice(0, 10) ?? "—"}</td>
-                    <td className="px-2 py-1.5 font-mono text-[10px]">{e.pit_grade}</td>
-                    <td className="px-2 py-1.5 text-[10px] text-neutral-400">{e.used_by.slice(0, 2).join(", ")}{e.used_by.length > 2 ? "…" : ""}</td>
+                    <td className="px-2 py-1.5 font-mono text-[11px]">{e.provider_id}</td>
+                    <td className="px-2 py-1.5 font-mono text-[11px]">{e.available_at?.slice(0, 10) ?? "—"}</td>
+                    <td className="px-2 py-1.5 font-mono text-[11px]">{e.pit_grade}</td>
+                    <td className="px-2 py-1.5 text-[11px] text-ink-faint">{e.used_by.slice(0, 2).join(", ")}{e.used_by.length > 2 ? "…" : ""}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        ) : <div className="text-xs text-neutral-400">（该快照无引用来源）</div>}
+        ) : <div className="text-meta text-ink-faint">（该快照无引用来源）</div>}
       </section>
       <section>
-        <h4 className="mb-1.5 text-xs font-semibold text-neutral-600">数据与审计（旧字段全量）</h4>
+        <h4 className="mb-1.5 text-[13px] font-semibold text-ink-soft">数据与审计（旧字段全量）</h4>
         <LegacyFacts items={legacy} kind={snap.entity.kind} id={snap.entity.id}
-                     onResolved={onResolved} readOnly={auditReadOnly} />
+                     onResolved={onResolved} readOnly={auditReadOnly} view={view} />
       </section>
     </div>
   );

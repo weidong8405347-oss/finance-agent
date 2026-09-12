@@ -3,5 +3,33 @@
 @tailwind utilities;
 
 body {
-  @apply bg-neutral-50 text-neutral-900 antialiased;
+  @apply bg-paper text-ink antialiased;
+}
+
+@layer components {
+  /* ---- Dossier 设计系统（优化方案 §39-§43：三种 surface、1px 边框、无重阴影） ---- */
+
+  /* Primary Section：主内容卡片 */
+  .dos-card {
+    @apply rounded-card border border-line bg-white p-5 md:p-6;
+  }
+  /* Secondary Panel：次级面板（rail/辅助区） */
+  .dos-panel {
+    @apply rounded-card border border-line bg-white p-4;
+  }
+  /* 段落标题：15-16px 卡片/小节级 */
+  .dos-h {
+    @apply text-[15px] font-semibold tracking-tight text-ink;
+  }
+  /* 英文小标（Kicker）：WHY NOW / KEY METRICS 风格 */
+  .dos-kicker {
+    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint;
+  }
+  /* 正文：14-15px，阅读宽度 680-760px 由容器控制 */
+  .dos-body {
+    @apply text-sm leading-[1.75] text-ink-soft;
+  }
+  .dos-num {
+    font-variant-numeric: tabular-nums;
+  }
 }
