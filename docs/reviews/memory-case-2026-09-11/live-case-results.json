@@ -1,0 +1,2551 @@
+{
+  "started_at": "2026-09-11T15:08:00.331271+00:00",
+  "data_dir": "/Users/sixing/dev/work/finance-agent/data/reviews/memory-case-2026-09-11",
+  "api_transport": "in-process TestClient; real orchestrator, LLM and gateway",
+  "wake_disabled": true,
+  "commands": {
+    "industry": {
+      "command": "/research industry:memory-semiconductors 存储行业12至24个月投资研究，截止2026-09-11，区分HBM和通用DRAM和NAND及HDD，比较美光MU、海力士SKHY及000660、闪迪SNDK、铠侠285A、三星005930的供需周期和相对投资价值，给出来源、估值前提、主要反证和美股方案 --depth=standard",
+      "run_id": "memory-case-industry-150800",
+      "command_id": "cmd-f14e9941",
+      "done": {
+        "seq": 12880,
+        "type": "command/done",
+        "turn": 0,
+        "step": 0,
+        "payload": {
+          "command_id": "cmd-f14e9941",
+          "outcome": "error",
+          "summary": "S1 研究：研究 1 轮（budget）：完整度 0% → 40%，写入 2 字段，typed 产出 16 项（观测/论断/计算）；研究充分度 partial（问题覆盖 4/7，硬门禁通过）；缺口：value-chain: 关键问题仍为 unanswered；bottleneck: 关键问题仍为 unanswered；预算 耗时 803s/780s，模型调用 61 次，检索 22/30，tokens 1158185（含估算 157749），慢组超时未等待：landscape，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」；报告合成：LLMCallError: peer closed connection without sending complete message body (incomplete chunked read)（预检降级源：prices_stooq、fundamentals_hk、news_gdelt）"
+        },
+        "ts": "2026-09-11T15:28:16.289549+00:00"
+      },
+      "elapsed_seconds": 1219.4
+    },
+    "micron": {
+      "command": "/profile MU 未来12至24个月中等风险投资，截止2026-09-11，核验最新已公布业绩和股价；深究HBM与DRAM/NAND结构、价格与bit出货、正常化利润、资本开支和自由现金流、客户预付款、与海力士及闪迪的相对估值、情景回报和论点失效条件 --depth=deep",
+      "run_id": "memory-case-micron-150800",
+      "command_id": "cmd-c3e649a4",
+      "done": {
+        "seq": 15122,
+        "type": "command/done",
+        "turn": 0,
+        "step": 0,
+        "payload": {
+          "command_id": "cmd-c3e649a4",
+          "outcome": "error",
+          "summary": "S1 研究：研究 2 轮（budget）：完整度 12% → 12%，写入 0 字段，typed 产出 4 项（观测/论断/计算）；研究充分度 partial（问题覆盖 6/12，硬门禁通过）；缺口：revenue-engine: 关键问题仍为 unanswered；financial-quality: 关键问题仍为 unanswered；预算 耗时 2060s/2040s，模型调用 106 次，检索 49/80（重复命中 3），tokens 3656255（含估算 1449098），慢组超时未等待：financial，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」；S2 档案更新：thesis 已修订（fact-f4469e66ce97，claim claim-91970354715b，整合提交 chg-39e5b4dc6fc2）；报告合成：LLMCallError: peer closed connection without sending complete message body (incomplete chunked read)（预检降级源：prices_stooq、fundamentals_hk、news_gdelt）"
+        },
+        "ts": "2026-09-11T15:56:05.696546+00:00"
+      },
+      "elapsed_seconds": 2887.5
+    },
+    "hynix": {
+      "command": "/profile SKHY 海力士12至24个月投资研究，截止2026-09-11，核验SKHY与韩国000660的ADS比率及汇率和交易主体，最新已公布业绩、剔除非经营收益后的盈利、HBM优势、资本开支和FCF、相对MU估值及风险 --depth=standard",
+      "run_id": "memory-case-hynix-150800",
+      "command_id": "cmd-6f5b8849",
+      "done": {
+        "seq": 13997,
+        "type": "command/done",
+        "turn": 0,
+        "step": 0,
+        "payload": {
+          "command_id": "cmd-6f5b8849",
+          "outcome": "completed",
+          "summary": "S1 研究：研究 2 轮（budget）：完整度 0% → 0%，写入 0 字段，typed 产出 10 项（观测/论断/计算）；研究充分度 partial（问题覆盖 7/8，硬门禁通过）；缺口：financial-quality: 关键问题仍为 unanswered；预算 耗时 805s/780s，模型调用 106 次，检索 19/30，tokens 1980539（含估算 228014），慢组超时未等待：financial，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」；S2 档案更新：档案为空，跳过 thesis 修订；报告合成：- 产物: artifact-55bf492e66c1 - 状态: draft（充分度 partial）（产物 draft/充分度 partial，快照 dossier-skhy-bf84b1b6795d，硬校验 14 项未过）；过程评估：过程评估：完整度 0%，缺口 8 项，冲突 0 项（预检降级源：prices_stooq、fundamentals_hk、news_gdelt）"
+        },
+        "ts": "2026-09-11T15:36:47.582267+00:00"
+      },
+      "elapsed_seconds": 1731.9
+    },
+    "sandisk": {
+      "command": "/profile SNDK 闪迪12至24个月投资研究，截止2026-09-11，核验最新财务和拆分后业务边界，NAND与企业SSD收入和利润驱动，JV现金流及客户预付款调整后的FCF、债务和正常化估值，与MU及铠侠比较投资价值和风险 --depth=standard",
+      "run_id": "memory-case-sandisk-150800",
+      "command_id": "cmd-68f88627",
+      "done": {
+        "seq": 12477,
+        "type": "command/done",
+        "turn": 0,
+        "step": 0,
+        "payload": {
+          "command_id": "cmd-68f88627",
+          "outcome": "error",
+          "summary": "S1 研究：研究 2 轮（budget）：完整度 0% → 0%，写入 0 字段，typed 产出 7 项（观测/论断/计算）；研究充分度 partial（问题覆盖 8/8，硬门禁通过）；预算 耗时 801s/780s，模型调用 95 次，检索 24/30，tokens 1659913（含估算 255210），慢组超时未等待：industry，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」；S2 档案更新：档案为空，跳过 thesis 修订；报告合成：LLMCallError: peer closed connection without sending complete message body (incomplete chunked read)（预检降级源：prices_stooq、fundamentals_hk、news_gdelt）"
+        },
+        "ts": "2026-09-11T15:25:33.643396+00:00"
+      },
+      "elapsed_seconds": 1053.8
+    }
+  },
+  "capabilities": {
+    "main_agent": {
+      "tools": [
+        "query_kb",
+        "run_command",
+        "show_eval_config",
+        "show_profile",
+        "steer_command",
+        "stop_command"
+      ],
+      "model": "anthropic/claude-opus-5@max（300s）"
+    },
+    "gateway_sources": [
+      "edgar",
+      "edgar_facts",
+      "hkex_news",
+      "web_search",
+      "web_search_tavily",
+      "prices",
+      "prices_stooq",
+      "fundamentals",
+      "fundamentals_hk",
+      "news_gdelt"
+    ],
+    "models": {
+      "research": "anthropic/claude-opus-5@max（300s）",
+      "fast": "ZHIPU/GLM-5.3（180s）"
+    },
+    "plugins": {
+      "stage": "research",
+      "market": "",
+      "role": "",
+      "config_hash": "817c49ed4130090f",
+      "compiled_at": "2026-09-11T15:08:00.334518+00:00",
+      "plugins": [
+        {
+          "id": "source.sec",
+          "version": "0.2.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "filings.search",
+            "documents.fetch"
+          ],
+          "tools": [
+            "query_edgar"
+          ]
+        },
+        {
+          "id": "source.sec_facts",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "financials.xbrl",
+            "filings.search"
+          ],
+          "tools": [
+            "query_edgar_facts"
+          ]
+        },
+        {
+          "id": "source.hk_disclosures",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "filings.search",
+            "documents.fetch"
+          ],
+          "tools": [
+            "query_hkex_news"
+          ]
+        },
+        {
+          "id": "research.web",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "web.search",
+            "web.search_broker"
+          ],
+          "tools": [
+            "query_web_search",
+            "search_sources"
+          ]
+        },
+        {
+          "id": "research.web_backup",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "web.search"
+          ],
+          "tools": [
+            "query_web_search_tavily"
+          ]
+        },
+        {
+          "id": "market.prices",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "market.prices"
+          ],
+          "tools": [
+            "query_prices",
+            "query_prices_stooq"
+          ]
+        },
+        {
+          "id": "vendor.fundamentals",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "fundamentals.snapshot"
+          ],
+          "tools": [
+            "query_fundamentals"
+          ]
+        },
+        {
+          "id": "vendor.fundamentals_hk",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "fundamentals.snapshot"
+          ],
+          "tools": [
+            "query_fundamentals_hk"
+          ]
+        },
+        {
+          "id": "news.gdelt",
+          "version": "0.1.0",
+          "kind": "source",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "news.search"
+          ],
+          "tools": [
+            "query_news_gdelt"
+          ]
+        },
+        {
+          "id": "documents.reader",
+          "version": "0.1.0",
+          "kind": "processing",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "documents.fetch",
+            "documents.paged_read",
+            "documents.search",
+            "documents.table_candidates"
+          ],
+          "tools": [
+            "fetch_document",
+            "read_document",
+            "search_document",
+            "read_edgar_filing",
+            "extract_table"
+          ]
+        },
+        {
+          "id": "knowledge.context",
+          "version": "0.1.0",
+          "kind": "processing",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "knowledge.read",
+            "knowledge.conflicts"
+          ],
+          "tools": [
+            "get_research_context",
+            "query_observations",
+            "query_claims",
+            "query_calculations",
+            "read_evidence",
+            "list_conflicts",
+            "adjudicate_conflict",
+            "query_kb"
+          ]
+        },
+        {
+          "id": "research.core",
+          "version": "0.1.0",
+          "kind": "processing",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "evidence.binding",
+            "facts.write",
+            "metrics.write",
+            "claims.write",
+            "calculations.controlled",
+            "questions.sub_tracking"
+          ],
+          "tools": [
+            "register_evidence",
+            "read_chunk",
+            "propose_fact",
+            "resolve_conflict",
+            "calc",
+            "propose_metric",
+            "propose_claim",
+            "answer_question",
+            "calculate_metric",
+            "submit_question_result",
+            "track_sub_question"
+          ]
+        },
+        {
+          "id": "research.verifier",
+          "version": "0.1.0",
+          "kind": "processing",
+          "status": "enabled",
+          "reason": "",
+          "capabilities": [
+            "claims.content_verification",
+            "claims.counter_evidence_loop"
+          ],
+          "tools": [
+            "verify_claim"
+          ]
+        }
+      ],
+      "tools": [
+        "adjudicate_conflict",
+        "answer_question",
+        "calc",
+        "calculate_metric",
+        "extract_table",
+        "fetch_document",
+        "get_research_context",
+        "list_conflicts",
+        "propose_claim",
+        "propose_fact",
+        "propose_metric",
+        "query_calculations",
+        "query_claims",
+        "query_edgar",
+        "query_edgar_facts",
+        "query_fundamentals",
+        "query_fundamentals_hk",
+        "query_hkex_news",
+        "query_kb",
+        "query_news_gdelt",
+        "query_observations",
+        "query_prices",
+        "query_prices_stooq",
+        "query_web_search",
+        "query_web_search_tavily",
+        "read_chunk",
+        "read_document",
+        "read_edgar_filing",
+        "read_evidence",
+        "register_evidence",
+        "resolve_conflict",
+        "search_document",
+        "search_sources",
+        "submit_question_result",
+        "track_sub_question",
+        "verify_claim"
+      ],
+      "adapters": [
+        "edgar",
+        "edgar_facts",
+        "hkex_news",
+        "web_search",
+        "web_search_tavily",
+        "prices",
+        "prices_stooq",
+        "fundamentals",
+        "fundamentals_hk",
+        "news_gdelt"
+      ]
+    },
+    "commands": [
+      {
+        "name": "research",
+        "summary": "S1 问题驱动深度研究（冻结计划→证据/分析/反证→充分度评估）→ 结构化报告 + 过程评估",
+        "usage": "/research <标的> [研究目标] [--depth=standard|deep|refresh|targeted] [--focus=<问题>]（标的可写 industry:<slug> 研究行业；--refresh 等价 --depth=refresh）",
+        "needs_approval": false,
+        "steps": [
+          {
+            "step": "research",
+            "title": "S1 研究（问题驱动：冻结计划 → 维度并行 worker → 证据验证 → typed 落库）",
+            "model_role": "research + research-worker ×4",
+            "tools": [
+              "query_* 数据源（含 query_edgar_facts XBRL 结构化财务）",
+              "search_sources（SearchBroker 双源代理：主备回退/去重/转载族归并，trace 可见）",
+              "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
+              "extract_table（表格候选抽取：表头/单元格/币种期间候选 + 定位，不直接成事实）",
+              "register_evidence / read_chunk",
+              "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",
+              "submit_question_result（批量提交）/ track_sub_question（内部子问题）",
+              "verify_claim（内容级核验：硬检查+原文支持性+反证闭环）",
+              "get_research_context / query_observations / query_claims / query_calculations / read_evidence",
+              "list_conflicts / adjudicate_conflict（resolve_conflict 兼容别名）"
+            ],
+            "plugins": [
+              "gap 分析（完整度+新鲜度驱动）",
+              "rubric 评审（digest 含论断原文与支持摘录）",
+              "停滞/预算收敛（RunBudget 真实扣减）",
+              "文档库（内容哈希去重，同财报只抓解一次）"
+            ],
+            "hooks": [
+              "evidence-binding（服务端子串校验）",
+              "numeric-guard",
+              "ProfileWriter 单写者",
+              "问题分配门禁（越位回答/裁决 fail-loud）"
+            ],
+            "budget": {
+              "max_rounds": "动态（0%→5/>50%→3/仅刷新→1；有计划按模式预算表）",
+              "max_steps_per_group": 12
+            }
+          },
+          {
+            "step": "synthesize",
+            "title": "报告合成（CIO 综合 → 结构化研报；只读知识上下文）",
+            "model_role": "research",
+            "tools": [
+              "get_research_context / query_observations / query_claims / query_calculations（只读，游标分页）",
+              "query_kb / read_evidence（批量） / list_conflicts",
+              "submit_report_document / submit_structures"
+            ],
+            "plugins": [
+              "结构化研报模板",
+              "结构产物按 kind 部分接受+归一层",
+              "证据锚点内联"
+            ],
+            "hooks": [
+              "数字与档案值一致（契约级）",
+              "提交即校验（硬错当轮回报）",
+              "只读阶段不装配裁决入口"
+            ],
+            "budget": {
+              "max_steps": "16（v2）/ 8（legacy）"
+            }
+          },
+          {
+            "step": "process_eval",
+            "title": "过程评估（软反馈聚合）",
+            "model_role": null,
+            "tools": [
+              "gap 分析器（确定性）"
+            ],
+            "plugins": [],
+            "hooks": [
+              "coverage-check"
+            ],
+            "budget": {}
+          }
+        ]
+      },
+      {
+        "name": "profile",
+        "summary": "S1 研究 → S2 档案更新 → 报告合成 + 过程评估",
+        "usage": "/profile <标的>",
+        "needs_approval": false,
+        "steps": [
+          {
+            "step": "research",
+            "title": "S1 研究（问题驱动：冻结计划 → 维度并行 worker → 证据验证 → typed 落库）",
+            "model_role": "research + research-worker ×4",
+            "tools": [
+              "query_* 数据源（含 query_edgar_facts XBRL 结构化财务）",
+              "search_sources（SearchBroker 双源代理：主备回退/去重/转载族归并，trace 可见）",
+              "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
+              "extract_table（表格候选抽取：表头/单元格/币种期间候选 + 定位，不直接成事实）",
+              "register_evidence / read_chunk",
+              "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",
+              "submit_question_result（批量提交）/ track_sub_question（内部子问题）",
+              "verify_claim（内容级核验：硬检查+原文支持性+反证闭环）",
+              "get_research_context / query_observations / query_claims / query_calculations / read_evidence",
+              "list_conflicts / adjudicate_conflict（resolve_conflict 兼容别名）"
+            ],
+            "plugins": [
+              "gap 分析（完整度+新鲜度驱动）",
+              "rubric 评审（digest 含论断原文与支持摘录）",
+              "停滞/预算收敛（RunBudget 真实扣减）",
+              "文档库（内容哈希去重，同财报只抓解一次）"
+            ],
+            "hooks": [
+              "evidence-binding（服务端子串校验）",
+              "numeric-guard",
+              "ProfileWriter 单写者",
+              "问题分配门禁（越位回答/裁决 fail-loud）"
+            ],
+            "budget": {
+              "max_rounds": "动态（0%→5/>50%→3/仅刷新→1；有计划按模式预算表）",
+              "max_steps_per_group": 12
+            }
+          },
+          {
+            "step": "profile_update",
+            "title": "S2 档案更新（整合：预览变化集 → 裁决冲突 → thesis 分层落库 → 幂等提交）",
+            "model_role": "research",
+            "tools": [
+              "prepare_profile_update / commit_profile_update（幂等，基线哈希校验，失效追加记录）",
+              "get_research_context / query_observations / query_claims / query_calculations",
+              "read_evidence / list_conflicts / adjudicate_conflict",
+              "query_kb",
+              "propose_thesis（Fact 兼容投影 + 带证据/limitations 的分析 Claim）"
+            ],
+            "plugins": [
+              "thesis 版本化",
+              "claim 分项核验状态（validated 仅=引用校验）",
+              "依赖图与失效记录（claim_invalidations，旧快照不变）"
+            ],
+            "hooks": [
+              "evidence-binding",
+              "ProfileWriter 单写者",
+              "裁决 fail-loud（获胜方定位不了不清标记）",
+              "commit 基线过期拒绝（expected_base_hash）"
+            ],
+            "budget": {
+              "max_steps": 12
+            }
+          },
+          {
+            "step": "synthesize",
+            "title": "报告合成（CIO 综合 → 结构化研报；只读知识上下文）",
+            "model_role": "research",
+            "tools": [
+              "get_research_context / query_observations / query_claims / query_calculations（只读，游标分页）",
+              "query_kb / read_evidence（批量） / list_conflicts",
+              "submit_report_document / submit_structures"
+            ],
+            "plugins": [
+              "结构化研报模板",
+              "结构产物按 kind 部分接受+归一层",
+              "证据锚点内联"
+            ],
+            "hooks": [
+              "数字与档案值一致（契约级）",
+              "提交即校验（硬错当轮回报）",
+              "只读阶段不装配裁决入口"
+            ],
+            "budget": {
+              "max_steps": "16（v2）/ 8（legacy）"
+            }
+          },
+          {
+            "step": "process_eval",
+            "title": "过程评估（软反馈聚合）",
+            "model_role": null,
+            "tools": [
+              "gap 分析器（确定性）"
+            ],
+            "plugins": [],
+            "hooks": [
+              "coverage-check"
+            ],
+            "budget": {}
+          }
+        ]
+      },
+      {
+        "name": "decide",
+        "summary": "S1 → S2 → 报告合成 → S3 决策卡（risk-review 硬门禁）+ 过程评估",
+        "usage": "/decide <标的>",
+        "needs_approval": false,
+        "steps": [
+          {
+            "step": "research",
+            "title": "S1 研究（问题驱动：冻结计划 → 维度并行 worker → 证据验证 → typed 落库）",
+            "model_role": "research + research-worker ×4",
+            "tools": [
+              "query_* 数据源（含 query_edgar_facts XBRL 结构化财务）",
+              "search_sources（SearchBroker 双源代理：主备回退/去重/转载族归并，trace 可见）",
+              "fetch_document / read_document / search_document（read_edgar_filing 兼容别名）",
+              "extract_table（表格候选抽取：表头/单元格/币种期间候选 + 定位，不直接成事实）",
+              "register_evidence / read_chunk",
+              "propose_fact / propose_metric / propose_claim / answer_question / calculate_metric / calc",
+              "submit_question_result（批量提交）/ track_sub_question（内部子问题）",
+              "verify_claim（内容级核验：硬检查+原文支持性+反证闭环）",
+              "get_research_context / query_observations / query_claims / query_calculations / read_evidence",
+              "list_conflicts / adjudicate_conflict（resolve_conflict 兼容别名）"
+            ],
+            "plugins": [
+              "gap 分析（完整度+新鲜度驱动）",
+              "rubric 评审（digest 含论断原文与支持摘录）",
+              "停滞/预算收敛（RunBudget 真实扣减）",
+              "文档库（内容哈希去重，同财报只抓解一次）"
+            ],
+            "hooks": [
+              "evidence-binding（服务端子串校验）",
+              "numeric-guard",
+              "ProfileWriter 单写者",
+              "问题分配门禁（越位回答/裁决 fail-loud）"
+            ],
+            "budget": {
+              "max_rounds": "动态（0%→5/>50%→3/仅刷新→1；有计划按模式预算表）",
+              "max_steps_per_group": 12
+            }
+          },
+          {
+            "step": "profile_update",
+            "title": "S2 档案更新（整合：预览变化集 → 裁决冲突 → thesis 分层落库 → 幂等提交）",
+            "model_role": "research",
+            "tools": [
+              "prepare_profile_update / commit_profile_update（幂等，基线哈希校验，失效追加记录）",
+              "get_research_context / query_observations / query_claims / query_calculations",
+              "read_evidence / list_conflicts / adjudicate_conflict",
+              "query_kb",
+              "propose_thesis（Fact 兼容投影 + 带证据/limitations 的分析 Claim）"
+            ],
+            "plugins": [
+              "thesis 版本化",
+              "claim 分项核验状态（validated 仅=引用校验）",
+              "依赖图与失效记录（claim_invalidations，旧快照不变）"
+            ],
+            "hooks": [
+              "evidence-binding",
+              "ProfileWriter 单写者",
+              "裁决 fail-loud（获胜方定位不了不清标记）",
+              "commit 基线过期拒绝（expected_base_hash）"
+            ],
+            "budget": {
+              "max_steps": 12
+            }
+          },
+          {
+            "step": "synthesize",
+            "title": "报告合成（CIO 综合 → 结构化研报；只读知识上下文）",
+            "model_role": "research",
+            "tools": [
+              "get_research_context / query_observations / query_claims / query_calculations（只读，游标分页）",
+              "query_kb / read_evidence（批量） / list_conflicts",
+              "submit_report_document / submit_structures"
+            ],
+            "plugins": [
+              "结构化研报模板",
+              "结构产物按 kind 部分接受+归一层",
+              "证据锚点内联"
+            ],
+            "hooks": [
+              "数字与档案值一致（契约级）",
+              "提交即校验（硬错当轮回报）",
+              "只读阶段不装配裁决入口"
+            ],
+            "budget": {
+              "max_steps": "16（v2）/ 8（legacy）"
+            }
+          },
+          {
+            "step": "decide",
+            "title": "S3 决策（DecisionCard）",
+            "model_role": "research",
+            "tools": [
+              "query_kb",
+              "propose_decision"
+            ],
+            "plugins": [
+              "打回有界重试 ×2"
+            ],
+            "hooks": [
+              "risk-review（失效条件/仓位上限/证据链）",
+              "kb_snapshot 绑定校验"
+            ],
+            "budget": {
+              "max_steps": 8,
+              "max_attempts": 2
+            }
+          },
+          {
+            "step": "process_eval",
+            "title": "过程评估（软反馈聚合）",
+            "model_role": null,
+            "tools": [
+              "gap 分析器（确定性）"
+            ],
+            "plugins": [],
+            "hooks": [
+              "coverage-check"
+            ],
+            "budget": {}
+          }
+        ]
+      },
+      {
+        "name": "evaluate",
+        "summary": "S4 独立效果评估（eval 隔离环境；默认需审批）",
+        "usage": "/evaluate <配置名> [--no-approval]",
+        "needs_approval": true,
+        "steps": [
+          {
+            "step": "evaluate",
+            "title": "S4 效果评估（walk-forward 回放 + 基线对照）",
+            "model_role": "research(+fast 基线)",
+            "tools": [
+              "ReplayEngine",
+              "PriceBook",
+              "LeakageAuditHook"
+            ],
+            "plugins": [
+              "LLM-only 基线",
+              "deflated Sharpe",
+              "holdout 预算"
+            ],
+            "hooks": [
+              "时间锁网关",
+              "穿越审计",
+              "审批闸（默认强制）"
+            ],
+            "budget": {
+              "holdout_budget": 10
+            }
+          }
+        ]
+      },
+      {
+        "name": "industry",
+        "summary": "行业调研漏斗：F1 赛道地图 → F1.5 产业判断备忘录 → F2 标的池 → F3 粗调研+人工闸口 → F4 深研 → F4.5 投资委员会 → F5 排序报告",
+        "usage": "/industry <主题>（如 /industry AI for Science）",
+        "needs_approval": false,
+        "steps": [
+          {
+            "step": "industry_map",
+            "title": "F1 赛道地图（子赛道拆解 → industry 档案）",
+            "model_role": "research",
+            "tools": [
+              "query_* 数据源",
+              "register_evidence",
+              "propose_fact",
+              "calc"
+            ],
+            "plugins": [
+              "playbook: industry_map",
+              "gap 分析",
+              "维度并行"
+            ],
+            "hooks": [
+              "evidence-binding",
+              "ProfileWriter 单写者"
+            ]
+          },
+          {
+            "step": "thesis"
+          },
+          {
+            "step": "candidate_pool",
+            "title": "F2 标的池（三 worker 并集挖掘，每票绑归属证据）",
+            "model_role": "research-worker ×3",
+            "tools": [
+              "query_web_search",
+              "query_web_search_tavily",
+              "register_evidence",
+              "propose_candidates"
+            ],
+            "plugins": [
+              "playbook: candidate_pool",
+              "并集去重",
+              "worker 失败隔离"
+            ],
+            "hooks": [
+              "evidence-binding（无证据候选拒收）"
+            ]
+          },
+          {
+            "step": "screen",
+            "title": "F3 粗调研 + 人工闸口（调研卡 → 筛分表 → 打回迭代）",
+            "model_role": "research-worker（每票并行）",
+            "tools": [
+              "query_fundamentals*",
+              "query_web_search*",
+              "calc",
+              "submit_card"
+            ],
+            "plugins": [
+              "playbook: screen",
+              "信息丰富度评级",
+              "闸口回环（≤3 轮）"
+            ],
+            "hooks": [
+              "证据 id 存在性校验"
+            ]
+          },
+          {
+            "step": "deep_dive",
+            "title": "F4 深研 fan-out（入选票并行 ResearchLoop）",
+            "model_role": "research + research-worker ×4/票",
+            "tools": [
+              "全套研究工具"
+            ],
+            "plugins": [
+              "失败隔离",
+              "stalled 诊断卡"
+            ],
+            "hooks": [
+              "evidence-binding",
+              "ProfileWriter 单写者"
+            ]
+          },
+          {
+            "step": "committee"
+          },
+          {
+            "step": "rank_report",
+            "title": "F5 排序对比报告（矩阵逐格证据锚点；判断只在报告）",
+            "model_role": "research（强模型；双强交叉在 P4）",
+            "tools": [
+              "read_evidence（共享批量契约）",
+              "calc"
+            ],
+            "plugins": [
+              "playbook: rank_report"
+            ],
+            "hooks": []
+          }
+        ]
+      }
+    ]
+  },
+  "signals": [
+    {
+      "seq": 16,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "start",
+        "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.447514+00:00",
+          "deadline": "2026-09-11T15:21:06.447514+00:00",
+          "seconds_used": 0.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 780.0,
+          "llm_calls": 0,
+          "tokens_used": 0,
+          "tokens_limit": null,
+          "tokens_estimated": 0,
+          "retrieval_calls": 0,
+          "retrieval_limit": 30,
+          "tool_calls": 0,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:08:06.447559+00:00"
+    },
+    {
+      "seq": 50,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "start",
+        "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.520381+00:00",
+          "deadline": "2026-09-11T15:42:06.520381+00:00",
+          "seconds_used": 0.0,
+          "seconds_limit": 2040.0,
+          "seconds_remaining": 2040.0,
+          "llm_calls": 0,
+          "tokens_used": 0,
+          "tokens_limit": null,
+          "tokens_estimated": 0,
+          "retrieval_calls": 0,
+          "retrieval_limit": 80,
+          "tool_calls": 0,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [],
+          "reserve_seconds": 360.0
+        }
+      },
+      "ts": "2026-09-11T15:08:06.520403+00:00"
+    },
+    {
+      "seq": 109,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "start",
+        "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+        "budget": {
+          "started_at": "2026-09-11T15:08:08.813236+00:00",
+          "deadline": "2026-09-11T15:21:08.813236+00:00",
+          "seconds_used": 0.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 780.0,
+          "llm_calls": 0,
+          "tokens_used": 0,
+          "tokens_limit": null,
+          "tokens_estimated": 0,
+          "retrieval_calls": 0,
+          "retrieval_limit": 30,
+          "tool_calls": 0,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:08:08.813262+00:00"
+    },
+    {
+      "seq": 192,
+      "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "start",
+        "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+        "budget": {
+          "started_at": "2026-09-11T15:08:11.357608+00:00",
+          "deadline": "2026-09-11T15:21:11.357608+00:00",
+          "seconds_used": 0.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 780.0,
+          "llm_calls": 0,
+          "tokens_used": 0,
+          "tokens_limit": null,
+          "tokens_estimated": 0,
+          "retrieval_calls": 0,
+          "retrieval_limit": 30,
+          "tool_calls": 0,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:08:11.357627+00:00"
+    },
+    {
+      "seq": 11305,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "group_timeout",
+        "round": 1,
+        "groups": [
+          "landscape"
+        ],
+        "reason": "慢组超时：只影响所属问题，本轮不等待",
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.447514+00:00",
+          "deadline": "2026-09-11T15:21:06.447514+00:00",
+          "seconds_used": 780.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 61,
+          "tokens_used": 1158185,
+          "tokens_limit": null,
+          "tokens_estimated": 157749,
+          "retrieval_calls": 22,
+          "retrieval_limit": 30,
+          "tool_calls": 159,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:06.459449+00:00"
+    },
+    {
+      "seq": 11308,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "group_timeout",
+        "round": 2,
+        "groups": [
+          "financial"
+        ],
+        "reason": "慢组超时：只影响所属问题，本轮不等待",
+        "budget": {
+          "started_at": "2026-09-11T15:08:08.813236+00:00",
+          "deadline": "2026-09-11T15:21:08.813236+00:00",
+          "seconds_used": 780.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 1970536,
+          "tokens_limit": null,
+          "tokens_estimated": 218011,
+          "retrieval_calls": 19,
+          "retrieval_limit": 30,
+          "tool_calls": 228,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:08.822567+00:00"
+    },
+    {
+      "seq": 11311,
+      "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "group_timeout",
+        "round": 2,
+        "groups": [
+          "industry"
+        ],
+        "reason": "慢组超时：只影响所属问题，本轮不等待",
+        "budget": {
+          "started_at": "2026-09-11T15:08:11.357608+00:00",
+          "deadline": "2026-09-11T15:21:11.357608+00:00",
+          "seconds_used": 780.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 95,
+          "tokens_used": 1651057,
+          "tokens_limit": null,
+          "tokens_estimated": 246354,
+          "retrieval_calls": 24,
+          "retrieval_limit": 30,
+          "tool_calls": 211,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:11.303011+00:00"
+    },
+    {
+      "seq": 11377,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research--r2-financial",
+      "type": "research/budget",
+      "payload": {
+        "action": "llm_call_denied",
+        "reason": "预算耗尽：wall_clock",
+        "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research--r2-financial",
+        "budget": {
+          "started_at": "2026-09-11T15:08:08.813236+00:00",
+          "deadline": "2026-09-11T15:21:08.813236+00:00",
+          "seconds_used": 785.0,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 1980539,
+          "tokens_limit": null,
+          "tokens_estimated": 228014,
+          "retrieval_calls": 19,
+          "retrieval_limit": 30,
+          "tool_calls": 230,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:13.770893+00:00"
+    },
+    {
+      "seq": 11976,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_stopped",
+        "reason": "wall_clock",
+        "round": 2,
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.447514+00:00",
+          "deadline": "2026-09-11T15:21:06.447514+00:00",
+          "seconds_used": 802.7,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 61,
+          "tokens_used": 1158185,
+          "tokens_limit": null,
+          "tokens_estimated": 157749,
+          "retrieval_calls": 22,
+          "retrieval_limit": 30,
+          "tool_calls": 159,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:29.099062+00:00"
+    },
+    {
+      "seq": 11977,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+      "type": "research/assessment",
+      "payload": {
+        "assessment_id": "assess-e7279c3023",
+        "plan_id": "plan-2ef77598ec",
+        "entity": "industry:memory-semiconductors",
+        "namespace": "prod",
+        "created_at": "2026-09-11T15:21:29.099176Z",
+        "integrity_checks": [
+          {
+            "name": "citations_resolvable",
+            "passed": true,
+            "detail": "全部引用可解析"
+          },
+          {
+            "name": "numbers_recomputable",
+            "passed": true,
+            "detail": "6 条观测血缘可重算"
+          },
+          {
+            "name": "no_temporal_violation",
+            "passed": true,
+            "detail": "无时态越界"
+          },
+          {
+            "name": "claims_supported",
+            "passed": true,
+            "detail": "validated 论断均有支持引用"
+          }
+        ],
+        "question_coverage": {
+          "applicable": 7,
+          "key_applicable": 5,
+          "answered": 4,
+          "disputed": 0,
+          "unavailable": 0,
+          "unanswered": 3,
+          "gathering": 0,
+          "coverage": 0.5714285714285714,
+          "key_coverage": 0.6,
+          "violations": [
+            "value-chain: 关键问题仍为 unanswered",
+            "bottleneck: 关键问题仍为 unanswered"
+          ]
+        },
+        "evidence_quality": {
+          "observations": 6,
+          "pit_a_observations": 0,
+          "first_party_observations": 0,
+          "secondary_observations": 2,
+          "vendor_observations": 4,
+          "derived_observations": 0,
+          "market_data_observations": 0,
+          "unknown_source_observations": 0,
+          "validated_claims": 10,
+          "validated_claims_content_unchecked": 10,
+          "claims_by_evidence_support": {
+            "unchecked": 10
+          },
+          "single_source_supported_claims": 0,
+          "draft_claims": 0,
+          "open_conflicts": 0,
+          "stale_fields": []
+        },
+        "analytical_depth": {
+          "counter_evidence_claims": 0,
+          "hypothesis_or_inference_claims": 1,
+          "answered_questions_with_support": 4,
+          "questions_with_computable_checks": 0,
+          "has_counter_evidence": true
+        },
+        "model_reproducibility": {
+          "calculations": 0,
+          "calculations_with_input_refs": 0,
+          "failed_calculations": 0
+        },
+        "numeric_consistency": {
+          "scale_suspect_pairs": [],
+          "scale_suspect_total": 0,
+          "same_value_different_dims": []
+        },
+        "gaps": [
+          "value-chain: 关键问题仍为 unanswered",
+          "bottleneck: 关键问题仍为 unanswered"
+        ],
+        "stop_reason": "budget",
+        "verdict": "partial",
+        "hard_gate_passed": true,
+        "notes": [
+          "10/10 条 validated 论断仅过引用校验，内容级核验（原文是否支持结论）尚未执行",
+          "stop_reason=budget 属于预算/执行边界，不是公司基本面结论"
+        ]
+      },
+      "ts": "2026-09-11T15:21:29.102935+00:00"
+    },
+    {
+      "seq": 11979,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_end",
+        "stop_reason": "budget",
+        "exhausted": [
+          "wall_clock"
+        ],
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.447514+00:00",
+          "deadline": "2026-09-11T15:21:06.447514+00:00",
+          "seconds_used": 802.7,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 61,
+          "tokens_used": 1158185,
+          "tokens_limit": null,
+          "tokens_estimated": 157749,
+          "retrieval_calls": 22,
+          "retrieval_limit": 30,
+          "tool_calls": 159,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0,
+          "duplicate_chunks": 18,
+          "unique_chunks": 204,
+          "duplicate_documents": 0,
+          "documents_stored": 18,
+          "timed_out_groups": [
+            "landscape"
+          ]
+        }
+      },
+      "ts": "2026-09-11T15:21:29.103804+00:00"
+    },
+    {
+      "seq": 11980,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+      "type": "research/artifact_created",
+      "payload": {
+        "artifact_id": "artifact-6dd04f2655a2",
+        "entity": "industry:memory-semiconductors",
+        "title": "memory-semiconductors 部分研究成果",
+        "status": "draft",
+        "sufficiency": "partial",
+        "partial": true,
+        "stop_reason": "budget",
+        "answered_questions": [
+          "demand-supply",
+          "policy",
+          "candidate-pool",
+          "counter-evidence"
+        ],
+        "open_questions": [
+          "value-chain",
+          "bottleneck",
+          "technology-routes"
+        ],
+        "claim_ids": [
+          "claim-6403d9eac2fd",
+          "claim-f7c3255b1019",
+          "claim-bbd7473b92a6",
+          "claim-5e1021bb39d1",
+          "claim-37b78fc37ca3",
+          "claim-e2d736443671",
+          "claim-0e2824e2eb9d",
+          "claim-2e4bdc94aae3",
+          "claim-3a0fa4c46878",
+          "claim-b14096dc9904"
+        ],
+        "calculation_ids": []
+      },
+      "ts": "2026-09-11T15:21:29.110657+00:00"
+    },
+    {
+      "seq": 11983,
+      "run_id": "memory-case-industry-150800",
+      "type": "dossier/published",
+      "payload": {
+        "snapshot_id": "dossier-memory-semiconductors-6e8f16ea7da6",
+        "entity": "industry:memory-semiconductors",
+        "namespace": "prod",
+        "mode": "live",
+        "as_of": "2026-09-11T15:21:29.111037+00:00",
+        "data_hash": "sha256:6e8f16ea7da67eb5ff31ee2976b27ddb",
+        "changed_modules": [
+          "investment_snapshot",
+          "candidate_pool",
+          "key_kpi",
+          "research_sources",
+          "financial_quality",
+          "expectations",
+          "valuation_lab",
+          "business_engine",
+          "revenue_segments",
+          "peers"
+        ]
+      },
+      "ts": "2026-09-11T15:21:29.120671+00:00"
+    },
+    {
+      "seq": 11984,
+      "run_id": "memory-case-industry-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-f14e9941",
+        "child_run_id": "memory-case-industry-150800--cmd-f14e9941-1-research",
+        "step": "research",
+        "status": "completed",
+        "summary": "研究 1 轮（budget）：完整度 0% → 40%，写入 2 字段，typed 产出 16 项（观测/论断/计算）；研究充分度 partial（问题覆盖 4/7，硬门禁通过）；缺口：value-chain: 关键问题仍为 unanswered；bottleneck: 关键问题仍为 unanswered；预算 耗时 803s/780s，模型调用 61 次，检索 22/30，tokens 1158185（含估算 157749），慢组超时未等待：landscape，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」"
+      },
+      "ts": "2026-09-11T15:21:29.120805+00:00"
+    },
+    {
+      "seq": 11995,
+      "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_stopped",
+        "reason": "wall_clock",
+        "round": 3,
+        "budget": {
+          "started_at": "2026-09-11T15:08:11.357608+00:00",
+          "deadline": "2026-09-11T15:21:11.357608+00:00",
+          "seconds_used": 801.1,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 95,
+          "tokens_used": 1659913,
+          "tokens_limit": null,
+          "tokens_estimated": 255210,
+          "retrieval_calls": 24,
+          "retrieval_limit": 30,
+          "tool_calls": 211,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:32.350160+00:00"
+    },
+    {
+      "seq": 11996,
+      "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+      "type": "research/assessment",
+      "payload": {
+        "assessment_id": "assess-7caf13a760",
+        "plan_id": "plan-83dd25b9a8",
+        "entity": "stock:SNDK",
+        "namespace": "prod",
+        "created_at": "2026-09-11T15:21:32.350561Z",
+        "integrity_checks": [
+          {
+            "name": "citations_resolvable",
+            "passed": true,
+            "detail": "全部引用可解析"
+          },
+          {
+            "name": "numbers_recomputable",
+            "passed": true,
+            "detail": "13 条观测血缘可重算"
+          },
+          {
+            "name": "no_temporal_violation",
+            "passed": true,
+            "detail": "无时态越界"
+          },
+          {
+            "name": "claims_supported",
+            "passed": true,
+            "detail": "validated 论断均有支持引用"
+          }
+        ],
+        "question_coverage": {
+          "applicable": 8,
+          "key_applicable": 7,
+          "answered": 8,
+          "disputed": 0,
+          "unavailable": 0,
+          "unanswered": 0,
+          "gathering": 0,
+          "coverage": 1.0,
+          "key_coverage": 1.0,
+          "violations": []
+        },
+        "evidence_quality": {
+          "observations": 13,
+          "pit_a_observations": 5,
+          "first_party_observations": 6,
+          "secondary_observations": 1,
+          "vendor_observations": 6,
+          "derived_observations": 0,
+          "market_data_observations": 0,
+          "unknown_source_observations": 0,
+          "validated_claims": 20,
+          "validated_claims_content_unchecked": 20,
+          "claims_by_evidence_support": {
+            "unchecked": 20
+          },
+          "single_source_supported_claims": 0,
+          "draft_claims": 0,
+          "open_conflicts": 1,
+          "stale_fields": []
+        },
+        "analytical_depth": {
+          "counter_evidence_claims": 2,
+          "hypothesis_or_inference_claims": 3,
+          "answered_questions_with_support": 8,
+          "questions_with_computable_checks": 2,
+          "has_counter_evidence": true
+        },
+        "model_reproducibility": {
+          "calculations": 0,
+          "calculations_with_input_refs": 0,
+          "failed_calculations": 0
+        },
+        "numeric_consistency": {
+          "scale_suspect_pairs": [],
+          "scale_suspect_total": 0,
+          "same_value_different_dims": []
+        },
+        "gaps": [],
+        "stop_reason": "budget",
+        "verdict": "partial",
+        "hard_gate_passed": true,
+        "notes": [
+          "1 项开放冲突未裁决——不输出无条件结论",
+          "20/20 条 validated 论断仅过引用校验，内容级核验（原文是否支持结论）尚未执行",
+          "stop_reason=budget 属于预算/执行边界，不是公司基本面结论"
+        ]
+      },
+      "ts": "2026-09-11T15:21:32.361310+00:00"
+    },
+    {
+      "seq": 11998,
+      "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_end",
+        "stop_reason": "budget",
+        "exhausted": [
+          "wall_clock"
+        ],
+        "budget": {
+          "started_at": "2026-09-11T15:08:11.357608+00:00",
+          "deadline": "2026-09-11T15:21:11.357608+00:00",
+          "seconds_used": 801.1,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 95,
+          "tokens_used": 1659913,
+          "tokens_limit": null,
+          "tokens_estimated": 255210,
+          "retrieval_calls": 24,
+          "retrieval_limit": 30,
+          "tool_calls": 211,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0,
+          "duplicate_chunks": 97,
+          "unique_chunks": 253,
+          "duplicate_documents": 4,
+          "documents_stored": 5,
+          "timed_out_groups": [
+            "industry"
+          ]
+        }
+      },
+      "ts": "2026-09-11T15:21:32.362292+00:00"
+    },
+    {
+      "seq": 11999,
+      "run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+      "type": "research/artifact_created",
+      "payload": {
+        "artifact_id": "artifact-750395fa1cf6",
+        "entity": "stock:SNDK",
+        "title": "SNDK 部分研究成果",
+        "status": "draft",
+        "sufficiency": "partial",
+        "partial": true,
+        "stop_reason": "budget",
+        "answered_questions": [
+          "business-model",
+          "revenue-engine",
+          "financial-quality",
+          "demand-space",
+          "moat-competition",
+          "management-delivery",
+          "catalysts-risks",
+          "counter-evidence"
+        ],
+        "open_questions": [],
+        "claim_ids": [
+          "claim-d8ccfef01a5b",
+          "claim-d9af0029453f",
+          "claim-bf259f1cffdd",
+          "claim-fee713a2c07b",
+          "claim-b73f700b00ed",
+          "claim-edc23c6010cd",
+          "claim-303de3c0b4f4",
+          "claim-9b3f6029f752",
+          "claim-f811e0705a99",
+          "claim-ceb34c13e8e8",
+          "claim-e6809be4b408",
+          "claim-fb924f617cf7",
+          "claim-fd981c98b2cb",
+          "claim-41e9e24b8068",
+          "claim-89b408089c5c",
+          "claim-346feb6fbba0",
+          "claim-51be9fe02c46",
+          "claim-adf08e1a6a75",
+          "claim-c067b15ced2e",
+          "claim-06c102d08756"
+        ],
+        "calculation_ids": []
+      },
+      "ts": "2026-09-11T15:21:32.374004+00:00"
+    },
+    {
+      "seq": 12002,
+      "run_id": "memory-case-sandisk-150800",
+      "type": "dossier/published",
+      "payload": {
+        "snapshot_id": "dossier-sndk-476c0582539f",
+        "entity": "stock:SNDK",
+        "namespace": "prod",
+        "mode": "live",
+        "as_of": "2026-09-11T15:21:32.374421+00:00",
+        "data_hash": "sha256:476c0582539f9af0f0c7282c8600f1c6",
+        "changed_modules": [
+          "investment_snapshot",
+          "revenue_segments",
+          "key_kpi",
+          "financial_quality",
+          "expectations",
+          "peers",
+          "catalysts_risks",
+          "research_sources"
+        ]
+      },
+      "ts": "2026-09-11T15:21:32.392133+00:00"
+    },
+    {
+      "seq": 12003,
+      "run_id": "memory-case-sandisk-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-68f88627",
+        "child_run_id": "memory-case-sandisk-150800--cmd-68f88627-1-research",
+        "step": "research",
+        "status": "completed",
+        "summary": "研究 2 轮（budget）：完整度 0% → 0%，写入 0 字段，typed 产出 7 项（观测/论断/计算）；研究充分度 partial（问题覆盖 8/8，硬门禁通过）；预算 耗时 801s/780s，模型调用 95 次，检索 24/30，tokens 1659913（含估算 255210），慢组超时未等待：industry，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」"
+      },
+      "ts": "2026-09-11T15:21:32.392449+00:00"
+    },
+    {
+      "seq": 12005,
+      "run_id": "memory-case-sandisk-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-68f88627",
+        "child_run_id": "memory-case-sandisk-150800--cmd-68f88627-2-profile_update",
+        "step": "profile_update",
+        "status": "completed",
+        "summary": "档案为空，跳过 thesis 修订"
+      },
+      "ts": "2026-09-11T15:21:32.392636+00:00"
+    },
+    {
+      "seq": 12016,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_stopped",
+        "reason": "wall_clock",
+        "round": 3,
+        "budget": {
+          "started_at": "2026-09-11T15:08:08.813236+00:00",
+          "deadline": "2026-09-11T15:21:08.813236+00:00",
+          "seconds_used": 804.6,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 1980539,
+          "tokens_limit": null,
+          "tokens_estimated": 228014,
+          "retrieval_calls": 19,
+          "retrieval_limit": 30,
+          "tool_calls": 230,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:21:33.386285+00:00"
+    },
+    {
+      "seq": 12017,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+      "type": "research/assessment",
+      "payload": {
+        "assessment_id": "assess-b4d4f64e5a",
+        "plan_id": "plan-7867478d58",
+        "entity": "stock:SKHY",
+        "namespace": "prod",
+        "created_at": "2026-09-11T15:21:33.386561Z",
+        "integrity_checks": [
+          {
+            "name": "citations_resolvable",
+            "passed": true,
+            "detail": "全部引用可解析"
+          },
+          {
+            "name": "numbers_recomputable",
+            "passed": true,
+            "detail": "3 条观测血缘可重算"
+          },
+          {
+            "name": "no_temporal_violation",
+            "passed": true,
+            "detail": "无时态越界"
+          },
+          {
+            "name": "claims_supported",
+            "passed": true,
+            "detail": "validated 论断均有支持引用"
+          }
+        ],
+        "question_coverage": {
+          "applicable": 8,
+          "key_applicable": 7,
+          "answered": 7,
+          "disputed": 0,
+          "unavailable": 0,
+          "unanswered": 1,
+          "gathering": 0,
+          "coverage": 0.875,
+          "key_coverage": 0.8571428571428571,
+          "violations": [
+            "financial-quality: 关键问题仍为 unanswered"
+          ]
+        },
+        "evidence_quality": {
+          "observations": 3,
+          "pit_a_observations": 2,
+          "first_party_observations": 2,
+          "secondary_observations": 0,
+          "vendor_observations": 1,
+          "derived_observations": 0,
+          "market_data_observations": 0,
+          "unknown_source_observations": 0,
+          "validated_claims": 20,
+          "validated_claims_content_unchecked": 20,
+          "claims_by_evidence_support": {
+            "unchecked": 24
+          },
+          "single_source_supported_claims": 0,
+          "draft_claims": 4,
+          "open_conflicts": 0,
+          "stale_fields": []
+        },
+        "analytical_depth": {
+          "counter_evidence_claims": 2,
+          "hypothesis_or_inference_claims": 7,
+          "answered_questions_with_support": 7,
+          "questions_with_computable_checks": 2,
+          "has_counter_evidence": true
+        },
+        "model_reproducibility": {
+          "calculations": 0,
+          "calculations_with_input_refs": 0,
+          "failed_calculations": 0
+        },
+        "numeric_consistency": {
+          "scale_suspect_pairs": [],
+          "scale_suspect_total": 0,
+          "same_value_different_dims": []
+        },
+        "gaps": [
+          "financial-quality: 关键问题仍为 unanswered"
+        ],
+        "stop_reason": "budget",
+        "verdict": "partial",
+        "hard_gate_passed": true,
+        "notes": [
+          "20/20 条 validated 论断仅过引用校验，内容级核验（原文是否支持结论）尚未执行",
+          "stop_reason=budget 属于预算/执行边界，不是公司基本面结论"
+        ]
+      },
+      "ts": "2026-09-11T15:21:33.390608+00:00"
+    },
+    {
+      "seq": 12019,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_end",
+        "stop_reason": "budget",
+        "exhausted": [
+          "wall_clock"
+        ],
+        "budget": {
+          "started_at": "2026-09-11T15:08:08.813236+00:00",
+          "deadline": "2026-09-11T15:21:08.813236+00:00",
+          "seconds_used": 804.6,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 1980539,
+          "tokens_limit": null,
+          "tokens_estimated": 228014,
+          "retrieval_calls": 19,
+          "retrieval_limit": 30,
+          "tool_calls": 230,
+          "tool_limit": null,
+          "retries_used": 0,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0,
+          "duplicate_chunks": 56,
+          "unique_chunks": 213,
+          "duplicate_documents": 1,
+          "documents_stored": 14,
+          "timed_out_groups": [
+            "financial"
+          ]
+        }
+      },
+      "ts": "2026-09-11T15:21:33.391979+00:00"
+    },
+    {
+      "seq": 12020,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+      "type": "research/artifact_created",
+      "payload": {
+        "artifact_id": "artifact-1f1131b41190",
+        "entity": "stock:SKHY",
+        "title": "SKHY 部分研究成果",
+        "status": "draft",
+        "sufficiency": "partial",
+        "partial": true,
+        "stop_reason": "budget",
+        "answered_questions": [
+          "business-model",
+          "revenue-engine",
+          "demand-space",
+          "moat-competition",
+          "management-delivery",
+          "catalysts-risks",
+          "counter-evidence"
+        ],
+        "open_questions": [
+          "financial-quality"
+        ],
+        "claim_ids": [
+          "claim-ff31d1c3af2b",
+          "claim-356280b8c03d",
+          "claim-d8ebdce18b65",
+          "claim-f23d2d6ef85a",
+          "claim-9c5d9a0bf294",
+          "claim-3e80b4e05972",
+          "claim-c1505f276556",
+          "claim-2e37467bb18f",
+          "claim-e91b2d98fb25",
+          "claim-2b123f12ec5f",
+          "claim-1c6ea7381d40",
+          "claim-daf223ed930c",
+          "claim-fa15cafb93d6",
+          "claim-d7e7d38b4eec",
+          "claim-119071ed3974",
+          "claim-16386dc8d18c",
+          "claim-f453a94e2de2",
+          "claim-d63b958e594c",
+          "claim-1f3401de54ba",
+          "claim-1fce0492ef2c"
+        ],
+        "calculation_ids": []
+      },
+      "ts": "2026-09-11T15:21:33.399255+00:00"
+    },
+    {
+      "seq": 12023,
+      "run_id": "memory-case-hynix-150800",
+      "type": "dossier/published",
+      "payload": {
+        "snapshot_id": "dossier-skhy-a36da5b47b91",
+        "entity": "stock:SKHY",
+        "namespace": "prod",
+        "mode": "live",
+        "as_of": "2026-09-11T15:21:33.399760+00:00",
+        "data_hash": "sha256:a36da5b47b9151d5b0b549f591f1dfd0",
+        "changed_modules": [
+          "investment_snapshot",
+          "revenue_segments",
+          "key_kpi",
+          "expectations",
+          "peers",
+          "catalysts_risks",
+          "research_sources"
+        ]
+      },
+      "ts": "2026-09-11T15:21:33.414976+00:00"
+    },
+    {
+      "seq": 12024,
+      "run_id": "memory-case-hynix-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-6f5b8849",
+        "child_run_id": "memory-case-hynix-150800--cmd-6f5b8849-1-research",
+        "step": "research",
+        "status": "completed",
+        "summary": "研究 2 轮（budget）：完整度 0% → 0%，写入 0 字段，typed 产出 10 项（观测/论断/计算）；研究充分度 partial（问题覆盖 7/8，硬门禁通过）；缺口：financial-quality: 关键问题仍为 unanswered；预算 耗时 805s/780s，模型调用 106 次，检索 19/30，tokens 1980539（含估算 228014），慢组超时未等待：financial，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」"
+      },
+      "ts": "2026-09-11T15:21:33.415340+00:00"
+    },
+    {
+      "seq": 12026,
+      "run_id": "memory-case-hynix-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-6f5b8849",
+        "child_run_id": "memory-case-hynix-150800--cmd-6f5b8849-2-profile_update",
+        "step": "profile_update",
+        "status": "completed",
+        "summary": "档案为空，跳过 thesis 修订"
+      },
+      "ts": "2026-09-11T15:21:33.415548+00:00"
+    },
+    {
+      "seq": 12243,
+      "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research--r1-landscape",
+      "type": "research/budget",
+      "payload": {
+        "action": "llm_call_denied",
+        "reason": "预算耗尽：wall_clock",
+        "run_id": "memory-case-industry-150800--cmd-f14e9941-1-research--r1-landscape",
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.447514+00:00",
+          "deadline": "2026-09-11T15:21:06.447514+00:00",
+          "seconds_used": 891.1,
+          "seconds_limit": 780.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 61,
+          "tokens_used": 1175262,
+          "tokens_limit": null,
+          "tokens_estimated": 174826,
+          "retrieval_calls": 22,
+          "retrieval_limit": 30,
+          "tool_calls": 168,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 0,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 120.0
+        }
+      },
+      "ts": "2026-09-11T15:22:57.454501+00:00"
+    },
+    {
+      "seq": 12476,
+      "run_id": "memory-case-sandisk-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-68f88627",
+        "child_run_id": "memory-case-sandisk-150800--cmd-68f88627-3-synthesize",
+        "step": "synthesize",
+        "status": "error",
+        "summary": "LLMCallError: peer closed connection without sending complete message body (incomplete chunked read)"
+      },
+      "ts": "2026-09-11T15:25:33.642317+00:00"
+    },
+    {
+      "seq": 12879,
+      "run_id": "memory-case-industry-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-f14e9941",
+        "child_run_id": "memory-case-industry-150800--cmd-f14e9941-2-synthesize",
+        "step": "synthesize",
+        "status": "error",
+        "summary": "LLMCallError: peer closed connection without sending complete message body (incomplete chunked read)"
+      },
+      "ts": "2026-09-11T15:28:16.289156+00:00"
+    },
+    {
+      "seq": 13987,
+      "run_id": "memory-case-hynix-150800--cmd-6f5b8849-3-synthesize",
+      "type": "research/artifact_created",
+      "payload": {
+        "artifact_id": "artifact-55bf492e66c1",
+        "entity": "stock:SKHY",
+        "title": "SKHY 研究报告",
+        "status": "draft",
+        "sufficiency": "partial",
+        "plan_id": "plan-7867478d58",
+        "claim_ids": [
+          "claim-2e37467bb18f",
+          "claim-d7e7d38b4eec",
+          "claim-3e80b4e05972",
+          "claim-c1505f276556",
+          "claim-119071ed3974",
+          "claim-f453a94e2de2",
+          "claim-f23d2d6ef85a",
+          "claim-2b123f12ec5f",
+          "claim-1c6ea7381d40",
+          "claim-d63b958e594c",
+          "claim-1f3401de54ba",
+          "claim-356280b8c03d",
+          "claim-d8ebdce18b65",
+          "claim-1fce0492ef2c",
+          "claim-9c5d9a0bf294",
+          "claim-e91b2d98fb25"
+        ],
+        "calculation_ids": [],
+        "verification_batch": {
+          "attempted": 8,
+          "verified": 8,
+          "unavailable": 0,
+          "skipped_over_cap": 8,
+          "already_checked": 0
+        },
+        "excluded_claims": [],
+        "structures": [
+          "candidate_assessment",
+          "executive_summary",
+          "industry_map",
+          "validation_timeline"
+        ],
+        "referenced_observations": [
+          "obs-8cec5ead6db2",
+          "obs-b49ee925197d",
+          "obs-f4350a67b056"
+        ],
+        "validation_issues": [
+          {
+            "code": "bare_number_unverified",
+            "block_index": 2,
+            "ref": "83.94",
+            "message": "段落中的事实数字 '83.94' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 2,
+            "ref": "93,922,593",
+            "message": "段落中的事实数字 '93,922,593' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 2,
+            "ref": "63.27",
+            "message": "段落中的事实数字 '63.27' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 2,
+            "ref": "60,542,608",
+            "message": "段落中的事实数字 '60,542,608' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "claim_evidence_partial",
+            "block_index": 3,
+            "ref": "claim-2e37467bb18f",
+            "message": "claim claim-2e37467bb18f 内容核验为 partially_supported（部分原子论断未获充分支持）——结论不得超出已支持范围",
+            "hard": false
+          },
+          {
+            "code": "claim_numeric_check_failed",
+            "block_index": 3,
+            "ref": "claim-2e37467bb18f",
+            "message": "claim claim-2e37467bb18f 数值硬检查失败（论断数字与引用原文/观测不一致）——修正数字或换证据后重新核验，不得进入正式产物",
+            "hard": true
+          },
+          {
+            "code": "claim_content_unchecked",
+            "block_index": 4,
+            "ref": "claim-d7e7d38b4eec",
+            "message": "claim claim-d7e7d38b4eec validated 但未经内容级核验（evidence_support=unchecked）——读者应按「只过引用校验」看待",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 8,
+            "ref": "257",
+            "message": "段落中的事实数字 '257' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 8,
+            "ref": "63.27",
+            "message": "段落中的事实数字 '63.27' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 11,
+            "ref": "23.2601",
+            "message": "段落中的事实数字 '23.2601' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "claim_evidence_partial",
+            "block_index": 12,
+            "ref": "claim-3e80b4e05972",
+            "message": "claim claim-3e80b4e05972 内容核验为 partially_supported（部分原子论断未获充分支持）——结论不得超出已支持范围",
+            "hard": false
+          },
+          {
+            "code": "claim_numeric_check_failed",
+            "block_index": 12,
+            "ref": "claim-3e80b4e05972",
+            "message": "claim claim-3e80b4e05972 数值硬检查失败（论断数字与引用原文/观测不一致）——修正数字或换证据后重新核验，不得进入正式产物",
+            "hard": true
+          },
+          {
+            "code": "claim_evidence_partial",
+            "block_index": 13,
+            "ref": "claim-c1505f276556",
+            "message": "claim claim-c1505f276556 内容核验为 partially_supported（部分原子论断未获充分支持）——结论不得超出已支持范围",
+            "hard": false
+          },
+          {
+            "code": "claim_evidence_partial",
+            "block_index": 14,
+            "ref": "claim-119071ed3974",
+            "message": "claim claim-119071ed3974 内容核验为 partially_supported（部分原子论断未获充分支持）——结论不得超出已支持范围",
+            "hard": false
+          },
+          {
+            "code": "claim_numeric_check_failed",
+            "block_index": 14,
+            "ref": "claim-119071ed3974",
+            "message": "claim claim-119071ed3974 数值硬检查失败（论断数字与引用原文/观测不一致）——修正数字或换证据后重新核验，不得进入正式产物",
+            "hard": true
+          },
+          {
+            "code": "claim_content_unchecked",
+            "block_index": 15,
+            "ref": "claim-f453a94e2de2",
+            "message": "claim claim-f453a94e2de2 validated 但未经内容级核验（evidence_support=unchecked）——读者应按「只过引用校验」看待",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 18,
+            "ref": "79,318,746",
+            "message": "段落中的事实数字 '79,318,746' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 18,
+            "ref": "60,542,608",
+            "message": "段落中的事实数字 '60,542,608' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 18,
+            "ref": "122,708,355",
+            "message": "段落中的事实数字 '122,708,355' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          },
+          {
+            "code": "bare_number_unverified",
+            "block_index": 18,
+            "ref": "93,922,593",
+            "message": "段落中的事实数字 '93,922,593' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+            "hard": false
+          }
+        ]
+      },
+      "ts": "2026-09-11T15:36:44.970427+00:00"
+    },
+    {
+      "seq": 13989,
+      "run_id": "memory-case-hynix-150800",
+      "type": "dossier/published",
+      "payload": {
+        "snapshot_id": "dossier-skhy-bf84b1b6795d",
+        "entity": "stock:SKHY",
+        "namespace": "prod",
+        "mode": "live",
+        "as_of": "2026-09-11T15:36:44.971701+00:00",
+        "data_hash": "sha256:bf84b1b6795d95a0cfeb744328a3bd9d",
+        "changed_modules": [
+          "investment_snapshot",
+          "catalysts_risks",
+          "research_sources"
+        ]
+      },
+      "ts": "2026-09-11T15:36:44.987932+00:00"
+    },
+    {
+      "seq": 13991,
+      "run_id": "memory-case-hynix-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-6f5b8849",
+        "child_run_id": "memory-case-hynix-150800--cmd-6f5b8849-3-synthesize",
+        "step": "synthesize",
+        "status": "completed",
+        "summary": "- 产物: artifact-55bf492e66c1 - 状态: draft（充分度 partial）（产物 draft/充分度 partial，快照 dossier-skhy-bf84b1b6795d，硬校验 14 项未过）"
+      },
+      "ts": "2026-09-11T15:36:44.989720+00:00"
+    },
+    {
+      "seq": 13995,
+      "run_id": "memory-case-hynix-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-6f5b8849",
+        "child_run_id": "memory-case-hynix-150800--cmd-6f5b8849-4-process_eval",
+        "step": "process_eval",
+        "status": "completed",
+        "summary": "过程评估：完整度 0%，缺口 8 项，冲突 0 项"
+      },
+      "ts": "2026-09-11T15:36:44.990017+00:00"
+    },
+    {
+      "seq": 14347,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "group_timeout",
+        "round": 2,
+        "groups": [
+          "financial"
+        ],
+        "reason": "慢组超时：只影响所属问题，本轮不等待",
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.520381+00:00",
+          "deadline": "2026-09-11T15:42:06.520381+00:00",
+          "seconds_used": 2040.0,
+          "seconds_limit": 2040.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 3656255,
+          "tokens_limit": null,
+          "tokens_estimated": 1449098,
+          "retrieval_calls": 49,
+          "retrieval_limit": 80,
+          "tool_calls": 328,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 3,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 360.0
+        }
+      },
+      "ts": "2026-09-11T15:42:06.502545+00:00"
+    },
+    {
+      "seq": 14353,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_stopped",
+        "reason": "wall_clock",
+        "round": 3,
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.520381+00:00",
+          "deadline": "2026-09-11T15:42:06.520381+00:00",
+          "seconds_used": 2059.7,
+          "seconds_limit": 2040.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 3656255,
+          "tokens_limit": null,
+          "tokens_estimated": 1449098,
+          "retrieval_calls": 49,
+          "retrieval_limit": 80,
+          "tool_calls": 328,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 3,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 360.0
+        }
+      },
+      "ts": "2026-09-11T15:42:26.216737+00:00"
+    },
+    {
+      "seq": 14354,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+      "type": "research/assessment",
+      "payload": {
+        "assessment_id": "assess-375d2c27ad",
+        "plan_id": "plan-07545997fa",
+        "entity": "stock:MU",
+        "namespace": "prod",
+        "created_at": "2026-09-11T15:42:26.216963Z",
+        "integrity_checks": [
+          {
+            "name": "citations_resolvable",
+            "passed": true,
+            "detail": "全部引用可解析"
+          },
+          {
+            "name": "numbers_recomputable",
+            "passed": true,
+            "detail": "2 条观测血缘可重算"
+          },
+          {
+            "name": "no_temporal_violation",
+            "passed": true,
+            "detail": "无时态越界"
+          },
+          {
+            "name": "claims_supported",
+            "passed": true,
+            "detail": "validated 论断均有支持引用"
+          }
+        ],
+        "question_coverage": {
+          "applicable": 12,
+          "key_applicable": 7,
+          "answered": 6,
+          "disputed": 0,
+          "unavailable": 0,
+          "unanswered": 6,
+          "gathering": 0,
+          "coverage": 0.5,
+          "key_coverage": 0.7142857142857143,
+          "violations": [
+            "revenue-engine: 关键问题仍为 unanswered",
+            "financial-quality: 关键问题仍为 unanswered"
+          ]
+        },
+        "evidence_quality": {
+          "observations": 2,
+          "pit_a_observations": 0,
+          "first_party_observations": 1,
+          "secondary_observations": 1,
+          "vendor_observations": 0,
+          "derived_observations": 0,
+          "market_data_observations": 0,
+          "unknown_source_observations": 0,
+          "validated_claims": 15,
+          "validated_claims_content_unchecked": 15,
+          "claims_by_evidence_support": {
+            "unchecked": 17
+          },
+          "single_source_supported_claims": 0,
+          "draft_claims": 2,
+          "open_conflicts": 0,
+          "stale_fields": []
+        },
+        "analytical_depth": {
+          "counter_evidence_claims": 2,
+          "hypothesis_or_inference_claims": 8,
+          "answered_questions_with_support": 6,
+          "questions_with_computable_checks": 2,
+          "has_counter_evidence": true
+        },
+        "model_reproducibility": {
+          "calculations": 1,
+          "calculations_with_input_refs": 1,
+          "failed_calculations": 0
+        },
+        "numeric_consistency": {
+          "scale_suspect_pairs": [],
+          "scale_suspect_total": 0,
+          "same_value_different_dims": []
+        },
+        "gaps": [
+          "revenue-engine: 关键问题仍为 unanswered",
+          "financial-quality: 关键问题仍为 unanswered"
+        ],
+        "stop_reason": "budget",
+        "verdict": "partial",
+        "hard_gate_passed": true,
+        "notes": [
+          "15/15 条 validated 论断仅过引用校验，内容级核验（原文是否支持结论）尚未执行",
+          "stop_reason=budget 属于预算/执行边界，不是公司基本面结论"
+        ]
+      },
+      "ts": "2026-09-11T15:42:26.220159+00:00"
+    },
+    {
+      "seq": 14356,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+      "type": "research/budget",
+      "payload": {
+        "action": "research_end",
+        "stop_reason": "budget",
+        "exhausted": [
+          "wall_clock"
+        ],
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.520381+00:00",
+          "deadline": "2026-09-11T15:42:06.520381+00:00",
+          "seconds_used": 2059.7,
+          "seconds_limit": 2040.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 3656255,
+          "tokens_limit": null,
+          "tokens_estimated": 1449098,
+          "retrieval_calls": 49,
+          "retrieval_limit": 80,
+          "tool_calls": 328,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 3,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 360.0,
+          "duplicate_chunks": 699,
+          "unique_chunks": 3483,
+          "duplicate_documents": 3,
+          "documents_stored": 20,
+          "timed_out_groups": [
+            "financial"
+          ]
+        }
+      },
+      "ts": "2026-09-11T15:42:26.221416+00:00"
+    },
+    {
+      "seq": 14357,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+      "type": "research/artifact_created",
+      "payload": {
+        "artifact_id": "artifact-3f9a7f123166",
+        "entity": "stock:MU",
+        "title": "MU 部分研究成果",
+        "status": "draft",
+        "sufficiency": "partial",
+        "partial": true,
+        "stop_reason": "budget",
+        "answered_questions": [
+          "business-model",
+          "demand-space",
+          "moat-competition",
+          "management-delivery",
+          "catalysts-risks",
+          "counter-evidence"
+        ],
+        "open_questions": [
+          "revenue-engine",
+          "financial-quality",
+          "expectations-gap",
+          "valuation-assumptions",
+          "technology-talent",
+          "segment-depth"
+        ],
+        "claim_ids": [
+          "claim-04b3ebfcea8c",
+          "claim-38b40d836dee",
+          "claim-b688a2db44e4",
+          "claim-63fbab6875e0",
+          "claim-7ad362b5ba9e",
+          "claim-517842447003",
+          "claim-7d387467dc27",
+          "claim-851199c13b82",
+          "claim-e19de4095345",
+          "claim-7db83c480db2",
+          "claim-ad678d77ada8",
+          "claim-4c3748d63a20",
+          "claim-fc735c4ee2cc",
+          "claim-6d0fafedc13f",
+          "claim-155d12ba70d3"
+        ],
+        "calculation_ids": []
+      },
+      "ts": "2026-09-11T15:42:26.226719+00:00"
+    },
+    {
+      "seq": 14360,
+      "run_id": "memory-case-micron-150800",
+      "type": "dossier/published",
+      "payload": {
+        "snapshot_id": "dossier-mu-72104ac0d339",
+        "entity": "stock:MU",
+        "namespace": "prod",
+        "mode": "live",
+        "as_of": "2026-09-11T15:42:26.227321+00:00",
+        "data_hash": "sha256:72104ac0d3391df3482a1d2dbdd8cec4",
+        "changed_modules": [
+          "investment_snapshot",
+          "business_engine",
+          "revenue_segments",
+          "key_kpi",
+          "financial_quality",
+          "peers",
+          "catalysts_risks",
+          "research_sources"
+        ]
+      },
+      "ts": "2026-09-11T15:42:26.242839+00:00"
+    },
+    {
+      "seq": 14361,
+      "run_id": "memory-case-micron-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-c3e649a4",
+        "child_run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research",
+        "step": "research",
+        "status": "completed",
+        "summary": "研究 2 轮（budget）：完整度 12% → 12%，写入 0 字段，typed 产出 4 项（观测/论断/计算）；研究充分度 partial（问题覆盖 6/12，硬门禁通过）；缺口：revenue-engine: 关键问题仍为 unanswered；financial-quality: 关键问题仍为 unanswered；预算 耗时 2060s/2040s，模型调用 106 次，检索 49/80（重复命中 3），tokens 3656255（含估算 1449098），慢组超时未等待：financial，停止维度：wall_clock；注意：命令执行已结束，但成果仍为部分可用（充分度 partial）——界面不得把「执行结束」当作「结论可用」"
+      },
+      "ts": "2026-09-11T15:42:26.243038+00:00"
+    },
+    {
+      "seq": 14639,
+      "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research--r2-financial",
+      "type": "research/budget",
+      "payload": {
+        "action": "llm_call_denied",
+        "reason": "预算耗尽：wall_clock",
+        "run_id": "memory-case-micron-150800--cmd-c3e649a4-1-research--r2-financial",
+        "budget": {
+          "started_at": "2026-09-11T15:08:06.520381+00:00",
+          "deadline": "2026-09-11T15:42:06.520381+00:00",
+          "seconds_used": 2129.1,
+          "seconds_limit": 2040.0,
+          "seconds_remaining": 0.0,
+          "llm_calls": 106,
+          "tokens_used": 3682369,
+          "tokens_limit": null,
+          "tokens_estimated": 1475212,
+          "retrieval_calls": 49,
+          "retrieval_limit": 80,
+          "tool_calls": 351,
+          "tool_limit": null,
+          "retries_used": 1,
+          "retries_limit": null,
+          "duplicate_retrievals": 3,
+          "exhausted": [
+            "wall_clock"
+          ],
+          "reserve_seconds": 360.0
+        }
+      },
+      "ts": "2026-09-11T15:43:35.575932+00:00"
+    },
+    {
+      "seq": 15058,
+      "run_id": "memory-case-micron-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-c3e649a4",
+        "child_run_id": "memory-case-micron-150800--cmd-c3e649a4-2-profile_update",
+        "step": "profile_update",
+        "status": "completed",
+        "summary": "thesis 已修订（fact-f4469e66ce97，claim claim-91970354715b，整合提交 chg-39e5b4dc6fc2）"
+      },
+      "ts": "2026-09-11T15:51:42.562749+00:00"
+    },
+    {
+      "seq": 15121,
+      "run_id": "memory-case-micron-150800",
+      "type": "step_agent/end",
+      "payload": {
+        "command_id": "cmd-c3e649a4",
+        "child_run_id": "memory-case-micron-150800--cmd-c3e649a4-3-synthesize",
+        "step": "synthesize",
+        "status": "error",
+        "summary": "LLMCallError: peer closed connection without sending complete message body (incomplete chunked read)"
+      },
+      "ts": "2026-09-11T15:56:05.696342+00:00"
+    }
+  ],
+  "elapsed_seconds": 2887.5,
+  "finished": [
+    "hynix",
+    "industry",
+    "micron",
+    "sandisk"
+  ],
+  "completed_at": "2026-09-11T15:56:07.807380+00:00",
+  "entities": [
+    {
+      "kind": "industry",
+      "id": "memory-semiconductors",
+      "field_count": 2,
+      "last_knowledge_time": "2026-09-11T15:10:17.519878+00:00",
+      "completeness": 0.4,
+      "stale_count": 0,
+      "conflict_count": 0,
+      "quality_score": 0.24,
+      "quality_status": "draft",
+      "quality_issues": [
+        "3 个必填字段缺失",
+        "2 个字段质检存疑"
+      ],
+      "purged": false
+    },
+    {
+      "kind": "stock",
+      "id": "MU",
+      "field_count": 3,
+      "last_knowledge_time": "2026-09-11T15:50:14.272341+00:00",
+      "completeness": 0.125,
+      "stale_count": 0,
+      "conflict_count": 0,
+      "quality_score": 0.125,
+      "quality_status": "draft",
+      "quality_issues": [
+        "7 个必填字段缺失"
+      ],
+      "purged": false
+    }
+  ]
+}
