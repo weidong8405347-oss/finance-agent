@@ -56,7 +56,7 @@ class ValuationPreviewRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    format: str = "json"  # json/markdown（HTML 在组件契约稳定后加入）
+    format: str = "json"  # json/markdown/html（html = 自包含交互导出，§11.4）
     saved_scenario_artifact_id: str | None = None
 
 
@@ -176,37 +176,13 @@ def create_dossier_router(
 
     @router.get("/dossiers/{snapshot_id}/evidence/{evidence_id}")
     def get_evidence(snapshot_id: str, evidence_id: str) -> dict[str, Any]:
-        """仅允许该快照引用的可见摘录（知道 id 也不能绕过快照过滤）。"""
+        """仅允许该快照引用的可见摘录（知道 id 也不能绕过快照过滤）。
+
+        逻辑在 dossier.evidence_detail——HTML 导出（§11.4）与本路由同源。"""
         try:
-            snap = dossier.get(snapshot_id)
+            return dossier.evidence_detail(snapshot_id, evidence_id)
         except DossierError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
-        if evidence_id not in snap.get("evidence_refs", []):
-            raise HTTPException(
-                status_code=404,
-                detail=f"快照 {snapshot_id} 未引用证据 {evidence_id}（不允许越快照读取）",
-            )
-        try:
-            ev = kb.get_evidence(evidence_id)
-        except Exception as e:
-            raise HTTPException(status_code=404, detail=f"证据不可解析: {e}") from e
-        document = None
-        for ref in snap.get("document_refs", []):
-            doc = metrics.get_document(ref)
-            if doc is not None and doc.url == ev.url:
-                document = doc.model_dump(mode="json")
-                break
-        return {
-            "evidence_id": ev.evidence_id,
-            "provider_id": ev.source_id,  # 命名三层：旧 source_id = provider 层
-            "document": document,
-            "url": ev.url,
-            "verbatim_quote": ev.verbatim_quote,
-            "available_at": ev.available_at.isoformat() if ev.available_at else None,
-            "retrieved_at": ev.retrieved_at.isoformat(),
-            "pit_grade": ev.pit_grade.value,
-            "raw_ref": ev.raw_ref,
-        }
 
     @router.get("/dossiers/{snapshot_id}/documents/{document_id}")
     def get_document(snapshot_id: str, document_id: str) -> dict[str, Any]:
@@ -634,7 +610,11 @@ def create_dossier_router(
         candidate = (job_dir / manifest["artifact_name"]).resolve()
         if not candidate.is_file() or not candidate.is_relative_to(job_dir):
             raise HTTPException(status_code=404, detail="工件缺失")
-        media = "application/json" if manifest["format"] == "json" else "text/markdown"
+        media = {
+            "json": "application/json",
+            "markdown": "text/markdown",
+            "html": "text/html",
+        }.get(manifest["format"], "text/plain")
         return PlainTextResponse(
             candidate.read_text(encoding="utf-8"), media_type=f"{media}; charset=utf-8"
         )

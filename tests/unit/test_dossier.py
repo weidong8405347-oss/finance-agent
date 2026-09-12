@@ -288,3 +288,74 @@ class TestExport:
         snap, _ = service.open("stock", "BE")
         with pytest.raises(DossierError):
             service.export(snap["context"]["snapshot_id"], "pdf")
+
+    @staticmethod
+    def _fake_bundle(tmp_path, js="console.log('viewer-ok')", css="body{color:#111}"):
+        bundle = tmp_path / "bundle"
+        bundle.mkdir(exist_ok=True)
+        (bundle / "export-viewer.js").write_text(js, encoding="utf-8")
+        (bundle / "export-viewer.css").write_text(css, encoding="utf-8")
+        return bundle
+
+    def test_html_export_embeds_bundle_and_frozen_data(self, env, tmp_path):
+        """HTML 导出（§11.4）：自包含单文件 = viewer 包 + 冻结读模型（快照/模块/证据）。"""
+        kb, metrics, events, projector, _ = env
+        seed_legacy(kb)
+        seed_typed(kb, metrics)
+        bundle = self._fake_bundle(tmp_path)
+        service = DossierService(kb=kb, metrics=metrics, projector=projector,
+                                 events=events, export_bundle_dir=bundle)
+        snap, _ = service.open("stock", "BE")
+        sid = snap["context"]["snapshot_id"]
+        name, html = service.export(sid, "html")
+        assert name.endswith(".html")
+        assert "viewer-ok" in html and "color:#111" in html  # viewer 包内联
+        assert "window.__DOSSIER_EXPORT__" in html
+        # 内嵌冻结数据可解析（脚本闭合转义后是合法 JSON）
+        data_json = html.split("window.__DOSSIER_EXPORT__ = ", 1)[1].split(";\n</script>", 1)[0]
+        data = json.loads(data_json)
+        assert data["snapshot"]["context"]["snapshot_id"] == sid
+        assert data["snapshot"]["data_hash"] == snap["data_hash"]
+        assert "investment_snapshot" in data["modules"]  # 全部模块 payload 同源
+        assert "ev-l1" in data["evidence"]  # 快照引用证据内嵌（来源抽屉离线可用）
+
+    def test_html_export_escapes_script_breakout(self, env, tmp_path):
+        """嵌入 JSON 必须转义 `</script>`（防闭合宿主脚本/注入），不可裸写。"""
+        kb, metrics, events, projector, _ = env
+        kb.add_evidence(Evidence(
+            evidence_id="ev-xss", source_id="edgar", url="https://sec.gov/xss",
+            verbatim_quote="breakout </script><script>alert(1)</script>",
+            retrieved_at=T0, available_at=T0, pit_grade=PitGrade.A,
+        ))
+        kb.assert_fact(Fact(
+            entity_kind="stock", entity_id="BE", field="business_model",
+            value="x </script><script>alert(1)</script>", knowledge_time=T0,
+            evidence_ids=["ev-xss"],
+        ))
+        bundle = self._fake_bundle(tmp_path)
+        service = DossierService(kb=kb, metrics=metrics, projector=projector,
+                                 events=events, export_bundle_dir=bundle)
+        snap, _ = service.open("stock", "BE")
+        _, html = service.export(snap["context"]["snapshot_id"], "html")
+        assert "</script><script>alert" not in html
+        assert "\\u003c/script>" in html  # 转义后的数据仍在（可逆）
+
+    def test_html_export_missing_bundle_503(self, env, tmp_path, monkeypatch):
+        kb, metrics, events, projector, service = env
+        seed_legacy(kb)
+        snap, _ = service.open("stock", "BE")
+        monkeypatch.setenv("FA_EXPORT_BUNDLE_DIR", str(tmp_path / "no-bundle"))
+        with pytest.raises(DossierError) as ei:
+            service.export(snap["context"]["snapshot_id"], "html")
+        assert ei.value.status == 503 and "build:export" in str(ei.value)
+
+    def test_html_export_rejects_bundle_with_script_close(self, env, tmp_path):
+        kb, metrics, events, projector, _ = env
+        seed_legacy(kb)
+        bundle = self._fake_bundle(tmp_path, js="var s = '</script>';")
+        service = DossierService(kb=kb, metrics=metrics, projector=projector,
+                                 events=events, export_bundle_dir=bundle)
+        snap, _ = service.open("stock", "BE")
+        with pytest.raises(DossierError) as ei:
+            service.export(snap["context"]["snapshot_id"], "html")
+        assert ei.value.status == 500 and "</script" in str(ei.value)

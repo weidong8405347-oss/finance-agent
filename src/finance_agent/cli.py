@@ -274,6 +274,14 @@ def build_orchestrator(data_dir: Path):
         events=events, decisions=decisions_store,
     )
 
+    # 独立裁判（权力分离）：judge 角色在场时核验/评分与主研究模型异构（gpt-5.6-sol）；
+    # 角色未配置 → None，steps 内回落 research（维持现状行为）。启动时解析一次。
+    _judge_router = _router(data_dir)
+    judge_llm = (
+        _judge_router.get("judge", tool_schemas=_all_tool_schemas())
+        if _judge_router.has_role("judge")
+        else None
+    )
     deps = StepDeps(
         events=events,
         kb=kb,
@@ -282,6 +290,7 @@ def build_orchestrator(data_dir: Path):
         decisions=decisions,
         llm_for=llm_for,
         worker_llm_for=worker_llm_for,
+        judge_llm=judge_llm,
         approvals=approvals,
         evals_dir=evals_dir,
         reports_dir=data_dir / "reports",

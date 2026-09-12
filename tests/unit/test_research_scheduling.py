@@ -334,3 +334,16 @@ class TestDispatchAssemblyReplay:
         assert "source_unavailable" in payload["causes"]
         assert payload["suggestions"]
         assert loop.question_stall_diagnostic is not None
+
+    def test_globals_only_plan_gets_fallback_slot(self):
+        """全局问题（targeted 自定义）+ 无字段缺口 + 无带模块问题：
+        完整档案的定向补研必须有 worker 承载，不得误报「未完整分发」。
+        （事故：ai-for-science 完整度 1.0 的 tear-sheet 补研第 1 轮调度即 DispatchError）"""
+        sched = build_schedule(
+            plan_payload=_plan([_q("targeted-x", "")]),
+            entity_kind="industry", field_groups=[],
+        )
+        assert sched.unassigned == []
+        assert len(sched.items) == 1
+        assert "targeted-x" in sched.items[0].question_ids
+        assert sched.dispatched_question_ids == ["targeted-x"]

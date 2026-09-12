@@ -1,0 +1,2374 @@
+{
+  "observed_at": "2026-09-11T15:06:40.046859+00:00",
+  "source": "data/metrics.db, read-only sqlite connection",
+  "caution": "Historical production artifacts; not the new memory case live run. Persisted rows may predate current hardening. No production writes performed.",
+  "tables": {
+    "metric_observations": 32,
+    "research_plans": 6,
+    "research_claims": 20,
+    "calculation_runs": 4,
+    "research_artifacts": 5,
+    "dossier_snapshots": 25,
+    "profile_update_commits": 0
+  },
+  "artifacts": [
+    {
+      "artifact_id": "artifact-0f85988fa67c",
+      "entity_id": "BNTX",
+      "status": "validated",
+      "sufficiency": "partial",
+      "created_at": "2026-09-10T00:48:01.696243Z",
+      "run_id": "live-f3cdc8ca--cmd-c015e0f3-2-synthesize",
+      "validation_issues": [],
+      "claim_ids": [],
+      "calculation_ids": []
+    },
+    {
+      "artifact_id": "artifact-1e94edd47bee",
+      "entity_id": "ai-for-science",
+      "status": "validated",
+      "sufficiency": "partial",
+      "created_at": "2026-09-09T14:35:32.988856Z",
+      "run_id": "live-a2cce641--cmd-3975ce29-2-synthesize",
+      "validation_issues": [],
+      "claim_ids": [],
+      "calculation_ids": []
+    },
+    {
+      "artifact_id": "artifact-2a53e0381fd4",
+      "entity_id": "ai-for-science",
+      "status": "validated",
+      "sufficiency": "partial",
+      "created_at": "2026-09-09T14:06:07.216460Z",
+      "run_id": "live-a2cce641--cmd-9e8c41ea-2-synthesize",
+      "validation_issues": [],
+      "claim_ids": [],
+      "calculation_ids": []
+    },
+    {
+      "artifact_id": "artifact-6e4d382d3b5e",
+      "entity_id": "ai-for-science",
+      "status": "draft",
+      "sufficiency": "partial",
+      "created_at": "2026-09-09T13:51:35.721184Z",
+      "run_id": "live-a2cce641--cmd-7a61bfa5-1-research",
+      "validation_issues": [],
+      "claim_ids": [
+        "claim-dda6af6adc12",
+        "claim-d6664438123e",
+        "claim-a4e1accb22e8",
+        "claim-81ac7b1a8131",
+        "claim-e3673d0404dc",
+        "claim-82aff7c64a58",
+        "claim-ffaea4c86a61",
+        "claim-1ad65e10cfae",
+        "claim-3042b8cb4a63"
+      ],
+      "calculation_ids": []
+    },
+    {
+      "artifact_id": "artifact-d51c04aead02",
+      "entity_id": "ai-for-science",
+      "status": "draft",
+      "sufficiency": "partial",
+      "created_at": "2026-09-08T14:25:39.369472Z",
+      "run_id": "live-a2cce641--cmd-8375cabf-2-synthesize",
+      "validation_issues": [
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "106",
+          "message": "段落中的事实数字 '106' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "287.2",
+          "message": "段落中的事实数字 '287.2' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "90.3",
+          "message": "段落中的事实数字 '90.3' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "136.4",
+          "message": "段落中的事实数字 '136.4' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "13,399",
+          "message": "段落中的事实数字 '13,399' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "56.4",
+          "message": "段落中的事实数字 '56.4' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "173",
+          "message": "段落中的事实数字 '173' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "bare_number_unverified",
+          "block_index": 2,
+          "ref": "200",
+          "message": "段落中的事实数字 '200' 未绑定观测引用（关键数值请用 {{metric:<observation_id>}} 插值）",
+          "hard": false
+        },
+        {
+          "code": "unresolved_claim_ref",
+          "block_index": null,
+          "ref": "fact-commercial-breakout",
+          "message": "claim claim-a4654b90f0d9 的支持引用不可解析或跨上下文: fact-commercial-breakout（namespace=prod, entity=industry:ai-for-science）",
+          "hard": true
+        }
+      ],
+      "claim_ids": [
+        "claim-dda6af6adc12",
+        "claim-d6664438123e",
+        "claim-a4e1accb22e8",
+        "claim-81ac7b1a8131",
+        "claim-e3673d0404dc",
+        "claim-82aff7c64a58",
+        "claim-ffaea4c86a61",
+        "claim-a4654b90f0d9",
+        "claim-1ad65e10cfae",
+        "claim-3042b8cb4a63"
+      ],
+      "calculation_ids": []
+    }
+  ],
+  "latest_plans": [
+    {
+      "plan_id": "plan-eddac33abb",
+      "entity_id": "BNTX",
+      "mode": "standard",
+      "recipe_id": "general",
+      "status": "completed",
+      "created_at": "2026-09-10T00:42:26.381405Z",
+      "questions": [
+        {
+          "question_id": "objective-technology_moat-c0fb00",
+          "text": "围绕研究目标「BNTX（BioNTech）是否值得长期投资。深度调研维度：(1) 公司护城河（mRNA 平台技术壁垒、专利布局、与辉瑞合作关系）；(2) 关键产线（肿瘤管线进展、COVID 疫苗收入衰减曲线、流感/带状疱疹等在研管线）；(3) 新 CEO 战略眼光（战略方向、资本配置、从 COVID 依赖向肿瘤转型路径）；(4) 人才储备（核心科学家团队、研发人员稳定性）；(5) 企业文化（创新导向、执行力）；(6) 长期投资需关注的风险与催化剂。财务维度需覆盖：FY 营收/净利润/现金流、估值水平、现金储备对研发管线的支撑年限。定性维度优先使用 web 搜索源（Exa/Tavily），财务以 EDGAR 披露为准。」：哪些公司在技术壁垒上有可核验证据？逐家给出：独占数据或数据飞轮、模型与实验闭环、外部同行验证、现有替代方案、复制难度与所需时间/资本。",
+          "why": "护城河判断决定「谁真的在形成壁垒」，是目标的第一交付",
+          "priority": "high",
+          "evidence_types": [
+            "publication",
+            "filing",
+            "industry_report",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每家候选至少一条一手证据（论文/专利/客户验证/产品指标）；无证据的优势不得写入；复制难度必须说明依据而不是形容词",
+          "cost": 0,
+          "module": "business_engine",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-commercial_proof-c0fb00",
+          "text": "围绕研究目标「BNTX（BioNTech）是否值得长期投资。深度调研维度：(1) 公司护城河（mRNA 平台技术壁垒、专利布局、与辉瑞合作关系）；(2) 关键产线（肿瘤管线进展、COVID 疫苗收入衰减曲线、流感/带状疱疹等在研管线）；(3) 新 CEO 战略眼光（战略方向、资本配置、从 COVID 依赖向肿瘤转型路径）；(4) 人才储备（核心科学家团队、研发人员稳定性）；(5) 企业文化（创新导向、执行力）；(6) 长期投资需关注的风险与催化剂。财务维度需覆盖：FY 营收/净利润/现金流、估值水平、现金储备对研发管线的支撑年限。定性维度优先使用 web 搜索源（Exa/Tavily），财务以 EDGAR 披露为准。」：这些公司的商业兑现到了什么程度？收入、已收款、首付款、潜在里程碑、合同上限必须分开列；增长来自什么（新签/复购/扩单/并表），可持续部分占多少。",
+          "why": "技术优势必须落到可核验的商业数字，否则只是叙事",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "ir_page",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每项金额带期间、币种、口径与观测引用；潜在总额不得记成已收首付款；未披露的项明确留空，不用推测填补",
+          "cost": 0,
+          "module": "financial_quality",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-sustainability-c0fb00",
+          "text": "围绕研究目标「BNTX（BioNTech）是否值得长期投资。深度调研维度：(1) 公司护城河（mRNA 平台技术壁垒、专利布局、与辉瑞合作关系）；(2) 关键产线（肿瘤管线进展、COVID 疫苗收入衰减曲线、流感/带状疱疹等在研管线）；(3) 新 CEO 战略眼光（战略方向、资本配置、从 COVID 依赖向肿瘤转型路径）；(4) 人才储备（核心科学家团队、研发人员稳定性）；(5) 企业文化（创新导向、执行力）；(6) 长期投资需关注的风险与催化剂。财务维度需覆盖：FY 营收/净利润/现金流、估值水平、现金储备对研发管线的支撑年限。定性维度优先使用 web 搜索源（Exa/Tavily），财务以 EDGAR 披露为准。」：这些公司的优势可持续吗？复购/扩单证据、交付与产能能力、客户集中度、毛利与现金消耗、关键人/关键许可依赖。",
+          "why": "一次性订单与结构性需求要分开，否则爆发判断站不住",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "transcript",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每项给出证据或明确「未披露」；客户集中度与现金消耗若可得必须给数值；不因为找不到数据就默认可持续",
+          "cost": 0,
+          "module": "financial_quality",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-counter_evidence-c0fb00",
+          "text": "围绕研究目标「BNTX（BioNTech）是否值得长期投资。深度调研维度：(1) 公司护城河（mRNA 平台技术壁垒、专利布局、与辉瑞合作关系）；(2) 关键产线（肿瘤管线进展、COVID 疫苗收入衰减曲线、流感/带状疱疹等在研管线）；(3) 新 CEO 战略眼光（战略方向、资本配置、从 COVID 依赖向肿瘤转型路径）；(4) 人才储备（核心科学家团队、研发人员稳定性）；(5) 企业文化（创新导向、执行力）；(6) 长期投资需关注的风险与催化剂。财务维度需覆盖：FY 营收/净利润/现金流、估值水平、现金储备对研发管线的支撑年限。定性维度优先使用 web 搜索源（Exa/Tavily），财务以 EDGAR 披露为准。」：哪些证据削弱上述公司的优势？什么事件会证伪当前判断（技术替代、客户流失、监管、竞品数据）？下一次可验证的时间点是什么？",
+          "why": "没有反证的优势判断不可投资",
+          "priority": "high",
+          "evidence_types": [
+            "news",
+            "short_report",
+            "publication",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每家候选至少一条 steelman 反方证据或明确「未检索到反证」；证伪条件必须可观察、可定时；不得只列通用风险套话",
+          "cost": 0,
+          "module": "risks",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-investability-c0fb00",
+          "text": "围绕研究目标「BNTX（BioNTech）是否值得长期投资。深度调研维度：(1) 公司护城河（mRNA 平台技术壁垒、专利布局、与辉瑞合作关系）；(2) 关键产线（肿瘤管线进展、COVID 疫苗收入衰减曲线、流感/带状疱疹等在研管线）；(3) 新 CEO 战略眼光（战略方向、资本配置、从 COVID 依赖向肿瘤转型路径）；(4) 人才储备（核心科学家团队、研发人员稳定性）；(5) 企业文化（创新导向、执行力）；(6) 长期投资需关注的风险与催化剂。财务维度需覆盖：FY 营收/净利润/现金流、估值水平、现金储备对研发管线的支撑年限。定性维度优先使用 web 搜索源（Exa/Tavily），财务以 EDGAR 披露为准。」：这些公司里哪些是可交易标的？逐家给出上市状态、市场与代码、证券与公司的对应关系（母子公司/ADR/借壳）、流通与解禁约束。未上市公司单列为技术参照，不混入可交易候选。",
+          "why": "研究结论要能落到可执行的投资范围，否则用户无法使用",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "exchange_listing",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "上市/未上市分开；每个可交易候选给出市场与证券标识及其与经营主体的关系；关系不明确时标「待核实」，不得默认同一主体",
+          "cost": 0,
+          "module": "peers",
+          "attempts": []
+        },
+        {
+          "question_id": "business-model",
+          "text": "谁付钱、为什么付钱？收费与成本怎样形成？",
+          "why": "商业模式决定收入质量与可持续性，是所有判断的地基",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "ir_page"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "客户、产品、收费方式、成本结构、现金流路径各有直接证据",
+          "cost": 0,
+          "module": "business_engine",
+          "attempts": []
+        },
+        {
+          "question_id": "revenue-engine",
+          "text": "增长由什么驱动——量、价、组合、交付还是续费？",
+          "why": "驱动结构决定增长可持续性与预期差方向",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "earnings_release"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [
+            "yoy_growth"
+          ],
+          "unresolved": [],
+          "acceptance": "指出 2-4 个主要驱动并给证据；证据不足处明确标注",
+          "cost": 0,
+          "module": "revenue_segments",
+          "attempts": []
+        },
+        {
+          "question_id": "financial-quality",
+          "text": "利润是否兑现为现金？一次性因素是什么？",
+          "why": "利润与现金流背离是财务质量的核心信号",
+          "priority": "high",
+          "evidence_types": [
+            "filing"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [
+            "fcf_from_cfo",
+            "net_margin"
+          ],
+          "unresolved": [],
+          "acceptance": "近可得期间（目标 5FY+8Q）的收入/利润率/CFO/Capex/负债/稀释有序列或明确缺口",
+          "cost": 0,
+          "module": "financial_quality",
+          "attempts": []
+        },
+        {
+          "question_id": "demand-space",
+          "text": "需求由谁推动？TAM 与公司可获得市场的差别在哪？",
+          "why": "top-down 与 bottom-up 口径差异常是最大的乐观偏差来源",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "ir_page",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "两种口径分开陈述，不相加；约束条件有证据",
+          "cost": 0,
+          "module": "business_engine",
+          "attempts": []
+        },
+        {
+          "question_id": "moat-competition",
+          "text": "竞争优势能否维持？替代方案与切换成本是什么？",
+          "why": "护城河侵蚀通常先于财务恶化",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "news",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "优势的证据与侵蚀因素并列；同业对比同口径",
+          "cost": 0,
+          "module": "peers",
+          "attempts": []
+        }
+      ]
+    },
+    {
+      "plan_id": "plan-3c742ba684",
+      "entity_id": "BNTX这家公司是否值得长期投资，围绕公司护城河、关键产线、新CEO战略眼光、人才储备、企业文化以及长期投资需要关注的内容进行深度调研",
+      "mode": "standard",
+      "recipe_id": "general",
+      "status": "completed",
+      "created_at": "2026-09-10T00:37:47.861248Z",
+      "questions": [
+        {
+          "question_id": "objective-technology_moat-18caf2",
+          "text": "围绕研究目标「深度研究 BNTX这家公司是否值得长期投资，围绕公司护城河、关键产线、新CEO战略眼光、人才储备、企业文化以及长期投资需要关注的内容进行深度调研」：哪些公司在技术壁垒上有可核验证据？逐家给出：独占数据或数据飞轮、模型与实验闭环、外部同行验证、现有替代方案、复制难度与所需时间/资本。",
+          "why": "护城河判断决定「谁真的在形成壁垒」，是目标的第一交付",
+          "priority": "high",
+          "evidence_types": [
+            "publication",
+            "filing",
+            "industry_report",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每家候选至少一条一手证据（论文/专利/客户验证/产品指标）；无证据的优势不得写入；复制难度必须说明依据而不是形容词",
+          "cost": 0,
+          "module": "business_engine",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-commercial_proof-18caf2",
+          "text": "围绕研究目标「深度研究 BNTX这家公司是否值得长期投资，围绕公司护城河、关键产线、新CEO战略眼光、人才储备、企业文化以及长期投资需要关注的内容进行深度调研」：这些公司的商业兑现到了什么程度？收入、已收款、首付款、潜在里程碑、合同上限必须分开列；增长来自什么（新签/复购/扩单/并表），可持续部分占多少。",
+          "why": "技术优势必须落到可核验的商业数字，否则只是叙事",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "ir_page",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每项金额带期间、币种、口径与观测引用；潜在总额不得记成已收首付款；未披露的项明确留空，不用推测填补",
+          "cost": 0,
+          "module": "financial_quality",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-sustainability-18caf2",
+          "text": "围绕研究目标「深度研究 BNTX这家公司是否值得长期投资，围绕公司护城河、关键产线、新CEO战略眼光、人才储备、企业文化以及长期投资需要关注的内容进行深度调研」：这些公司的优势可持续吗？复购/扩单证据、交付与产能能力、客户集中度、毛利与现金消耗、关键人/关键许可依赖。",
+          "why": "一次性订单与结构性需求要分开，否则爆发判断站不住",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "transcript",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每项给出证据或明确「未披露」；客户集中度与现金消耗若可得必须给数值；不因为找不到数据就默认可持续",
+          "cost": 0,
+          "module": "financial_quality",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-counter_evidence-18caf2",
+          "text": "围绕研究目标「深度研究 BNTX这家公司是否值得长期投资，围绕公司护城河、关键产线、新CEO战略眼光、人才储备、企业文化以及长期投资需要关注的内容进行深度调研」：哪些证据削弱上述公司的优势？什么事件会证伪当前判断（技术替代、客户流失、监管、竞品数据）？下一次可验证的时间点是什么？",
+          "why": "没有反证的优势判断不可投资",
+          "priority": "high",
+          "evidence_types": [
+            "news",
+            "short_report",
+            "publication",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每家候选至少一条 steelman 反方证据或明确「未检索到反证」；证伪条件必须可观察、可定时；不得只列通用风险套话",
+          "cost": 0,
+          "module": "risks",
+          "attempts": []
+        },
+        {
+          "question_id": "objective-investability-18caf2",
+          "text": "围绕研究目标「深度研究 BNTX这家公司是否值得长期投资，围绕公司护城河、关键产线、新CEO战略眼光、人才储备、企业文化以及长期投资需要关注的内容进行深度调研」：这些公司里哪些是可交易标的？逐家给出上市状态、市场与代码、证券与公司的对应关系（母子公司/ADR/借壳）、流通与解禁约束。未上市公司单列为技术参照，不混入可交易候选。",
+          "why": "研究结论要能落到可执行的投资范围，否则用户无法使用",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "exchange_listing",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "上市/未上市分开；每个可交易候选给出市场与证券标识及其与经营主体的关系；关系不明确时标「待核实」，不得默认同一主体",
+          "cost": 0,
+          "module": "peers",
+          "attempts": []
+        },
+        {
+          "question_id": "business-model",
+          "text": "谁付钱、为什么付钱？收费与成本怎样形成？",
+          "why": "商业模式决定收入质量与可持续性，是所有判断的地基",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "ir_page"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "客户、产品、收费方式、成本结构、现金流路径各有直接证据",
+          "cost": 0,
+          "module": "business_engine",
+          "attempts": []
+        },
+        {
+          "question_id": "revenue-engine",
+          "text": "增长由什么驱动——量、价、组合、交付还是续费？",
+          "why": "驱动结构决定增长可持续性与预期差方向",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "earnings_release"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [
+            "yoy_growth"
+          ],
+          "unresolved": [],
+          "acceptance": "指出 2-4 个主要驱动并给证据；证据不足处明确标注",
+          "cost": 0,
+          "module": "revenue_segments",
+          "attempts": []
+        },
+        {
+          "question_id": "financial-quality",
+          "text": "利润是否兑现为现金？一次性因素是什么？",
+          "why": "利润与现金流背离是财务质量的核心信号",
+          "priority": "high",
+          "evidence_types": [
+            "filing"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [
+            "fcf_from_cfo",
+            "net_margin"
+          ],
+          "unresolved": [],
+          "acceptance": "近可得期间（目标 5FY+8Q）的收入/利润率/CFO/Capex/负债/稀释有序列或明确缺口",
+          "cost": 0,
+          "module": "financial_quality",
+          "attempts": []
+        },
+        {
+          "question_id": "demand-space",
+          "text": "需求由谁推动？TAM 与公司可获得市场的差别在哪？",
+          "why": "top-down 与 bottom-up 口径差异常是最大的乐观偏差来源",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "ir_page",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "两种口径分开陈述，不相加；约束条件有证据",
+          "cost": 0,
+          "module": "business_engine",
+          "attempts": []
+        },
+        {
+          "question_id": "moat-competition",
+          "text": "竞争优势能否维持？替代方案与切换成本是什么？",
+          "why": "护城河侵蚀通常先于财务恶化",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "news",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "优势的证据与侵蚀因素并列；同业对比同口径",
+          "cost": 0,
+          "module": "peers",
+          "attempts": []
+        }
+      ]
+    },
+    {
+      "plan_id": "plan-d26d7ac1a1",
+      "entity_id": "ai-for-science",
+      "mode": "standard",
+      "recipe_id": "industry",
+      "status": "completed",
+      "created_at": "2026-09-09T14:22:32.953780Z",
+      "questions": [
+        {
+          "question_id": "value-chain",
+          "text": "产业链各环节是什么？价值与利润集中在哪一环？",
+          "why": "瓶颈层定位决定「投哪个环节」而非「投不投行业」",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "filing",
+            "news"
+          ],
+          "status": "gathering",
+          "conclusion": "gathering：链条分层（上游算力/数据/底座—中游模型平台—下游场景应用）有档案内 player_landscape/sub_sectors 佐证；利润池判断暂仍为 Sustainability Atlas/McKinsey 单源转引（平台 55-65%、研究机构 <15%）。用户提供的四条多源证据（成本压缩 $30M→$6M、6 种定价模式价差 100x、>$10B big pharma 承诺、Deloitte $5-7B 企业级捕获）在本轮检索预算耗尽下均未能逐字登记，按证据纪律不写入，多源交叉验证目标未达成，字段保留单源版本并已在 claim 中标注。",
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "链条分层有证据；利润池排序有依据（非直觉）",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": [
+            "query_web_search ×3（成本压缩、Cytiva/MIT Tech Review、VLS Research）被检索预算门禁拒绝（30/30）",
+            "read_chunk ×3 尝试解析档案既有证据均失败（未知 chunk_id）",
+            "已提交分析 claim-a99dada92986（draft）：三层结构（算力/数据—平台—场景应用）有档案 sub_sectors 与算力基础设施在册公司佐证，但利润分配核心数字（55-65%/<15%）仍是单源转引，多源替换证据未获原文"
+          ]
+        },
+        {
+          "question_id": "bottleneck",
+          "text": "当前瓶颈环节是什么？瓶颈松动/加剧的信号？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "news",
+            "filing"
+          ],
+          "status": "gathering",
+          "conclusion": "gathering：方向性结论——瓶颈已从发现端迁移至临床验证端（Cytiva「data wall」2026-07-27 与 Scarcity Thinker「constraint moved to the clinic」2026-05-23 双信源指向一致），但两条原始摘录在本轮检索预算耗尽（30/30）下无法重新登记为可解析证据，且用户提供的补充供需证据（1.5% 渗透率、85% 即时优先）无逐字原文，按纪律不写入。可监测信号集已定义：①首个 AI 发现药物获批（0→1）；②英矽 Rentosertib III 期读出（2029）/Isomorphic 首次临床兑现情况；③头部公司里程碑收入占首付款比例。待预算刷新后逐字补证再升级 answered。",
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "瓶颈判断绑定供需证据；信号可监测",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": [
+            "query_web_search ×3（AI 成本压缩数据、Cytiva/MIT Tech Review 临床成本、VLS Research big pharma 交易结构）全部被检索预算门禁拒绝（30/30）",
+            "read_chunk（ev-isomorphic-ai、ev-xtalpi-ai4s、chk-c34abb6f80f1）全部报「未知 chunk_id」——档案既有证据 ID 与 chunk 命名空间不互通且无 id 反查工具",
+            "已提交分析 claim-1f1e727590af（draft）：基于档案既有 bottleneck/counter_evidence/risks 字段，因引用不可解析未升级 validated"
+          ]
+        },
+        {
+          "question_id": "demand-supply",
+          "text": "供需格局：需求驱动与供给约束分别是什么？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "policy_document",
+            "news"
+          ],
+          "status": "unavailable",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [
+            "AI 渗透率（AI 药物发现市场 ~$2.3-2.9B、占全球 pharma R&D ~1.5%/NewMarketPitch 2026-02-18）：无逐字原文",
+            "供给侧资金（2025 年融资 $11B+/~348 轮/VLS Research 2026-06-27；纯 AI 发现股权融资 $1.54B→$1.84B→$2.42B、Isomorphic Labs 占 2026 YTD ~87%/NewMarketPitch 2026-07-13）：无逐字原文",
+            "供需失衡判定（分析层 claim）因上述全部数值证据缺失，无法提交带可解析 support_refs 的结论；同理 value_chain 五组数字（成本压缩、6 种定价模式、big pharma >$10B 承诺、Deloitte $5-7B 捕获、Sustainability Atlas/McKinsey 单源口径）均无证据载体",
+            "区域结构（北美 45% 收入、亚太 2036 年达 38%、平台型厂商 30%/NewMarketPitch 2026-02-18）：无逐字原文",
+            "外包市场复苏与中国管线迁移（中国 Phase I 创新资产占比 ~10%→~40%/L.E.K. 2026-07-21 与 2026-07-17）：无逐字原文",
+            "需求侧总量双口径（Top 25 ~$185B/IntuitionLabs 2026-07-31；Top 16 $159.1B、同比 -3.6%/BioSpace 2026-03-25）：无逐字原文，无法 register_evidence/propose_metric",
+            "需求侧意愿（85% big pharma「即时优先」、~50% 已在 R&D 投资或探索/IntuitionLabs 2026-06-13）：无逐字原文"
+          ],
+          "acceptance": "需求分层（政策/经济/技术）；供给约束（产能/技术/资源）各有证据",
+          "cost": 0,
+          "module": "key_kpi",
+          "attempts": [
+            "query_kb 复核：demand_supply 字段既有记录（上轮 2026-09）确认同样因预算耗尽未写入任何数值，字段保持缺失；档案内可用证据（counter_evidence 中 Isomorphic Labs $2.1B B 轮、commercial_breakout 中英矽 2026H1 营收）属其他问题维度，且原始 evidence_id 在 KB 投影中不可见，无法构成可解析 support_refs",
+            "query_web_search('BioSpace top 16 pharma R&D spending 159.1 billion down 3.6%') → 被拒：retrieval_calls 30/30 预算耗尽",
+            "query_web_search('IntuitionLabs top 25 pharma companies consolidated R&D spending approximately $185 billion') → 被拒：retrieval_calls 30/30 预算耗尽",
+            "read_chunk 复用路径不可用：本会话无任何 query_*/read_edgar_filing 返回的 chunk_id；任务输入仅含转述数字与来源+日期，不含 span_id/chunk_id/verbatim_quote 原文载体"
+          ]
+        },
+        {
+          "question_id": "technology-routes",
+          "text": "技术路线之争：主流与替代路线的成熟度与成本曲线？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "publication",
+            "industry_report",
+            "news"
+          ],
+          "status": "gathering",
+          "conclusion": "gathering：路线对比表已成型——数据驱动闭环型（Recursion，>50PB 数据/每周 200 万次实验）、物理+AI 精度型、端到端生成式制药（英矽智能）、AI 递送/制剂垂直（剂泰，AiLNP 脂质语言模型）、生成生物学（Generate Biomedicines），未上市两极为深势科技与 Isomorphic Labs（$2.1B B 轮、无公开管线细节）。成熟度以披露财务代理排序；但完成条件要求的「成本曲线量化」缺失——用户提供的成本压缩数据（$30M+/4-5年 → $6M/18个月）未获逐字原文，未写入。",
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "路线对比表 + 各自代表公司；不虚构公司报表",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": [
+            "query_web_search ×3（路线对比/成本曲线、Isomorphic 交易、Cytiva）被检索预算门禁拒绝（30/30）",
+            "read_chunk ×3 尝试解析档案既有证据均失败（未知 chunk_id）",
+            "已提交分析 claim-f3724dfe61bb（draft）：五路线成熟度按报表财务排序（SDGR＞3696.HK＞7666.HK＞RXRX＞GENB），引用为 kb: 转述未升级 validated"
+          ]
+        },
+        {
+          "question_id": "policy",
+          "text": "政策与监管如何塑造行业（补贴/准入/地缘）？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "policy_document",
+            "news"
+          ],
+          "status": "answered",
+          "conclusion": "政策与监管把 AI4S 上升为国家战略层议题：中国北京率先落地专项中长期方案《北京市加快推进人工智能赋能科学研究实施方案（2026-2028年）》（京教科人发〔2026〕2号，2026-06-30 印发、2026-07-01 发布/实施），力争 2028 年建成辐射全球的科学智能创新中枢，为国内首个覆盖自主实验室/科研智能体/科学大模型/科学数据中心的完整体系方案；同期英国 AI for Science Strategy、欧盟人工智能大陆行动计划、我国「人工智能+科学技术」重点行动均在推进。塑造路径：补贴驱动学术与政府科研终端早期需求（sub_sectors 中「政策驱动早期」段）+ 商业化准入门槛（AI 新药获批）。退坡/变化风险：需求高度依赖国家战略与补贴延续性，地缘科技竞争可能改变激励方向。结论转述自档案 policy 字段（knowledge_time 2026-07-01），本轮检索预算 30/30 耗尽无法核验政策逐字原文。",
+          "support_refs": [
+            "claim-a07f0c59d274"
+          ],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [
+            "claim 为 draft（无逐字证据支撑），严格口径下结论仅达「档案既有登记转述」级别",
+            "不同国家政策的生效时间仅北京方案有精确日期，英/欧/我国重点行动为概指",
+            "政策原文逐字窗口未获取（预算耗尽前被拒：query_web_search/query_news_gdelt/query_hkex_news 均返回 retrieval_calls 30/30 拒绝）",
+            "本轮检索预算到达即耗尽（30/30），query_web_search/query_news_gdelt/query_hkex_news 均被预算拒绝，未取得政策原文逐字窗口（chunk_id），claim 为 draft 级",
+            "退坡/补贴具体金额与时间点无证据",
+            "退坡/补贴规模的具体金额与退坡时间点无证据"
+          ],
+          "acceptance": "政策原文与生效时间；退坡/变化风险标注",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": [
+            "query_hkex_news 2228.HK 公告（被拒）",
+            "query_hkex_news 2228.HK（被拒）",
+            "query_kb（成功，返回档案 policy 字段）",
+            "query_kb（成功：读取档案 policy/counter_evidence 字段）",
+            "query_news_gdelt 政策新闻（被拒）",
+            "query_web_search FDA/china AI 政策（被拒：预算耗尽）",
+            "query_web_search 政策检索（被拒：retrieval_calls 30/30）"
+          ]
+        },
+        {
+          "question_id": "candidate-pool",
+          "text": "各环节的代表公司有哪些？入选/淘汰逻辑是什么？",
+          "why": "F2 标的池的档案侧投影——保留未入选原因与数据不足的区别",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "news",
+            "industry_report"
+          ],
+          "status": "answered",
+          "conclusion": "各环节代表公司：①上游算力与基础设施（7 家）：中科曙光/浪潮信息/海光信息/并行科技/直真科技（纯正或接近）+英维克/数据港（标注非纯正）；②中游模型与平台（10 家）：晶泰控股/英矽智能/剂泰医药（港股 18C 三雄）、Schrödinger/Recursion/Generate Biomedicines/Absci/Relay（美股）、索辰科技（仿真软件）、深势科技（未上市）；③下游应用与 CXO 延伸（4 家）：药石科技/泓博医药/成都先导/睿智医药（均为 AI+主业复合型）。入选逻辑=每条候选绑定赛道归属证据（ev-*）+按 sub_sectors 八环节归属；淘汰逻辑分三类：主题边界淘汰（泛 AI SaaS 与 AI 通用基础设施，见 sub_sectors.boundary）、非纯正降级（6 家标注「非纯正」，属弱入选保留）、数据不足/研究否定淘汰（Isomorphic Labs——无公开临床前数据/候选分子/申报计划，且临床时间表从 2025 年底推迟至 2026 年底，未进标的池）；超时类淘汰（本轮检索预算 30/30 耗尽，未及独立复核 Isomorphic 之外未覆盖标的）与数据不足类已分离记录。反证未检索到能推翻赛道归属的证据；局限：下游环节 AI4S 收入占比量化缺失。",
+          "support_refs": [
+            "claim-62a94a911463",
+            "claim-7722a5d88d28",
+            "claim-ad423fc836d7",
+            "claim-db246aa72859"
+          ],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每个候选绑赛道归属证据；淘汰留原因（超时/数据不足/研究否定分开）",
+          "cost": 0,
+          "module": "candidate_pool",
+          "attempts": []
+        },
+        {
+          "question_id": "counter-evidence",
+          "text": "行业叙事最强的反方证据（过剩/替代/需求证伪）？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "news",
+            "industry_report",
+            "short_report"
+          ],
+          "status": "answered",
+          "conclusion": "反方证据 steelman（行业叙事最强反证）=「临床验证缺口」：截至 2026 年中，AI 在研临床项目约 173-200+ 个（约 94 I 期/56 II 期/15 III 期）但监管获批数为零；I 期成功率 80-90%（vs 历史均值 50-65%）多源一致但仅验证安全性；II 期（验证有效性）各源互相矛盾（有报 68% vs 传统 30-45%，也有报约 40%），2020-2026 年 7 月叙述性综述直陈「II 期成功率与历史行业均值约 40% 一致」，即「AI 提高发现效率」的护城河在最决定药物价值的环节尚未被数据证明。争议事实清单：①获批数零 vs I 期高通过率；②Isomorphic Labs 21 亿美元 B 轮（累计 26-27 亿）无可验证管线细节、临床时间表从 2025 年底推迟至 2026 年底（Reuters 2026-01-20），估值由品牌与大厂背书支撑；③英矽 2026H1 盈利但收入以合作首付款为主（联席 CEO 2026-08-28 坦承）、晶泰 2026H1 因首付款高基数重回净亏损，首付款模式波动双向。结论转述自档案 counter_evidence/risks 字段（knowledge_time 2026-08-01/08-28），本轮检索预算耗尽未新增检索。",
+          "support_refs": [
+            "claim-05074e3554ef",
+            "claim-68e1256a3752"
+          ],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [
+            "II 期成功率 68% vs 约 40% 两源矛盾未裁决，属既有争议事实，按档案原句并列引用",
+            "II 期成功率两源（68% vs 约 40%）矛盾未裁决，属争议事实，按档案原句并列引用",
+            "claim 为 draft（无本轮逐字证据），严格口径下仅达「档案既有登记转述」级别",
+            "claim 为 draft（无逐字证据支撑），严格口径下仅达「档案 counter_evidence 字段既有登记转述」级别",
+            "未检索到新的支持方/反方证据——本轮检索预算到达即耗尽（30/30），无法执行 query_web_search 反证检索",
+            "本轮检索预算耗尽（30/30），无法新增 web 反证/支持方检索；limitations 标注「未检索到反证」即指本轮无新检索能力，非指无此类证据存在"
+          ],
+          "acceptance": "steelman 反方 + 争议事实清单",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": [
+            "query_hkex_news（被拒）",
+            "query_kb（成功，返回档案 counter_evidence/risks/isomorphic 等字段）",
+            "query_kb（成功：读取档案 counter_evidence/risks/isomorphic/catalysts 等字段）",
+            "query_news_gdelt（被拒）",
+            "query_web_search 反证/监管（被拒：预算耗尽）",
+            "query_web_search 反证检索（被拒：retrieval_calls 30/30）"
+          ]
+        }
+      ]
+    },
+    {
+      "plan_id": "plan-a6d5b6179a",
+      "entity_id": "ai-for-science",
+      "mode": "standard",
+      "recipe_id": "industry",
+      "status": "completed",
+      "created_at": "2026-09-09T13:53:07.149512Z",
+      "questions": [
+        {
+          "question_id": "value-chain",
+          "text": "产业链各环节是什么？价值与利润集中在哪一环？",
+          "why": "瓶颈层定位决定「投哪个环节」而非「投不投行业」",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "filing",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "链条分层有证据；利润池排序有依据（非直觉）",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "bottleneck",
+          "text": "当前瓶颈环节是什么？瓶颈松动/加剧的信号？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "news",
+            "filing"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "瓶颈判断绑定供需证据；信号可监测",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "demand-supply",
+          "text": "供需格局：需求驱动与供给约束分别是什么？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "policy_document",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "需求分层（政策/经济/技术）；供给约束（产能/技术/资源）各有证据",
+          "cost": 0,
+          "module": "key_kpi",
+          "attempts": []
+        },
+        {
+          "question_id": "technology-routes",
+          "text": "技术路线之争：主流与替代路线的成熟度与成本曲线？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "publication",
+            "industry_report",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "路线对比表 + 各自代表公司；不虚构公司报表",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "policy",
+          "text": "政策与监管如何塑造行业（补贴/准入/地缘）？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "policy_document",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "政策原文与生效时间；退坡/变化风险标注",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": []
+        },
+        {
+          "question_id": "candidate-pool",
+          "text": "各环节的代表公司有哪些？入选/淘汰逻辑是什么？",
+          "why": "F2 标的池的档案侧投影——保留未入选原因与数据不足的区别",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "news",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每个候选绑赛道归属证据；淘汰留原因（超时/数据不足/研究否定分开）",
+          "cost": 0,
+          "module": "candidate_pool",
+          "attempts": []
+        },
+        {
+          "question_id": "counter-evidence",
+          "text": "行业叙事最强的反方证据（过剩/替代/需求证伪）？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "news",
+            "industry_report",
+            "short_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "steelman 反方 + 争议事实清单",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": []
+        }
+      ]
+    },
+    {
+      "plan_id": "plan-419f6bbad1",
+      "entity_id": "ai-for-science",
+      "mode": "standard",
+      "recipe_id": "industry",
+      "status": "completed",
+      "created_at": "2026-09-09T13:45:51.745787Z",
+      "questions": [
+        {
+          "question_id": "value-chain",
+          "text": "产业链各环节是什么？价值与利润集中在哪一环？",
+          "why": "瓶颈层定位决定「投哪个环节」而非「投不投行业」",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "filing",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "链条分层有证据；利润池排序有依据（非直觉）",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "bottleneck",
+          "text": "当前瓶颈环节是什么？瓶颈松动/加剧的信号？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "news",
+            "filing"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "瓶颈判断绑定供需证据；信号可监测",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "demand-supply",
+          "text": "供需格局：需求驱动与供给约束分别是什么？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "policy_document",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "需求分层（政策/经济/技术）；供给约束（产能/技术/资源）各有证据",
+          "cost": 0,
+          "module": "key_kpi",
+          "attempts": []
+        },
+        {
+          "question_id": "technology-routes",
+          "text": "技术路线之争：主流与替代路线的成熟度与成本曲线？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "publication",
+            "industry_report",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "路线对比表 + 各自代表公司；不虚构公司报表",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "policy",
+          "text": "政策与监管如何塑造行业（补贴/准入/地缘）？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "policy_document",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "政策原文与生效时间；退坡/变化风险标注",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": []
+        },
+        {
+          "question_id": "candidate-pool",
+          "text": "各环节的代表公司有哪些？入选/淘汰逻辑是什么？",
+          "why": "F2 标的池的档案侧投影——保留未入选原因与数据不足的区别",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "news",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每个候选绑赛道归属证据；淘汰留原因（超时/数据不足/研究否定分开）",
+          "cost": 0,
+          "module": "candidate_pool",
+          "attempts": []
+        },
+        {
+          "question_id": "counter-evidence",
+          "text": "行业叙事最强的反方证据（过剩/替代/需求证伪）？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "news",
+            "industry_report",
+            "short_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "steelman 反方 + 争议事实清单",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": []
+        }
+      ]
+    },
+    {
+      "plan_id": "plan-bf18763bd2",
+      "entity_id": "ai-for-science",
+      "mode": "deep",
+      "recipe_id": "industry",
+      "status": "completed",
+      "created_at": "2026-09-08T13:32:08.585047Z",
+      "questions": [
+        {
+          "question_id": "value-chain",
+          "text": "产业链各环节是什么？价值与利润集中在哪一环？",
+          "why": "瓶颈层定位决定「投哪个环节」而非「投不投行业」",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "filing",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "链条分层有证据；利润池排序有依据（非直觉）",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "bottleneck",
+          "text": "当前瓶颈环节是什么？瓶颈松动/加剧的信号？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "news",
+            "filing"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "瓶颈判断绑定供需证据；信号可监测",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "demand-supply",
+          "text": "供需格局：需求驱动与供给约束分别是什么？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "industry_report",
+            "policy_document",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "需求分层（政策/经济/技术）；供给约束（产能/技术/资源）各有证据",
+          "cost": 0,
+          "module": "key_kpi",
+          "attempts": []
+        },
+        {
+          "question_id": "technology-routes",
+          "text": "技术路线之争：主流与替代路线的成熟度与成本曲线？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "publication",
+            "industry_report",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "路线对比表 + 各自代表公司；不虚构公司报表",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        },
+        {
+          "question_id": "policy",
+          "text": "政策与监管如何塑造行业（补贴/准入/地缘）？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "policy_document",
+            "news"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "政策原文与生效时间；退坡/变化风险标注",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": []
+        },
+        {
+          "question_id": "candidate-pool",
+          "text": "各环节的代表公司有哪些？入选/淘汰逻辑是什么？",
+          "why": "F2 标的池的档案侧投影——保留未入选原因与数据不足的区别",
+          "priority": "high",
+          "evidence_types": [
+            "filing",
+            "news",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "每个候选绑赛道归属证据；淘汰留原因（超时/数据不足/研究否定分开）",
+          "cost": 0,
+          "module": "candidate_pool",
+          "attempts": []
+        },
+        {
+          "question_id": "counter-evidence",
+          "text": "行业叙事最强的反方证据（过剩/替代/需求证伪）？",
+          "why": "",
+          "priority": "high",
+          "evidence_types": [
+            "news",
+            "industry_report",
+            "short_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "steelman 反方 + 争议事实清单",
+          "cost": 0,
+          "module": "catalysts_risks",
+          "attempts": []
+        },
+        {
+          "question_id": "cycle-position",
+          "text": "行业处于周期什么位置（库存/资本开支/价格）？",
+          "why": "",
+          "priority": "medium",
+          "evidence_types": [
+            "industry_report",
+            "market_data"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "周期指标有历史序列或明确缺口",
+          "cost": 0,
+          "module": "key_kpi",
+          "attempts": []
+        },
+        {
+          "question_id": "global-comparison",
+          "text": "跨区域（美/欧/中）政策与竞争格局差异？",
+          "why": "",
+          "priority": "low",
+          "evidence_types": [
+            "policy_document",
+            "industry_report"
+          ],
+          "status": "unanswered",
+          "conclusion": null,
+          "support_refs": [],
+          "counter_refs": [],
+          "computable_checks": [],
+          "unresolved": [],
+          "acceptance": "区域对比表；数据来源与年份注明",
+          "cost": 0,
+          "module": "industry_chain",
+          "attempts": []
+        }
+      ]
+    }
+  ],
+  "latest_snapshots": [
+    {
+      "entity_id": "BNTX",
+      "context": {
+        "mode": "live",
+        "namespace": "prod",
+        "as_of": "2026-09-10T00:58:05.918718Z",
+        "snapshot_id": "dossier-bntx-b70e125240b8",
+        "kb_snapshot_id": "sha256:6399ad8d6c44276e2f5ef59c08f0eec9d6d6ee0e4b00df020134e8ad584649d3",
+        "generated_at": "2026-09-10T00:58:05.923650Z",
+        "projector_version": "2",
+        "recipe_id": "general",
+        "recipe_version": "1"
+      },
+      "modules": {
+        "investment_snapshot": {
+          "status": "ready",
+          "title": "研究结论",
+          "reasons": [],
+          "gap_refs": [],
+          "data_ref": "md-940fcb020f5d",
+          "last_knowledge_time": null
+        },
+        "business_engine": {
+          "status": "missing",
+          "title": "商业引擎",
+          "reasons": [
+            "as_of 时点无该模块数据"
+          ],
+          "gap_refs": [
+            "objective-technology_moat-c0fb00",
+            "business-model",
+            "demand-space"
+          ],
+          "data_ref": "md-0b76aa16489a",
+          "last_knowledge_time": null
+        },
+        "revenue_segments": {
+          "status": "ready",
+          "title": "收入与分部",
+          "reasons": [],
+          "gap_refs": [
+            "revenue-engine"
+          ],
+          "data_ref": "md-a129edf040ee",
+          "last_knowledge_time": "2026-03-10T00:00:00Z"
+        },
+        "key_kpi": {
+          "status": "partial",
+          "title": "关键 KPI",
+          "reasons": [
+            "必需 KPI 缺口: gross_margin, cfo, capex"
+          ],
+          "gap_refs": [],
+          "data_ref": "md-6179564af215",
+          "last_knowledge_time": "2026-03-10T00:00:00Z"
+        },
+        "financial_quality": {
+          "status": "missing",
+          "title": "财务质量",
+          "reasons": [
+            "as_of 时点无该模块数据"
+          ],
+          "gap_refs": [
+            "objective-commercial_proof-c0fb00",
+            "objective-sustainability-c0fb00",
+            "financial-quality"
+          ],
+          "data_ref": "md-0b76aa16489a",
+          "last_knowledge_time": null
+        },
+        "expectations": {
+          "status": "missing",
+          "title": "预期差",
+          "reasons": [
+            "无指引/一致预期观测（数据能力缺口，不以空图宣称完成）"
+          ],
+          "gap_refs": [],
+          "data_ref": "md-0b76aa16489a",
+          "last_knowledge_time": null
+        },
+        "valuation_lab": {
+          "status": "missing",
+          "title": "估值实验",
+          "reasons": [
+            "无估值输入（市场数据/财务观测）"
+          ],
+          "gap_refs": [],
+          "data_ref": "md-0b76aa16489a",
+          "last_knowledge_time": null
+        },
+        "peers": {
+          "status": "partial",
+          "title": "同业与竞争",
+          "reasons": [
+            "仅旧字段文本（needs_normalization，不猜数绘图）"
+          ],
+          "gap_refs": [
+            "objective-investability-c0fb00",
+            "moat-competition"
+          ],
+          "data_ref": "md-7f928d0b41c8",
+          "last_knowledge_time": "2026-03-10T00:00:00Z"
+        },
+        "catalysts_risks": {
+          "status": "ready",
+          "title": "催化与风险",
+          "reasons": [],
+          "gap_refs": [
+            "objective-counter_evidence-c0fb00"
+          ],
+          "data_ref": "md-41d7e5335e43",
+          "last_knowledge_time": null
+        },
+        "research_sources": {
+          "status": "ready",
+          "title": "研究与来源",
+          "reasons": [],
+          "gap_refs": [],
+          "data_ref": "md-65a37b8aa848",
+          "last_knowledge_time": null
+        }
+      }
+    },
+    {
+      "entity_id": "ai-for-science",
+      "context": {
+        "mode": "live",
+        "namespace": "prod",
+        "as_of": "2026-09-10T00:35:56.935433Z",
+        "snapshot_id": "dossier-ai-for-science-154b22b7b414",
+        "kb_snapshot_id": "sha256:81b4240858ffe57a92addfad58a7d42cd573a5537eea4decbac64c7079d5afab",
+        "generated_at": "2026-09-10T00:35:56.946935Z",
+        "projector_version": "2",
+        "recipe_id": "industry",
+        "recipe_version": "1"
+      },
+      "modules": {
+        "investment_snapshot": {
+          "status": "ready",
+          "title": "研究结论",
+          "reasons": [],
+          "gap_refs": [],
+          "data_ref": "md-a38075805bff",
+          "last_knowledge_time": null
+        },
+        "industry_chain": {
+          "status": "ready",
+          "title": "产业链与技术路线",
+          "reasons": [],
+          "gap_refs": [
+            "value-chain",
+            "bottleneck",
+            "technology-routes"
+          ],
+          "data_ref": "md-412d3548f697",
+          "last_knowledge_time": "2026-09-06T14:29:57.672447Z"
+        },
+        "candidate_pool": {
+          "status": "ready",
+          "title": "公司与护城河",
+          "reasons": [],
+          "gap_refs": [],
+          "data_ref": "md-c2882fa51460",
+          "last_knowledge_time": "2026-09-02T01:51:18.478225Z"
+        },
+        "key_kpi": {
+          "status": "ready",
+          "title": "商业兑现",
+          "reasons": [],
+          "gap_refs": [
+            "demand-supply"
+          ],
+          "data_ref": "md-64247b28dbf3",
+          "last_knowledge_time": "2026-08-28T00:00:00Z"
+        },
+        "catalysts_risks": {
+          "status": "ready",
+          "title": "催化与证伪",
+          "reasons": [],
+          "gap_refs": [],
+          "data_ref": "md-ee669068bce7",
+          "last_knowledge_time": "2026-08-28T00:00:00Z"
+        },
+        "research_sources": {
+          "status": "ready",
+          "title": "研究过程与来源",
+          "reasons": [],
+          "gap_refs": [],
+          "data_ref": "md-e7c75512158b",
+          "last_knowledge_time": null
+        },
+        "financial_quality": {
+          "status": "not_applicable",
+          "title": "财务质量（个股口径）",
+          "reasons": [
+            "该模块不适用于 industry 实体（信息架构由配方/注册表决定）"
+          ],
+          "gap_refs": [],
+          "data_ref": null,
+          "last_knowledge_time": null
+        },
+        "expectations": {
+          "status": "not_applicable",
+          "title": "预期差（个股口径）",
+          "reasons": [
+            "该模块不适用于 industry 实体（信息架构由配方/注册表决定）"
+          ],
+          "gap_refs": [],
+          "data_ref": null,
+          "last_knowledge_time": null
+        },
+        "valuation_lab": {
+          "status": "not_applicable",
+          "title": "估值实验（个股口径）",
+          "reasons": [
+            "该模块不适用于 industry 实体（信息架构由配方/注册表决定）"
+          ],
+          "gap_refs": [],
+          "data_ref": null,
+          "last_knowledge_time": null
+        },
+        "business_engine": {
+          "status": "not_applicable",
+          "title": "商业引擎（个股口径）",
+          "reasons": [
+            "该模块不适用于 industry 实体（信息架构由配方/注册表决定）"
+          ],
+          "gap_refs": [],
+          "data_ref": null,
+          "last_knowledge_time": null
+        },
+        "revenue_segments": {
+          "status": "not_applicable",
+          "title": "收入与分部（个股口径）",
+          "reasons": [
+            "该模块不适用于 industry 实体（信息架构由配方/注册表决定）"
+          ],
+          "gap_refs": [],
+          "data_ref": null,
+          "last_knowledge_time": null
+        },
+        "peers": {
+          "status": "not_applicable",
+          "title": "同业与竞争（个股口径）",
+          "reasons": [
+            "该模块不适用于 industry 实体（信息架构由配方/注册表决定）"
+          ],
+          "gap_refs": [],
+          "data_ref": null,
+          "last_knowledge_time": null
+        }
+      }
+    }
+  ],
+  "observations": [
+    {
+      "observation_id": "obs-79a868c353bb",
+      "entity_id": "ai-for-science",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2026-01-01",
+        "end": "2026-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2026H1"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "106303",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "106,303",
+        "unit_text": "",
+        "quote_ref": "ev-9b0b3602afdf"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-26T09:00:00Z",
+      "created_at": "2026-09-08T13:58:17.505612Z"
+    },
+    {
+      "observation_id": "obs-cf01ee8416d6",
+      "entity_id": "ai-for-science",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2026-01-01",
+        "end": "2026-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2026H1"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "193518",
+      "unit": "CNY",
+      "currency": "CNY",
+      "raw": {
+        "value_text": "193,518",
+        "unit_text": "",
+        "quote_ref": "ev-a70f4719413e"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-19T10:09:00Z",
+      "created_at": "2026-09-08T13:58:17.509051Z"
+    },
+    {
+      "observation_id": "obs-2cb7ac3bcc89",
+      "entity_id": "ai-for-science",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2025H1"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "27456",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "27,456",
+        "unit_text": "",
+        "quote_ref": "ev-9b0b3602afdf"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-26T09:00:00Z",
+      "created_at": "2026-09-08T13:58:34.226382Z"
+    },
+    {
+      "observation_id": "obs-d242f30968d8",
+      "entity_id": "ai-for-science",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2025H1"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "81864",
+      "unit": "CNY",
+      "currency": "CNY",
+      "raw": {
+        "value_text": "81,864",
+        "unit_text": "",
+        "quote_ref": "ev-a70f4719413e"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-19T10:09:00Z",
+      "created_at": "2026-09-08T13:58:34.229426Z"
+    },
+    {
+      "observation_id": "obs-797a2fd13cdc",
+      "entity_id": "ai-for-science",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2026-01-01",
+        "end": "2026-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2026H1"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "154300000",
+      "unit": "CNY",
+      "currency": null,
+      "raw": {
+        "value_text": "154.3百万元",
+        "unit_text": "人民币百万元",
+        "quote_ref": "ev-f8645a4bb815"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-25T00:00:00Z",
+      "created_at": "2026-09-08T14:01:28.628096Z"
+    },
+    {
+      "observation_id": "obs-25d993fe0bca",
+      "entity_id": "ai-for-science",
+      "metric_key": "r_and_d_expense",
+      "period": {
+        "start": "2026-01-01",
+        "end": "2026-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2026H1"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "172400000",
+      "unit": "CNY",
+      "currency": null,
+      "raw": {
+        "value_text": "172.4百万元",
+        "unit_text": "人民币百万元",
+        "quote_ref": "ev-f8645a4bb815"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-25T00:00:00Z",
+      "created_at": "2026-09-08T14:01:28.633813Z"
+    },
+    {
+      "observation_id": "obs-723282fae4d1",
+      "entity_id": "ai-for-science",
+      "metric_key": "xtalpi_major_deal_upfront",
+      "period": {
+        "start": null,
+        "end": "2026-06-09",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "4",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "൴ 4ʩ",
+        "unit_text": "",
+        "quote_ref": "ev-baa275a689a6"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-06-09T14:25:00Z",
+      "created_at": "2026-09-08T14:05:19.424342Z"
+    },
+    {
+      "observation_id": "obs-1ce021570310",
+      "entity_id": "ai-for-science",
+      "metric_key": "sdgr_top20_kpi",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "73700000",
+      "unit": "ratio",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$73.7 million, or 37%",
+        "unit_text": "",
+        "quote_ref": "ev-8250003d683e"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-02-25T00:00:00Z",
+      "created_at": "2026-09-08T14:05:44.855989Z"
+    },
+    {
+      "observation_id": "obs-d6a97e45d322",
+      "entity_id": "ai-for-science",
+      "metric_key": "sdgr_rd_expense",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "173138",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "173,138",
+        "unit_text": "",
+        "quote_ref": "ev-1b60a60b49f3"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-02-25T00:00:00Z",
+      "created_at": "2026-09-08T14:08:36.987480Z"
+    },
+    {
+      "observation_id": "obs-3a0289bd1fd0",
+      "entity_id": "ai-for-science",
+      "metric_key": "sdgr_total_revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "255900000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$255.9 million",
+        "unit_text": "",
+        "quote_ref": "ev-93a7412d8276"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-02-25T00:00:00Z",
+      "created_at": "2026-09-08T14:08:41.692345Z"
+    },
+    {
+      "observation_id": "obs-de04a1e02efb",
+      "entity_id": "ai-for-science",
+      "metric_key": "sdgr_total_revenue",
+      "period": {
+        "start": "2024-01-01",
+        "end": "2024-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2024"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "207500000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$207.5 million",
+        "unit_text": "",
+        "quote_ref": "ev-93a7412d8276"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-02-25T00:00:00Z",
+      "created_at": "2026-09-08T14:08:41.694307Z"
+    },
+    {
+      "observation_id": "obs-8ea4aad033aa",
+      "entity_id": "ai-for-science",
+      "metric_key": "ai4s_segment_revenue_growth",
+      "period": {
+        "start": "2026-01-01",
+        "end": "2026-06-30",
+        "frequency": "H1",
+        "fiscal_label": "2026H1"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "136.4",
+      "unit": "ratio",
+      "currency": "CNY",
+      "raw": {
+        "value_text": "136.4%",
+        "unit_text": "",
+        "quote_ref": "ev-0a7076f8fd37"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-19T10:09:00Z",
+      "created_at": "2026-09-08T14:20:16.888246Z"
+    },
+    {
+      "observation_id": "obs-421584ad15ce",
+      "entity_id": "ai-for-science",
+      "metric_key": "software_acv",
+      "period": {
+        "start": "2026-04-01",
+        "end": "2026-06-30",
+        "frequency": "Q",
+        "fiscal_label": "2026Q2"
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "29600000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$29.6 million",
+        "unit_text": "",
+        "quote_ref": "ev-cb3b32dfa065"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-05T00:00:00Z",
+      "created_at": "2026-09-08T14:20:16.892738Z"
+    },
+    {
+      "observation_id": "obs-9895d0f120c9",
+      "entity_id": "ai-for-science",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2026-04-01",
+        "end": "2026-06-30",
+        "frequency": "Q",
+        "fiscal_label": "2026Q2"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "58900000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$58.9 million",
+        "unit_text": "",
+        "quote_ref": "ev-8de37891ad9d"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-05T00:00:00Z",
+      "created_at": "2026-09-08T14:20:16.893643Z"
+    },
+    {
+      "observation_id": "obs-d75ae227c2d9",
+      "entity_id": "ai-for-science",
+      "metric_key": "software_acv",
+      "period": {
+        "start": "2025-04-01",
+        "end": "2025-06-30",
+        "frequency": "Q",
+        "fiscal_label": "2025Q2"
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "23300000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$23.3 million",
+        "unit_text": "",
+        "quote_ref": "ev-cb3b32dfa065"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-05T00:00:00Z",
+      "created_at": "2026-09-08T14:24:37.244460Z"
+    },
+    {
+      "observation_id": "obs-40802587c71b",
+      "entity_id": "ai-for-science",
+      "metric_key": "drug_discovery_preclinical_cost",
+      "period": {
+        "start": null,
+        "end": "2026-07-14",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "6000000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$6 million",
+        "unit_text": "",
+        "quote_ref": "ev-dea432747634",
+        "span": "cost roughly $6 million and took 18 months"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-28T00:00:00Z",
+      "created_at": "2026-09-09T14:04:19.082410Z"
+    },
+    {
+      "observation_id": "obs-c6d93b5ab584",
+      "entity_id": "ai-for-science",
+      "metric_key": "drug_discovery_preclinical_cost_traditional",
+      "period": {
+        "start": null,
+        "end": "2026-04-14",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "-200000000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$100-200 million",
+        "unit_text": "",
+        "quote_ref": "ev-e3070210b612",
+        "span": "The traditional path to that same milestone costs $100-200 million and takes six to eight years"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-04-14T00:00:00Z",
+      "created_at": "2026-09-09T14:04:19.086520Z"
+    },
+    {
+      "observation_id": "obs-4c63e90883ec",
+      "entity_id": "ai-for-science",
+      "metric_key": "clinical_phase1_success_rate",
+      "period": {
+        "start": null,
+        "end": "2026-04-14",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "80",
+      "unit": "ratio",
+      "currency": null,
+      "raw": {
+        "value_text": "80-90%",
+        "unit_text": "",
+        "quote_ref": "ev-9e1449c6e27c",
+        "span": "AI-discovered molecules have posted an 80-90% success rate in Phase I trials, compared to the historical average of roughly 52%"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-04-14T00:00:00Z",
+      "created_at": "2026-09-09T14:04:19.093760Z"
+    },
+    {
+      "observation_id": "obs-20cd0a044036",
+      "entity_id": "ai-for-science",
+      "metric_key": "clinical_phase1_success_rate_historical",
+      "period": {
+        "start": null,
+        "end": "2026-04-14",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "52",
+      "unit": "ratio",
+      "currency": null,
+      "raw": {
+        "value_text": "roughly 52%",
+        "unit_text": "",
+        "quote_ref": "ev-9e1449c6e27c",
+        "span": "AI-discovered molecules have posted an 80-90% success rate in Phase I trials, compared to the historical average of roughly 52%"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-04-14T00:00:00Z",
+      "created_at": "2026-09-09T14:04:19.096317Z"
+    },
+    {
+      "observation_id": "obs-5d2f73611636",
+      "entity_id": "ai-for-science",
+      "metric_key": "pharma_ai_adoption_priority_share",
+      "period": {
+        "start": null,
+        "end": "2025-07-17",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "operating_metric",
+      "value": "85",
+      "unit": "ratio",
+      "currency": null,
+      "raw": {
+        "value_text": "85%",
+        "unit_text": "",
+        "quote_ref": "ev-edf2ad5c9ede",
+        "span": "Across the top-ranking Big Pharmas specifically, that figure jumped to 85%."
+      },
+      "status": "ok",
+      "knowledge_time": "2025-07-17T00:00:00Z",
+      "created_at": "2026-09-09T14:04:19.100949Z"
+    },
+    {
+      "observation_id": "obs-ce27835d0e29",
+      "entity_id": "ai-for-science",
+      "metric_key": "rd_spend",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "159100000000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$159.1 billion",
+        "unit_text": "",
+        "quote_ref": "ev-60bbd5d6d1d5",
+        "span": "the top 16 heavyweights spent $159.1 billion on R&D in 2025"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-25T00:00:00Z",
+      "created_at": "2026-09-09T14:25:02.369190Z"
+    },
+    {
+      "observation_id": "obs-da26e72de096",
+      "entity_id": "ai-for-science",
+      "metric_key": "rd_spend_growth",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025 vs FY2024"
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "3.6",
+      "unit": "ratio",
+      "currency": null,
+      "raw": {
+        "value_text": "3.6%",
+        "unit_text": "",
+        "quote_ref": "ev-529c133ceeb4",
+        "span": "declined by 3.6% overall in 2025"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-25T00:00:00Z",
+      "created_at": "2026-09-09T14:25:02.370111Z"
+    },
+    {
+      "observation_id": "obs-34d086583406",
+      "entity_id": "ai-for-science",
+      "metric_key": "discovery_preclinical_cost",
+      "period": {
+        "start": null,
+        "end": "2026-07-14",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "6000000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "roughly $6 million",
+        "unit_text": "million",
+        "quote_ref": "ev-vc-futures",
+        "span": "Discovering this drug and carrying it through preclinical development cost roughly $6 million and took 18 months."
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-28T00:00:00Z",
+      "created_at": "2026-09-09T14:25:22.541903Z"
+    },
+    {
+      "observation_id": "obs-fffe42334dca",
+      "entity_id": "ai-for-science",
+      "metric_key": "discovery_preclinical_timeline",
+      "period": {
+        "start": null,
+        "end": "2026-07-14",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "18",
+      "unit": "months",
+      "currency": null,
+      "raw": {
+        "value_text": "18 months",
+        "unit_text": "",
+        "quote_ref": "ev-vc-futures",
+        "span": "Discovering this drug and carrying it through preclinical development cost roughly $6 million and took 18 months."
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-28T00:00:00Z",
+      "created_at": "2026-09-09T14:26:16.471557Z"
+    },
+    {
+      "observation_id": "obs-4cb15cb596ce",
+      "entity_id": "ai-for-science",
+      "metric_key": "pricing_dispersion_ratio",
+      "period": {
+        "start": null,
+        "end": "2026-08-25",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "100",
+      "unit": "ratio",
+      "currency": null,
+      "raw": {
+        "value_text": "100x",
+        "unit_text": "",
+        "quote_ref": "ev-vc-100x",
+        "span": "the gap between the cheapest and most expensive way to access the same underlying technology can exceed 100x over a multi-year program"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-08-25T11:46:14Z",
+      "created_at": "2026-09-09T14:26:16.472325Z"
+    },
+    {
+      "observation_id": "obs-077e5f507b31",
+      "entity_id": "ai-for-science",
+      "metric_key": "ai_platform_upfront_payment",
+      "period": {
+        "start": null,
+        "end": "2026-06-27",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "50000000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$30–50M typical",
+        "unit_text": "",
+        "quote_ref": "ev-vc-vls-deal",
+        "span": "Upfronts stay modest ($30–50M typical); headline values are overwhelmingly contingent biobucks."
+      },
+      "status": "ok",
+      "knowledge_time": "2026-06-27T14:34:46Z",
+      "created_at": "2026-09-09T14:26:16.472899Z"
+    },
+    {
+      "observation_id": "obs-a2ea6e46245c",
+      "entity_id": "ai-for-science",
+      "metric_key": "ai_platform_milestone_value",
+      "period": {
+        "start": null,
+        "end": "2026-06-27",
+        "frequency": "instant",
+        "fiscal_label": ""
+      },
+      "nature": "reported",
+      "basis": "GAAP",
+      "value": "1700000000",
+      "unit": "USD",
+      "currency": "USD",
+      "raw": {
+        "value_text": "$1.2–1.7B",
+        "unit_text": "",
+        "quote_ref": "ev-vc-vls-guide",
+        "span": "~$30–50M upfront + $1.2–1.7B milestone biobucks is the template (Isomorphic–Lilly, Isomorphic–Novartis)."
+      },
+      "status": "ok",
+      "knowledge_time": "2026-06-27T01:23:28Z",
+      "created_at": "2026-09-09T14:26:16.473393Z"
+    },
+    {
+      "observation_id": "obs-dbb36ad0863d",
+      "entity_id": "BNTX",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "2869900000",
+      "unit": "USD",
+      "currency": "EUR",
+      "raw": {
+        "value_text": "2,869.9",
+        "unit_text": "in millions €",
+        "quote_ref": "ev-f09c96212a2e",
+        "span": "Total revenues 2,869.9 2,751.1 118.8 4"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-10T00:00:00Z",
+      "created_at": "2026-09-10T00:44:10.349768Z"
+    },
+    {
+      "observation_id": "obs-822264333311",
+      "entity_id": "BNTX",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "1995300000",
+      "unit": "USD",
+      "currency": "EUR",
+      "raw": {
+        "value_text": "1,995.3",
+        "unit_text": "in millions €",
+        "quote_ref": "ev-f09c96212a2e",
+        "span": "COVID-19 vaccine revenues 1,995.3 2,432.1 (436.8) (18)"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-10T00:00:00Z",
+      "created_at": "2026-09-10T00:44:34.859292Z"
+    },
+    {
+      "observation_id": "obs-4a5318e70022",
+      "entity_id": "BNTX",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2024-01-01",
+        "end": "2024-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2024"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "2751100000",
+      "unit": "USD",
+      "currency": "EUR",
+      "raw": {
+        "value_text": "2,751.1",
+        "unit_text": "in millions €",
+        "quote_ref": "ev-f09c96212a2e",
+        "span": "Total revenues 2,869.9 2,751.1 118.8 4"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-10T00:00:00Z",
+      "created_at": "2026-09-10T00:44:34.860532Z"
+    },
+    {
+      "observation_id": "obs-bc92b4182dfd",
+      "entity_id": "BNTX",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "613000000",
+      "unit": "USD",
+      "currency": "EUR",
+      "raw": {
+        "value_text": "613.0",
+        "unit_text": "in millions €",
+        "quote_ref": "ev-f09c96212a2e",
+        "span": "Revenues from out-licensing 613.0 — 613.0 n.m."
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-10T00:00:00Z",
+      "created_at": "2026-09-10T00:44:48.619471Z"
+    },
+    {
+      "observation_id": "obs-87c53e42e3ed",
+      "entity_id": "BNTX",
+      "metric_key": "revenue",
+      "period": {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "frequency": "FY",
+        "fiscal_label": "FY2025"
+      },
+      "nature": "reported",
+      "basis": "IFRS",
+      "value": "261600000",
+      "unit": "USD",
+      "currency": "EUR",
+      "raw": {
+        "value_text": "261.6",
+        "unit_text": "in millions €",
+        "quote_ref": "ev-f09c96212a2e",
+        "span": "Other revenues 261.6 319.0 (57.4) (18)"
+      },
+      "status": "ok",
+      "knowledge_time": "2026-03-10T00:00:00Z",
+      "created_at": "2026-09-10T00:44:48.621313Z"
+    }
+  ]
+}

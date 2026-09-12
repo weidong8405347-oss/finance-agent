@@ -1,0 +1,127 @@
+{
+  "kind": "deterministic component probes, not end-to-end research",
+  "recipes": [
+    "biotech",
+    "general",
+    "industrial_equipment",
+    "industry"
+  ],
+  "selected_for_memory": [
+    "general",
+    "不确定时使用通用模板（不硬套行业 KPI）"
+  ],
+  "standard_questions": [
+    {
+      "id": "business-model",
+      "priority": "high"
+    },
+    {
+      "id": "revenue-engine",
+      "priority": "high"
+    },
+    {
+      "id": "financial-quality",
+      "priority": "high"
+    },
+    {
+      "id": "demand-space",
+      "priority": "medium"
+    },
+    {
+      "id": "moat-competition",
+      "priority": "medium"
+    },
+    {
+      "id": "management-delivery",
+      "priority": "medium"
+    },
+    {
+      "id": "catalysts-risks",
+      "priority": "high"
+    },
+    {
+      "id": "counter-evidence",
+      "priority": "high"
+    }
+  ],
+  "deep_questions": [
+    {
+      "id": "business-model",
+      "priority": "high"
+    },
+    {
+      "id": "revenue-engine",
+      "priority": "high"
+    },
+    {
+      "id": "financial-quality",
+      "priority": "high"
+    },
+    {
+      "id": "demand-space",
+      "priority": "medium"
+    },
+    {
+      "id": "moat-competition",
+      "priority": "medium"
+    },
+    {
+      "id": "management-delivery",
+      "priority": "medium"
+    },
+    {
+      "id": "catalysts-risks",
+      "priority": "high"
+    },
+    {
+      "id": "counter-evidence",
+      "priority": "high"
+    },
+    {
+      "id": "expectations-gap",
+      "priority": "medium"
+    },
+    {
+      "id": "valuation-assumptions",
+      "priority": "medium"
+    },
+    {
+      "id": "technology-talent",
+      "priority": "low"
+    },
+    {
+      "id": "segment-depth",
+      "priority": "medium"
+    }
+  ],
+  "source_roles": {
+    "https://investors.micron.com/news": "unknown",
+    "https://news.skhynix.com/report": "unknown",
+    "https://dart.fss.or.kr/dsaf001/main.do": "unknown",
+    "https://www.sec.gov/Archives/edgar/data/1/2": "issuer_filing"
+  },
+  "assessment_with_10_of_12_answered_and_no_valuation_or_expectations": {
+    "verdict": "sufficient",
+    "coverage": {
+      "applicable": 12,
+      "key_applicable": 5,
+      "answered": 10,
+      "disputed": 0,
+      "unavailable": 0,
+      "unanswered": 2,
+      "gathering": 0,
+      "coverage": 0.8333333333333334,
+      "key_coverage": 1.0,
+      "violations": []
+    },
+    "analytical_depth": {
+      "counter_evidence_claims": 0,
+      "hypothesis_or_inference_claims": 0,
+      "answered_questions_with_support": 10,
+      "questions_with_computable_checks": 2,
+      "has_counter_evidence": false
+    },
+    "note": "Tests assess() in isolation; tool-layer answer validation is deliberately not exercised. Shows investment-specific mandatory gate is absent, not that fabricated answers can pass live tool layer."
+  },
+  "validator_for_internal_error_paragraph": []
+}

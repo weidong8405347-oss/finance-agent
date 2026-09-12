@@ -21,7 +21,11 @@ SCHEMA_VERSION = "1.0"
 #: 投影器版本（进 data_hash：投影逻辑变更 → 新快照身份，旧快照仍可回溯）
 # v2：首屏回退填充去重（同值同单位双键登记不重复展示）+ tear-sheet/layer_labels/
 #     raw_text/comparison_numerics 投影
-PROJECTOR_VERSION = "2"
+# v3：Investment Objects 投影（§12-§15/§34：ThesisObject + MoatAssessment 从冻结
+#     claims/时间线/候选确定性推导）+ 快照 change_log 字段（发布时冻结）
+# v4：ThesisObject 标题不再用 targeted 问题原文（操作指令不是论点标题）；
+#     structures 内容摘进 data_hash（原地结构更新产生新快照）
+PROJECTOR_VERSION = "4"
 
 DossierMode = Literal["live", "historical", "rebuilt"]
 ModuleStatus = Literal[
@@ -198,6 +202,13 @@ class DossierSnapshot(BaseModel):
     structures: dict[str, Any] = Field(default_factory=dict)
     #: 模块注册表投影（audit §3.6）：前端据此渲染导航与组件，不再硬编码 SECTION_ORDER
     module_registry: dict[str, Any] = Field(default_factory=dict)
+    #: What Changed 日志（升级方案 §32）：发布时由 service 相对上一 live 快照计算并冻结
+    #: （dossier/changes.py；不进 data_hash——快照身份由输入版本集决定，变化日志是
+    #: 发布时刻的派生视图）；空列表 → 前端回退到 summary.key_changes
+    change_log: list[dict[str, Any]] = Field(default_factory=list)
+    #: Investment Objects（升级方案 §12-§15/§34）：投影层从 claims+时间线+候选推导的
+    #: 确定性 ThesisObject / MoatAssessment（不从文本猜置信度；无数据 = 空）
+    investment_objects: dict[str, Any] = Field(default_factory=dict)
 
     def data_hash_of(self) -> str:
         """内容寻址：投影输入的版本集（fact/observation/claim/artifact/resolution id+版本）。"""

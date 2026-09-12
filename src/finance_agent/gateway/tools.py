@@ -360,6 +360,23 @@ GATEWAY_TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["ticker"],
         },
     },
+    "query_consensus_yf": {
+        "name": "query_consensus_yf",
+        "description": (
+            "查询分析师一致预期快照（yfinance，C 级：当前值无历史 PIT，评估模式不可用）："
+            "earnings_estimate（EPS 一致预期：avg/low/high/分析师数/去年同期货比）、"
+            "revenue_estimate（收入一致预期）、eps_trend（7/30/60/90 天前对比值——"
+            "revision 分析）、eps_revisions（近 7/30 天上修/下修家数）、growth_estimates。"
+            "期间键 0q=本季度 +1q=下一季度 0y=本财年 +1y=下一财年。"
+            "登记用 propose_metric(nature=\"consensus\", consensus={vendor:\"yfinance\","
+            "snapshot_at=<当前时刻>}，metric_key 如 consensus_eps/consensus_revenue）"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
     "query_hkex_news": {
         "name": "query_hkex_news",
         "description": (

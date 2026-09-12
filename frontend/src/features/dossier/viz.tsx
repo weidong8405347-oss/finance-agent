@@ -10,7 +10,10 @@
 // - 阶段阶梯/分层条只用离散分类（tier/stage 原文），不造精确坐标；
 // - 混单位/混币种的列不出图（诚实降级为表格）。
 
-import type { CandidateItem, IndustryMapEdge, IndustryMapNode, ValidationItem } from "./types";
+import type {
+  CandidateItem, IndustryMapEdge, IndustryMapNode, ProfitPool, QuadrantPayload,
+  QuadrantPoint, ValidationItem,
+} from "./types";
 
 // ---------------- 产业链流图（§27：Value Chain 从文字变成图） ----------------
 
@@ -151,6 +154,11 @@ export function ValueChainGraph({
   const hl = (highlightCompany ?? "").toUpperCase();
   const hasCompany = (n: IndustryMapNode) =>
     (n.company_refs ?? []).some((c) => c.toUpperCase() === hl);
+  // 瓶颈红标只在可分辨时渲染：全部节点都是瓶颈 = 没有瓶颈（红色失效为噪音），
+  // 此时瓶颈语义由 bottlenecks 文本列表承担（不隐藏数据，只避免全红）
+  const bottleneckCount = nodes.filter((n) => n.bottleneck).length;
+  const discriminate = bottleneckCount > 0 && bottleneckCount < nodes.length;
+  const showBottleneck = (n: IndustryMapNode) => discriminate && n.bottleneck;
   return (
     <div>
       <div className="overflow-x-auto rounded border border-neutral-200 bg-neutral-50/40">
@@ -198,7 +206,7 @@ export function ValueChainGraph({
                 title={n.note || n.label}
                 className={`absolute rounded-lg border bg-white p-2 text-left shadow-sm transition-shadow ${
                   hasCompany(n) ? "border-blue-400 ring-1 ring-blue-300"
-                  : n.bottleneck ? "border-red-300"
+                  : showBottleneck(n) ? "border-red-300"
                   : "border-neutral-300"
                 } ${isActive ? "ring-2 ring-neutral-800" : "hover:border-neutral-500"}`}
                 style={{ left: np.x, top: np.y, width: np.w, height: np.h }}
@@ -207,7 +215,7 @@ export function ValueChainGraph({
                   <span className="line-clamp-2 text-xs font-medium leading-tight text-neutral-800">
                     {n.label}
                   </span>
-                  {n.bottleneck && (
+                  {showBottleneck(n) && (
                     <span className="mt-px shrink-0 rounded bg-red-100 px-1 text-[9px] text-red-700">瓶颈</span>
                   )}
                 </div>
@@ -225,7 +233,7 @@ export function ValueChainGraph({
         <div className="mt-2 rounded-lg border border-neutral-200 bg-white p-3">
           <div className="mb-1 flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-neutral-800">{selected.label}</span>
-            {selected.bottleneck && (
+            {showBottleneck(selected) && (
               <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700">瓶颈环节</span>
             )}
             <button onClick={() => onNodeClick("")}
@@ -633,6 +641,199 @@ export function RankedBars({ cols, formatValue }: {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---------------- 候选四象限（§20：Y=商业验证 × X=技术/护城河，离散网格散点） ----------------
+
+export interface QuadrantCell {
+  x: number;
+  y: number;
+  points: QuadrantPoint[];
+}
+
+/** 网格布局（纯函数）：points → 5×5 单元格；同格多家公司共存（不聚合不 jitter）。
+ *  返回按 y 降序（商业验证高者在上）× x 升序排列的单元格行。 */
+export function quadrantCells(payload: QuadrantPayload): QuadrantCell[][] {
+  const nx = payload.x_axis.order.length;
+  const ny = payload.y_axis.order.length;
+  const grid = new Map<string, QuadrantPoint[]>();
+  for (const p of payload.points) {
+    const key = `${p.x},${p.y}`;
+    grid.set(key, [...(grid.get(key) ?? []), p]);
+  }
+  const rows: QuadrantCell[][] = [];
+  for (let y = ny - 1; y >= 0; y--) {
+    const row: QuadrantCell[] = [];
+    for (let x = 0; x < nx; x++) {
+      row.push({ x, y, points: grid.get(`${x},${y}`) ?? [] });
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** 候选四象限散点（§20）：离散序网格，不是连续坐标——一眼区分「好公司」与
+ *  「好股票」（技术验证靠右 ≠ 商业验证靠上）。气泡按 tier 着色；点击定位候选表行。 */
+export function CandidateQuadrant({ payload, onLocate }: {
+  payload: QuadrantPayload;
+  onLocate: (entityId: string) => void;
+}) {
+  const rows = quadrantCells(payload);
+  const { x_axis: xa, y_axis: ya } = payload;
+  if (!payload.points.length) return null;
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3">
+      <div className="mb-2 flex flex-wrap items-baseline gap-2">
+        <span className="text-xs font-semibold text-neutral-500">
+          候选四象限：{ya.title}（纵）× {xa.title}（横）
+        </span>
+        <span className="text-[10px] text-neutral-400">
+          离散阶段序，不是评分；点公司芯片在下方表中定位
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[640px]">
+          {rows.map((row) => {
+            const y = row[0]?.y ?? 0;
+            const stageKey = ya.order[y] ?? "";
+            return (
+              <div key={y} className="flex items-stretch gap-1 border-b border-neutral-100 last:border-0">
+                <div className="flex w-24 shrink-0 flex-col justify-center py-1 pr-1 text-right">
+                  <span className="text-[10px] font-medium text-neutral-500">
+                    {ya.labels[stageKey] ?? stageKey}
+                  </span>
+                  <span className="font-mono text-[9px] text-neutral-300">{stageKey}</span>
+                </div>
+                {row.map((cell) => (
+                  <div key={cell.x}
+                       className={`min-h-[44px] flex-1 rounded-sm border border-neutral-100 p-1 ${
+                         cell.points.length ? "bg-neutral-50/70" : "bg-white"
+                       }`}>
+                    <div className="flex flex-wrap gap-1">
+                      {cell.points.map((p) => (
+                        <button key={p.entity_id} onClick={() => onLocate(p.entity_id)}
+                                title={`${p.name || p.entity_id}（${TIER_META[p.tier]?.label ?? p.tier}）\n`
+                                  + `技术=${p.x_stage} · 商业=${p.y_stage} · 证据 ${p.evidence_count} 条`}
+                                className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                  TIER_META[p.tier]?.chip ?? TIER_META.needs_review.chip
+                                }`}>
+                          {p.name || p.entity_id}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          <div className="mt-1 flex gap-1">
+            <div className="w-24 shrink-0" />
+            {xa.order.map((k, x) => (
+              <div key={k} className="flex-1 text-center">
+                <div className="text-[10px] font-medium text-neutral-500">{xa.labels[k] ?? k}</div>
+                <div className="font-mono text-[9px] text-neutral-300">{x}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      {payload.unpositioned.length > 0 && (
+        <div className="mt-2 rounded border border-dashed border-neutral-200 bg-neutral-50/60 p-2">
+          <div className="mb-1 text-[10px] font-semibold text-neutral-500">
+            未定位 {payload.unpositioned.length} 家（阶段未判定/无法映射规范序——不塞进图里）
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {payload.unpositioned.map((u) => (
+              <button key={u.entity_id} onClick={() => onLocate(u.entity_id)} title={u.reason}
+                      className="rounded-full border border-dashed border-neutral-300 px-1.5 py-0.5 text-[10px] text-neutral-500 hover:border-neutral-400">
+                {u.name || u.entity_id}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- Profit Pool 堆叠条（§22/§48.4：定量份额才画，单源标 Estimated） ----------------
+
+const POOL_COLORS = ["#1d4ed8", "#0d9488", "#7c3aed", "#b45309", "#52525b", "#b91c1c"];
+
+/** 份额字符串 → 绘图 number（十进制契约，只在绘图边界转换）。 */
+export function shareToNumber(share: string): number | null {
+  if (!/^\d+(\.\d+)?$/.test(share.trim())) return null;
+  const n = Number(share);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+export function ProfitPoolBar({ pool, onEvidenceClick }: {
+  pool: ProfitPool;
+  onEvidenceClick?: (id: string) => void;
+}) {
+  const entries = pool.entries
+    .map((e) => ({ ...e, n: shareToNumber(e.share) }))
+    .filter((e): e is typeof e & { n: number } => e.n !== null);
+  if (!entries.length) return null;
+  // 宽度基准 = 全池 100%（不归一化到合计）：合计 <100% 时右侧留空 = 「未覆盖」可见；
+  // 合计 >100%（口径重叠）时超出部分被裁——合计偏离已在 notes 显式说明，不改写原始数字
+  const total = entries.reduce((s, e) => s + e.n, 0);
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3">
+      <div className="mb-2 flex flex-wrap items-baseline gap-2">
+        <span className="text-xs font-semibold text-neutral-600">利润池份额（客户支出流向）</span>
+        <span className="text-[10px] text-neutral-400">
+          份额为来源原文百分数（全池=100%）；单一来源标 Estimated / Directional（§48.4）
+        </span>
+      </div>
+      <div className="flex h-8 w-full overflow-hidden rounded-md border border-neutral-200 bg-neutral-50">
+        {entries.map((e, i) => (
+          <div key={e.node}
+                 className={`relative flex items-center justify-center ${e.estimated ? "opacity-70" : ""}`}
+                 style={{
+                   width: `${Math.min(e.n, 100)}%`,  // 份额 = 全池百分数（不归一化）
+                   backgroundColor: POOL_COLORS[i % POOL_COLORS.length],
+                   // Estimated：斜纹纹理（视觉不确定性，不画成精确份额）
+                   backgroundImage: e.estimated
+                     ? "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.35) 4px, rgba(255,255,255,0.35) 8px)"
+                     : undefined,
+                 }}
+                 title={`${e.label}：${e.share}%${e.estimated ? "（Estimated / Directional）" : ""}${e.note ? `\n${e.note}` : ""}`}>
+            {e.n >= 7 && (
+              <span className="px-1 text-[10px] font-medium text-white">
+                {e.share}%{e.estimated ? " ᴱ" : ""}
+              </span>
+            )}
+          </div>
+        ))}
+        {total < 100 && (
+          <div className="flex flex-1 items-center justify-center text-[10px] text-neutral-400"
+                 title={`份额合计 ${pool.total_share}%，其余 ${(100 - total).toFixed(1)}% 未见定量证据——不虚构「其他」段`}>
+            未覆盖 {(100 - total).toFixed(0)}%
+          </div>
+        )}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-neutral-600">
+        {entries.map((e, i) => (
+          <span key={e.node} className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2.5 w-2.5 rounded-sm"
+               style={{ backgroundColor: POOL_COLORS[i % POOL_COLORS.length] }} />
+            {e.label} <span className="font-mono tabular-nums">{e.share}%</span>
+            {e.estimated && <span className="text-amber-700" title="单一来源份额">Est.</span>}
+            {onEvidenceClick && e.evidence_refs.length > 0 && (
+              <button onClick={() => onEvidenceClick(e.evidence_refs[0])}
+                      className="text-blue-700 hover:underline">
+                来源 →
+              </button>
+            )}
+          </span>
+        ))}
+      </div>
+      {pool.notes.map((n, i) => (
+        <div key={i} className="mt-1 text-[10px] text-amber-800">· {n}</div>
+      ))}
     </div>
   );
 }

@@ -894,7 +894,9 @@ def step_synthesize(deps: StepDeps, ctx: StepContext) -> StepResult:
 
             parsed, failures, repairs = parse_structures_partial(raw)
             # 语义验证按 kind 归组（issue 前缀即 kind）：有问题的 kind 整体拒绝，其余照常接受
-            for issue in validate_structures(parsed, resolvable=_resolvable):
+            for issue in validate_structures(
+                parsed, resolvable=_resolvable, entity_kind=ctx.entity_kind
+            ):
                 kind = issue.split(":", 1)[0].strip()
                 failures.setdefault(kind, "")
                 failures[kind] = (failures[kind] + "；" + issue if failures[kind] else issue)[:800]
@@ -976,7 +978,9 @@ SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
             "structures 的键限定五类："
             "industry_map{nodes[{node_id,label,layer,company_refs,bottleneck(布尔，瓶颈描述写 note),"
             "note,evidence_refs}],edges[{source,target,relation(supplies/competes/substitutes/"
-            "depends_on/enables/value_flow),flow_known,flow_value,note,evidence_refs}],"
+            "depends_on/enables/value_flow),flow_known,flow_value(value_flow 边专用：target 环节"
+            "捕获的价值份额百分数，如 \"45%\"；单一二手来源必须在 note 标 Estimated),note,"
+            "evidence_refs}],"
             "layers(与 node.layer 同一组 key：upstream/midstream/downstream/platform/application/"
             "infrastructure/demand),layer_labels(key→显示名),routes[{route,maturity,companies}],"
             "bottlenecks,value_flow_note} / "
@@ -990,12 +994,19 @@ SYNTHESIZE_TOOL_SCHEMAS: dict[str, dict] = {
             "chartable(全部行可比才 true)} / "
             "validation_timeline{items[{event,window_start,window_end,status(occurred/expected/unknown),"
             "trigger_condition,affected_judgment,company_refs,evidence_refs}]} / "
-            "executive_summary{objective,answer,stage(行业阶段一句话),why_now(为什么现在，列表),"
-            "value_capture(价值捕获在哪),thesis_breakers(证伪条件，列表),tiers(分层→公司名列表),"
-            "main_basis(列表),biggest_disagreement,limitations,question_progress,refs,"
-            "credibility(分层→说明的 dict)}。"
+            "executive_summary{objective,answer,stage(产业/公司阶段一句话，必填),"
+            "why_now(为什么是现在，必填，3-5 条),value_capture(价值捕获在哪：哪个环节/角色赚到钱，"
+            "必填，一句话),thesis_breakers(证伪条件：什么发生会推翻本结论，必填，≤3 条),"
+            "tiers(分层→公司名列表),main_basis(列表),biggest_disagreement,limitations,"
+            "question_progress,refs,credibility(分层→说明的 dict)}。"
+            "tear-sheet 四字段是行业档案的硬要求（Overview 首屏只读这四个字段）："
+            "四字段全空且 limitations 未说明缺口原因会被拒绝；某字段确无证据支撑时，"
+            "在 limitations 写明原因后该字段可留空（不编造）。"
             "常见中文同义词会被归一（支撑→enables、pending→expected、入选→included、上游→upstream 等）"
             "并在响应 repairs 里留痕，但请尽量直接给规范值。"
+            "跨结构一致性：industry_map 节点的 company_refs 必须用 candidate_assessment 里该公司的"
+            " entity_id（同一公司同一 id，不要用「公司名 (代码)」显示名）——否则产业链图与候选表"
+            "的点击联动断开；validation_timeline 的 company_refs 同理。"
             "硬纪律：引用必须可解析；淘汰与不可比必须给原因；无流量数据时 "
             "flow_known=false 且不填 flow_value；无可校准依据时不给概率百分比或总分。"
         ),
@@ -1151,11 +1162,22 @@ def _synthesize_brief(
         "④ 未完成的题目用 gap_notice 显式标出，不得用推测补齐；"
         "⑤ 无可校准数据时用证据支持的阶段与条件表达，不自行制造百分比或总分；"
         "⑥ 先调 submit_structures 提交结构化产物（行业实体至少交 industry_map + "
-        "candidate_assessment + executive_summary，executive_summary 尽量给 tear-sheet 字段 "
-        "stage/why_now/value_capture/thesis_breakers；有验证节点时交 "
-        "validation_timeline；同口径数据齐时交 comparison_matrix）——页面靠这些"
-        "结构渲染关系图与公司矩阵，不靠长文本；按 kind 提交即校验：合法 kind 立即冻结，"
-        "非法 kind 按返回原因只修该 kind 重提；"
+        "candidate_assessment + executive_summary；executive_summary 的 tear-sheet "
+        "四字段是硬要求：stage=产业/公司阶段一句话、why_now=为什么是现在 3-5 条、"
+        "value_capture=价值捕获在哪（哪个环节/角色赚到钱）一句话、thesis_breakers="
+        "证伪条件 ≤3 条（每条回答「什么发生会推翻本结论」，不得是泛泛风险）；"
+        "候选评估里每家公司必须给 technology_stage 与 commercial_stage 两个离散阶段"
+        "（canonical：early/preclinical/clinical/commercial/mature 与 "
+        "none/pilot/early_revenue/scaling/profitable；无法判定留空并在 limitations 说明，"
+        "不造连续评分）；有验证节点时交 validation_timeline；同口径数据齐时交 "
+        "comparison_matrix；利润池有定量证据时给 industry_map 的 value_flow 边标 "
+        "flow_known=true + flow_value（百分数，如 \"55%\"，单一二手来源在 note 标注 "
+        "Estimated）——页面靠这些结构渲染关系图与公司矩阵，不靠长文本。"
+        "⚠ 提交节奏（长生成防断流）：submit_structures 每次调用只提交一个 kind，"
+        "从小到大（executive_summary → validation_timeline → industry_map → "
+        "candidate_assessment → comparison_matrix），已接受的 kind 已冻结不必重交；"
+        "不要把多个 kind 塞进一次调用（单次生成过长会被网关截断，整批丢失）。"
+        "按 kind 提交即校验：合法 kind 立即冻结，非法 kind 按返回原因只修该 kind 重提；"
         "⑦ 最后调 submit_report_document（提交即校验，硬错会当轮返回可修原因）。"
     )
     del view
@@ -2188,7 +2210,7 @@ _COMMITTEE_ROLES: tuple[tuple[str, str], ...] = (
 
 
 def step_committee(deps: StepDeps, ctx: StepContext) -> StepResult:
-    """投资委员会：每票四视角 + 空头 + CIO 双强综合（kimi-k3@max 与 GLM-5.3@max 分担）。
+    """投资委员会：每票四视角 + 空头 + CIO 双强综合（research 位与 gpt-5.6-sol@xhigh 分担）。
 
     产出是判断 → 不落 KB，落报告 artifact（F5 排序报告与 /decide 决策卡消费）。
     """
@@ -2212,8 +2234,8 @@ def step_committee(deps: StepDeps, ctx: StepContext) -> StepResult:
     view = deps.kb.view("industry", ctx.ticker, datetime.now(UTC))
     thesis_text = str(view["thesis"].value) if "thesis" in view else "（无 thesis——本轮按默认权重与常识判断）"
 
-    strong_a = deps.llm_for("research")       # kimi-k3@max
-    strong_b = deps.llm_for("research-alt")   # GLM-5.3@max
+    strong_a = deps.llm_for("research")       # claude-opus-5@max（缺位回落 kimi-k3@max）
+    strong_b = deps.llm_for("research-alt")   # gpt-5.6-sol@xhigh（缺位回落 GLM-5.3@max）
     out_paths: list[str] = []
     for ticker in approved:
         if ctx.should_cancel():

@@ -36,7 +36,7 @@ FY2024 = MetricPeriod(start=date(2024, 1, 1), end=date(2024, 12, 31),
                       frequency="FY", fiscal_label="FY2024")
 
 
-def seeded_app(tmp_path: Path, *, with_runner: bool = True):
+def seeded_app(tmp_path: Path, *, with_runner: bool = True, export_bundle_dir: Path | None = None):
     from finance_agent.gateway.adapters.fixture import FixtureAdapter
     from finance_agent.gateway.models import DataRecord, SourceCapability
 
@@ -82,7 +82,8 @@ def seeded_app(tmp_path: Path, *, with_runner: bool = True):
 
     projector = DossierProjector(kb=kb, metrics=metrics, decisions=decisions)
     service = DossierService(kb=kb, metrics=metrics, projector=projector,
-                             events=events, decisions=decisions)
+                             events=events, decisions=decisions,
+                             export_bundle_dir=export_bundle_dir)
     calcs = CalculationService(metrics, events=events)
 
     runner = None
@@ -246,6 +247,36 @@ class TestArtifactAndExportEndpoints:
         assert client.get("/api/v2/jobs/job-nope").status_code == 404
         bad = client.post(f"/api/v2/dossiers/{sid}/exports", json={"format": "pdf"})
         assert bad.status_code == 422
+
+    def test_export_html_job_roundtrip(self, tmp_path):
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "export-viewer.js").write_text("console.log('viewer-ok')", encoding="utf-8")
+        (bundle / "export-viewer.css").write_text("body{color:#111}", encoding="utf-8")
+        client, env = seeded_app(tmp_path, export_bundle_dir=bundle)
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        r = client.post(f"/api/v2/dossiers/{sid}/exports", json={"format": "html"})
+        assert r.status_code == 200
+        job = r.json()
+        assert job["status"] == "completed" and job["artifact_name"].endswith(".html")
+        artifact = client.get(f"/api/v2/jobs/{job['job_id']}/artifact")
+        assert artifact.status_code == 200
+        assert artifact.headers["content-type"].startswith("text/html")
+        assert "window.__DOSSIER_EXPORT__" in artifact.text and "viewer-ok" in artifact.text
+        # 研究产物内嵌（离线研究报告页 #/research/<id> 与在线一致可读）
+        import json as _json
+        data_json = artifact.text.split(
+            "window.__DOSSIER_EXPORT__ = ", 1)[1].split(";\n</script>", 1)[0]
+        data = _json.loads(data_json)
+        assert env["artifact_id"] in data["artifacts"]
+        assert data["modules"]  # 模块 payload 同源内嵌
+
+    def test_export_html_without_bundle_503(self, tmp_path, monkeypatch):
+        client, env = seeded_app(tmp_path)  # 未装配 bundle dir → 按默认推导（空目录）
+        monkeypatch.setenv("FA_EXPORT_BUNDLE_DIR", str(tmp_path / "no-bundle"))
+        sid = client.get("/api/v2/knowledge/stock/BE/dossier").json()["context"]["snapshot_id"]
+        r = client.post(f"/api/v2/dossiers/{sid}/exports", json={"format": "html"})
+        assert r.status_code == 503 and "build:export" in r.json()["detail"]
 
     def test_valuation_preview_no_fact_write(self, tmp_path):
         client, env = seeded_app(tmp_path)

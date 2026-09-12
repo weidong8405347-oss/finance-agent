@@ -44,6 +44,7 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
     """
     import importlib.util
 
+    from ..gateway.adapters.consensus import YFinanceConsensusAdapter
     from ..gateway.adapters.edgar import EdgarAdapter
     from ..gateway.adapters.edgar_facts import EdgarFactsAdapter
     from ..gateway.adapters.exa_search import ExaSearchAdapter
@@ -173,6 +174,15 @@ def build_builtin_registry(env: Mapping[str, str] | None = None) -> PluginRegist
         network="gdelt_api",
         tests="tests/unit/test_data_sources_p2.py",
         adapters=(GdeltNewsAdapter(),),
+    )
+    reg(
+        id="vendor.consensus_yf", kind="source",
+        tools=["query_consensus_yf"], schemas=s["gateway"],
+        capabilities=["expectations.consensus", "expectations.revision"],
+        markets=["US"], temporal="none",
+        network="vendor_libraries",
+        tests="tests/unit/test_consensus_adapter.py",
+        adapters=(YFinanceConsensusAdapter(),),
     )
 
     # ---------------- 处理插件（processing）：包装现有 run 装配能力 ----------------

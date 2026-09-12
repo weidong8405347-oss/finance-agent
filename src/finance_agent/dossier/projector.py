@@ -25,6 +25,7 @@ from ..knowledge.snapshot import kb_snapshot_id
 from ..knowledge.store import BitemporalStore
 from ..research.plan import Recipe, load_recipe, select_recipe
 from . import registry as module_registry
+from .investment_objects import derive_investment_objects
 from .models import (
     SCHEMA_VERSION,
     BusinessGraph,
@@ -239,6 +240,9 @@ class DossierProjector:
             plan=plan,
         )
         snapshot.research = self._build_research_coverage(plan, claims, artifacts, t, ns)
+        # Investment Objects（§12-§15/§34）：从冻结 claims + 时间线 + 候选推导的确定性
+        # ThesisObject/MoatAssessment（不从文本猜置信度；无数据 = 空列表）
+        snapshot.investment_objects = derive_investment_objects(claims, structures, plan)
         # 来源目录含 claim 引用（review #22）：仅由论断引用的证据不再被抽屉接口 404
         snapshot.evidence_refs = sorted(
             {eid for f in facts.values() for eid in f.evidence_ids}
@@ -290,7 +294,13 @@ class DossierProjector:
             "resolutions": sorted(r.resolution_id for r in resolutions),
             "calculations": sorted(calculation_ids),
             "plan": _plan_digest(plan),
-            "structures": sorted(structures.keys()),
+            # structures 必须按**内容**进哈希（2026-09-12 结构回收事故）：
+            # 只含键名时，recover_structures 原地更新产物的 structures 不产生新快照，
+            # 页面被幂等去重卡在旧 payload（回收内容永不上屏）
+            "structures": hashlib.sha256(
+                json.dumps(structures, ensure_ascii=False, sort_keys=True, default=str)
+                .encode("utf-8")
+            ).hexdigest()[:16],
         }
         snapshot.data_hash = snapshot.compute_data_hash(inputs)
         with contextlib.suppress(Exception):
@@ -630,7 +640,12 @@ class DossierProjector:
                 "obs": sorted(o.observation_id for o in obs),
                 "facts": sorted((r.fact_id, r.version) for r in legacy),
                 "claims": sorted(c["claim_id"] for c in mod_claims),
-                "structures": sorted(mod_structures.keys()),
+                # 结构产物按内容入指纹（只含键名时，原地更新的结构不被
+                # changed_modules 发现——与快照 data_hash 同一次整改）
+                "structures": hashlib.sha256(
+                    json.dumps(mod_structures, ensure_ascii=False, sort_keys=True,
+                               default=str).encode("utf-8")
+                ).hexdigest()[:12] if mod_structures else "",
             }
             if mod == "research_sources":
                 digest_src["artifacts"] = sorted(a["artifact_id"] for a in artifacts)

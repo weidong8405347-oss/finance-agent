@@ -187,6 +187,88 @@ class ExecutiveSummary(_Base):
     credibility: dict[str, str] = Field(default_factory=dict)
 
 
+# ---------------- Investment Objects（升级方案 §12-§15/§28/§34） ----------------
+#
+# 这两个结构不是合成器提交产物（不进 STRUCTURE_MODELS / submit_structures 通道），
+# 而是投影层从冻结 claims + validation_timeline + candidate_assessment 推导的
+# 确定性版本（dossier/investment_objects.py）：
+# - 置信度不从文本猜——只能来自 claim 状态映射（见 CONFIDENCE_FROM_STATUS）或留空；
+# - 护城河十维评分同理：无逐维度评级证据时 score 留空，不编造 1-5。
+
+
+class ThesisObject(_Base):
+    """论点对象（§13）：回答「什么支持/反驳/未决/什么证伪」（§14 反证义务）。
+
+    计数是确定性的（引用列表长度）；confidence 是状态映射值并附 basis 说明；
+    monitor 链接只来自 validation_timeline 的确定性关联（证据交集/公司交集）。
+    """
+
+    id: str  # 来源 claim_id
+    title: str = ""  # 问题文本或论点首句（展示层截断，不改语义）
+    summary: str = ""  # 完整论点（claim statement 原文）
+    kind: str = ""  # fact_summary/inference/hypothesis/analysis（§15 事实分层）
+    status: str = ""  # claim 状态（draft/validated；superseded 不进 theses）
+    #: 重要性：计划问题优先级映射（high→0.9/medium→0.6/low→0.3）；无计划归属 → None
+    importance: float | None = None
+    #: 置信度：claim 状态 + 内容核验状态的映射（CONFIDENCE_FROM_STATUS）；
+    #: 不从文本猜测。basis 字段说明推导依据
+    confidence: float | None = None
+    confidence_basis: str = ""
+    #: 方向（bullish/bearish/neutral）：无确定性来源 → None（不从文本猜多空）
+    direction: str | None = None
+    support_count: int = 0
+    counter_count: int = 0
+    unresolved_count: int = 0
+    supports: list[str] = Field(default_factory=list)
+    contradicts: list[str] = Field(default_factory=list)
+    #: 关联验证时间线事件（监测什么能改变本论点）
+    monitor: list[str] = Field(default_factory=list)
+    related_companies: list[str] = Field(default_factory=list)
+    #: 反证义务（§14）：counter_refs 为空 → "unmet"（反证义务未履行，不假装无反证）
+    bear_case_status: Literal["met", "unmet"] = "unmet"
+
+
+#: 护城河十维（§28）：统一结构，逐维度 score 1-5 + confidence + trend + 证据
+MOAT_DIMENSIONS: tuple[str, ...] = (
+    "data", "technology", "scale", "network_effect", "switching_cost",
+    "distribution", "brand", "regulation", "cost_advantage", "ecosystem",
+)
+
+MOAT_DIMENSION_LABELS: dict[str, str] = {
+    "data": "数据", "technology": "技术", "scale": "规模", "network_effect": "网络效应",
+    "switching_cost": "切换成本", "distribution": "渠道/分发", "brand": "品牌",
+    "regulation": "监管/牌照", "cost_advantage": "成本优势", "ecosystem": "生态",
+}
+
+
+class MoatDimension(_Base):
+    """一个维度的护城河评估；无证据评分时全部留空（不编造 1-5）。"""
+
+    score: int | None = None  # 1-5（仅在逐维度评级证据存在时给出）
+    confidence: Literal["low", "medium", "high"] | None = None
+    trend: Literal["strengthening", "stable", "weakening", "unknown"] | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class MoatAssessment(_Base):
+    """公司护城河评估（§28）。
+
+    投影确定性版本：十维骨架（score 全空）+ 候选评估的四组证据原文
+    （moat/commercial/sustainability/counter）+ 提及该公司的论断引用。
+    评分通道（LLM 逐维度评级 + 证据绑定）是后续项，见交接文档。
+    """
+
+    entity_id: str
+    name: str = ""
+    tier: str = ""
+    dimensions: dict[str, MoatDimension] = Field(default_factory=dict)
+    #: 候选评估证据组（原文条目，不归维度、不猜归属）
+    evidence_groups: dict[str, list[str]] = Field(default_factory=dict)
+    claim_refs: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 STRUCTURE_MODELS: dict[str, type[BaseModel]] = {
     "industry_map": IndustryMap,
     "candidate_assessment": CandidateAssessment,
@@ -481,10 +563,32 @@ def _norm_comparison_matrix(p: dict[str, Any], repairs: list[str]) -> None:
                 row[field] = {cid: val for cid, val in zip(col_ids, v, strict=True)}
                 repairs.append(f"{where}.{field}: 数组按列序 zip 为 dict")
         if isinstance(row.get("cells"), dict):
-            row["cells"] = {
-                str(k): (None if val is None else str(val))
-                for k, val in row["cells"].items()
-            }
+            fixed_cells: dict[str, Any] = {}
+            obs_map = row.get("observation_ids")
+            if not isinstance(obs_map, dict):
+                obs_map = {}
+                row["observation_ids"] = obs_map
+            for k, val in row["cells"].items():
+                if isinstance(val, dict):
+                    # 富单元格（{value, note, observation_id, unit}）→ 确定性拆包：
+                    # 文本 = value（+note 括注），observation_id 移入 observation_ids——
+                    # 不吞成 repr 字符串（2026-09-12 事故：str(dict) 进单元格，
+                    # 表格渲出 Python repr 且困住 obs 引用）
+                    cell_value = val.get("value")
+                    cell_note = str(val.get("note") or "").strip()
+                    obs = str(val.get("observation_id") or "").strip()
+                    text = "" if cell_value is None else str(cell_value)
+                    if cell_note:
+                        text = f"{text}（{cell_note}）" if text else cell_note
+                    fixed_cells[str(k)] = text or None
+                    if obs and str(k) not in obs_map:
+                        obs_map[str(k)] = obs
+                    repairs.append(
+                        f"{where}.cells.{k}: 富单元格拆包（value+note 为文本，observation_id 归位）"
+                    )
+                else:
+                    fixed_cells[str(k)] = None if val is None else str(val)
+            row["cells"] = fixed_cells
         if "comparable" in row:
             row["comparable"] = _coerce_bool(row["comparable"])
     if "chartable" in p:
@@ -585,11 +689,12 @@ def parse_structures(raw: dict[str, Any]) -> dict[str, BaseModel]:
 
 
 def validate_structures(
-    structures: dict[str, BaseModel], *, resolvable=None
+    structures: dict[str, BaseModel], *, resolvable=None, entity_kind: str | None = None
 ) -> list[str]:
     """服务端验证（确定性）：引用可解析 + 图完整性 + 可比性口径。
 
     resolvable: (ref_id) -> bool；缺省只查内部一致性。返回问题清单（空 = 通过）。
+    entity_kind：行业实体对 executive_summary 有 tear-sheet 硬要求（升级方案 §47）。
     """
     issues: list[str] = []
 
@@ -671,6 +776,23 @@ def validate_structures(
     if isinstance(summary, ExecutiveSummary):
         if not summary.answer:
             issues.append("executive_summary: 必须给出回答用户目标的结论")
+        # tear-sheet 硬要求（升级方案 §47 + handoff 2026-09-12 后续项）：行业 Overview
+        # 首屏的 Why Now/价值捕获/证伪条件/阶段四块只读这四个字段——全空且未在
+        # limitations 说明缺口原因 = 未履行产出义务（拒绝，可修复重提）。
+        # 诚实出口：某字段确无证据支撑时在 limitations 写明原因后留空（不编造）。
+        if entity_kind == "industry":
+            tear_empty = not (
+                summary.stage or summary.why_now
+                or summary.value_capture or summary.thesis_breakers
+            )
+            if tear_empty and not summary.limitations:
+                issues.append(
+                    "executive_summary: 行业档案必须产出 tear-sheet 字段——"
+                    "stage（产业阶段一句话）/ why_now（为什么是现在，3-5 条）/ "
+                    "value_capture（价值捕获在哪，一句话）/ thesis_breakers（证伪条件 ≤3 条，"
+                    "回答「什么发生会推翻结论」）；确有字段无证据支撑时，在 limitations "
+                    "写明缺口原因后可留空（不编造）"
+                )
         for ref in summary.refs:
             _check_ref(ref, "executive_summary")
     return issues
@@ -684,6 +806,8 @@ __all__ = [
     "IndustryMap", "IndustryMapNode", "IndustryMapEdge", "CandidateAssessment",
     "CandidateItem", "ComparisonMatrix", "ComparisonRow", "ValidationTimeline",
     "ValidationItem", "ExecutiveSummary", "STRUCTURE_MODELS", "StructureError",
+    "ThesisObject", "MoatAssessment", "MoatDimension", "MOAT_DIMENSIONS",
+    "MOAT_DIMENSION_LABELS",
     "parse_structures", "parse_structures_partial", "normalize_structures",
     "validate_structures", "structures_payload", "StructureKind",
     "CANONICAL_RELATIONS", "RELATION_SYNONYMS", "STATUS_SYNONYMS", "LAYER_SYNONYMS",

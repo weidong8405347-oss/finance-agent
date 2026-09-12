@@ -318,6 +318,9 @@ class TestBuiltinParity:
         expected = {
             "edgar", "edgar_facts", "hkex_news", "web_search", "web_search_tavily",
             "prices", "prices_stooq", "fundamentals", "news_gdelt",
+            # 2026-09-12 新增（升级方案 §25/§26 Expectations Layer）：一致预期快照源
+            # （C 级 PIT，评估模式 fail-closed 禁用）——刻意的能力新增，非漂移
+            "consensus_yf",
         }
         if importlib.util.find_spec("akshare") is not None:
             expected.add("fundamentals_hk")
