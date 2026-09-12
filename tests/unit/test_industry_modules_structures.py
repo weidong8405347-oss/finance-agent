@@ -352,6 +352,30 @@ class TestStructureValidation:
         issues = validate_structures(parse_structures({"executive_summary": {"objective": "x"}}))
         assert any("必须给出回答用户目标的结论" in i for i in issues)
 
+    def test_industry_executive_summary_tear_sheet_hard_requirement(self):
+        """升级方案 §47：行业 executive_summary 的 stage/why_now/value_capture/
+        thesis_breakers 四字段是硬要求——全空且未在 limitations 说明 → 拒绝；
+        任一字段有值或 limitations 说明缺口原因 → 通过（诚实出口，不逼编造）。"""
+        bare = parse_structures({"executive_summary": {"objective": "x", "answer": "答"}})
+        # 未传 entity_kind → 不做 tear-sheet 检查（向后兼容）
+        assert validate_structures(bare) == []
+        # 行业 + 四字段全空 + 无 limitations → 拒绝
+        issues = validate_structures(bare, entity_kind="industry")
+        assert any("tear-sheet" in i for i in issues)
+        # 任一字段有值 → 通过
+        filled = parse_structures({"executive_summary": {
+            "objective": "x", "answer": "答", "stage": "商业兑现早期",
+        }})
+        assert validate_structures(filled, entity_kind="industry") == []
+        # 全空但 limitations 说明缺口原因 → 诚实出口通过
+        honest = parse_structures({"executive_summary": {
+            "objective": "x", "answer": "答",
+            "limitations": ["why_now 无证据支撑，待补研"],
+        }})
+        assert validate_structures(honest, entity_kind="industry") == []
+        # 股票实体不做该行业硬要求
+        assert validate_structures(bare, entity_kind="stock") == []
+
 
 class TestBusinessGraphProjection:
     def test_nodes_and_edges_come_from_structure(self, env):
@@ -687,3 +711,42 @@ class TestComparisonNumerics:
         snap, _ = service.open("industry", "ai-for-science")
         payload = service.module(snap["context"]["snapshot_id"], "candidate_pool")
         assert payload.payload["comparison_numerics"][0]["cells"] == {}
+
+
+class TestStructuresContentHash:
+    """2026-09-12 结构回收事故回归：原地更新产物的 structures（recover_structures
+    式修复）必须产生新快照——data_hash 只含结构键名时，幂等去重把页面卡在旧 payload。"""
+
+    def test_in_place_structures_update_produces_new_snapshot(self, env):
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_artifact(metrics, structures={"executive_summary": {
+            "objective": "o", "answer": "原始结论", "stage": "",
+        }})
+        snap1, c1 = service.open("industry", "ai-for-science")
+        assert c1
+        assert snap1["summary"]["stage"] == ""
+        # 原地更新产物 structures（模拟回收脚本合并 tear-sheet 字段）
+        art = metrics.get_artifact("art-1")
+        art["structures"]["executive_summary"]["stage"] = "商业兑现早期"
+        metrics.save_artifact(artifact_id="art-1", namespace="prod", payload=art)
+        snap2, c2 = service.open("industry", "ai-for-science")
+        assert c2, "structures 内容变化必须产生新快照（不得被 data_hash 幂等吞掉）"
+        assert snap2["context"]["snapshot_id"] != snap1["context"]["snapshot_id"]
+        assert snap2["summary"]["stage"] == "商业兑现早期"
+
+    def test_module_data_ref_tracks_structure_content(self, env):
+        """模块内容指纹同样按结构内容变化（changed_modules 能发现原地更新）。"""
+        kb, metrics, events, projector, service = env
+        seed_ev(kb)
+        seed_artifact(metrics, structures={"executive_summary": {
+            "objective": "o", "answer": "原始结论",
+        }})
+        snap1, _ = service.open("industry", "ai-for-science")
+        ref1 = snap1["modules"]["investment_snapshot"]["data_ref"]
+        art = metrics.get_artifact("art-1")
+        art["structures"]["executive_summary"]["answer"] = "更新后的结论"
+        metrics.save_artifact(artifact_id="art-1", namespace="prod", payload=art)
+        snap2, _ = service.open("industry", "ai-for-science")
+        ref2 = snap2["modules"]["investment_snapshot"]["data_ref"]
+        assert ref1 != ref2

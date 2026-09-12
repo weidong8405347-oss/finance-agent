@@ -1,8 +1,9 @@
-"""冻结导出渲染（设计 §11.4 第一期：JSON + Markdown）。
+"""冻结导出渲染（设计 §11.4：JSON + Markdown；HTML 见 export_html.py）。
 
 导出与页面同源：消费同一 DossierSnapshot payload，绑定 as_of/生成时间/data_hash；
 Markdown 里数值只来自 typed 观测/计算引用（不从文本猜数）。
-HTML 导出在组件契约稳定后加入（复用 ReportDocument block 契约）。
+HTML 导出（export_html.py）复用在线组件契约：内嵌 viewer 包与冻结读模型，
+离线交互与在线页面一致。
 """
 
 from __future__ import annotations

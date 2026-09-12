@@ -26,7 +26,7 @@ def make_client(tmp_path, *, monkeypatch=None, dead_provider=False, approval_tim
         # 钉住 provider 解析接缝：只看 env（隔离本机真实 pi 配置，防误打付费 API）
         from finance_agent.llm.router import LLMRouter
 
-        monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
+        monkeypatch.setattr("finance_agent.cli._router", lambda data_dir=None: LLMRouter.from_env())
 
     orch = build_orchestrator(tmp_path)  # 真实装配（与 serve 同一条路径）
     # 预检探活属网络边界（工程约定 2 的可注入接缝）——本组测试主题是失败可见性，
@@ -53,30 +53,39 @@ def wait_event(events, run_id, pred, timeout=8.0):
 
 
 def test_mid_run_failure_three_channels(tmp_path, caplog, monkeypatch):
-    monkeypatch.setenv("FINANCE_AGENT_LLM_RETRY_ATTEMPTS", "1")  # 同上：测可见性不是退避耐力
-    """provider 配了但端点不可达 → 研究 step 中途失败：事件 + ERROR 日志 + 会话状态 error。"""
+    """provider 配了但端点不可达 → 研究零推进 → blocked（拦停+停滞诊断）三通道可见。
+
+    重设计后的研究 step 对单点失败容错（维度组失败记 WARNING 后继续、零推进触发
+    停滞诊断）——死 provider 在 command 层的可见形态是 blocked（带诊断与建议），
+    不是裸 error；会话层随后续 follow-up turn 撞死 provider 记 turn/error → error。
+    （历史备注：本测试曾依赖 `_router` 零参 stub 的 TypeError 偶然通过——stub 签名
+    修正为 `lambda data_dir=None` 后，此处断言的是真实死 provider 路径。）
+    """
+    monkeypatch.setenv("FINANCE_AGENT_LLM_RETRY_ATTEMPTS", "1")
     client, events = make_client(tmp_path, monkeypatch=monkeypatch, dead_provider=True)
     logger = setup_logging("finance_agent_test_l1")
     mirror_events_to_logging(events, logger)
 
-    with caplog.at_level(logging.INFO, logger="finance_agent_test_l1"), \
+    with caplog.at_level(logging.WARNING, logger="finance_agent.research"), \
             caplog.at_level(logging.ERROR, logger="finance_agent.commands"):
         resp = client.post("/api/chat", json={"message": "/research AAA"})
     run_id = resp.json()["run_id"]
 
     done = wait_event(events, run_id, lambda e: e.type == "command/done")[0]
-    # 通道 1a：父流 command/done(error)
-    assert done.payload["outcome"] == "error"
-    # 通道 1b：子流 step error 事件（真实原因在这）
+    # 通道 1a：父流 command/done(blocked) + 停滞摘要（含缺口与建议）
+    assert done.payload["outcome"] == "blocked"
+    assert "停滞" in done.payload["summary"]
+    # 通道 1b：子流 step blocked + 停滞诊断事件（真实原因：缺口字段 + 修复建议）
     child = [e for e in events.read(run_id) if e.type == "step_agent/end"
-             and e.payload["status"] == "error"][0]
+             and e.payload["status"] == "blocked"][0]
     child_run = child.payload["child_run_id"]
-    child_errors = [e for e in events.read(child_run) if e.type == "research/error"]
-    assert child_errors and child_errors[0].payload["reason"]
-    # 通道 2：日志（runner exception + 镜像）
-    assert any("research/error" in r.getMessage() or "step research failed" in r.getMessage()
+    diag = [e for e in events.read(child_run) if e.type == "research/stall_diagnostic"][0]
+    assert diag.payload["missing_fields"] and diag.payload["suggestions"]
+    # 通道 2：日志（维度组失败/零推进 WARNING 留痕，运维可巡）
+    assert any("维度组" in r.getMessage() or "零推进" in r.getMessage()
                for r in caplog.records)
-    # 通道 3：用户可见状态
+    # 通道 3：用户可见状态——follow-up turn 撞死 provider → turn/error → 会话 error
+    wait_event(events, run_id, lambda e: e.type == "turn/error")
     sessions = {s["run_id"]: s for s in client.get("/api/sessions").json()}
     assert sessions[run_id]["status"] == "error"
     assert sessions[run_id]["status_detail"]

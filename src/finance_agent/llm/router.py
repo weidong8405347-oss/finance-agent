@@ -45,12 +45,28 @@ class ProviderConfigError(Exception):
     """provider 三件套未配置齐全（fail-closed）。"""
 
 
+#: 网关桥瞬时 400 的响应体标记（2026-09-12 实测：novita→Bedrock 翻译层抖动——
+#: 同一请求体重放即 200，错误体每次都含 Bedrock Runtime/ValidationException；
+#: 真·参数错误（模型名/schema/余额）不携带这些标记，保持 fail-loud 不重试）
+_GATEWAY_400_MARKERS = ("Bedrock Runtime", "ValidationException", "InvokeModelWithResponseStream")
+
+
 def _is_retryable(e: Exception) -> bool:
-    """可重试的错误：429 / 5xx / 连接级错误；4xx 参数类错误重试无意义。"""
-    status = getattr(getattr(e, "response", None), "status_code", None)
+    """可重试的错误：429 / 5xx / 连接级错误；4xx 参数类错误重试无意义——
+    例外：携带网关桥标记的 400（Bedrock 翻译层抖动，重放同请求可成功）可重试。"""
+    resp = getattr(e, "response", None)
+    status = getattr(resp, "status_code", None)
     if status is None:
         return True  # 连接断开/超时等传输层错误
-    return status == 429 or status >= 500
+    if status == 429 or status >= 500:
+        return True
+    if status == 400 and resp is not None:
+        try:
+            body = resp.text or ""
+        except Exception:  # noqa: BLE001 - 流式响应未读时 .text 抛 ResponseNotRead
+            body = ""
+        return any(m in body for m in _GATEWAY_400_MARKERS)
+    return False
 
 
 def _retry_after_s(e: Exception) -> float | None:
@@ -272,12 +288,21 @@ class OpenAICompatLLM:
         for attempt in range(self._retry_attempts):  # 限流/瞬断重试（同 complete 路径纪律）
             content_parts.clear()
             tc_acc.clear()
-            started = False  # 已开始输出内容后不重试（防 UI 重复 chunk）
             try:
                 with httpx.stream(
                     "POST", url, headers=headers, json=body, timeout=self._timeout
                 ) as resp:
-                    resp.raise_for_status()
+                    try:
+                        resp.raise_for_status()
+                    except httpx.HTTPStatusError:
+                        # 流式错误体必须先 read 再取（否则 .text 抛 ResponseNotRead，
+                        # 真实 400 原因被掩盖成 <unread streaming response>——
+                        # 2026-09-12 合成 400 排查即被此阻塞）
+                        import contextlib as _cl
+
+                        with _cl.suppress(Exception):
+                            resp.read()
+                        raise
                     for line in resp.iter_lines():
                         if not line.startswith("data:"):
                             continue
@@ -292,11 +317,9 @@ class OpenAICompatLLM:
                             continue
                         delta = choices[0].get("delta", {})
                         if delta.get("content"):
-                            started = True
                             content_parts.append(delta["content"])
                             on_delta(delta["content"])
                         for tc_delta in delta.get("tool_calls") or []:
-                            started = True
                             slot = tc_acc.setdefault(
                                 tc_delta["index"], {"id": "", "name": "", "arguments": ""}
                             )
@@ -309,7 +332,12 @@ class OpenAICompatLLM:
                                 slot["arguments"] += fn["arguments"]
                 break  # 成功
             except Exception as e:
-                if attempt == self._retry_attempts - 1 or started or not _is_retryable(e):
+                # 重试边界（2026-09-12 合成断流事故，novita 长流式生成被中途切断）：
+                # assistant/chunk 事件只保 UI replay 保真、不进模型上下文（derive_messages
+                # 只消费 assistant/message），因此传输层断流重试不会让模型看到重复文本；
+                # 代价仅是 UI 重放出现残影（可接受）——长结构提交（submit_structures
+                # 大 JSON）被切断即整个 run 失败，run 存活优先。4xx 参数错误不重试。
+                if attempt == self._retry_attempts - 1 or not _is_retryable(e):
                     raise _normalize_llm_error(e) from e
                 if self._retry_gate is not None and not self._retry_gate():
                     raise _normalize_llm_error(e) from e  # 重试预算耗尽：不退避硬等
@@ -458,9 +486,11 @@ class LLMRouter:
                     specs[f"{name}:{m['id']}"] = ProviderSpec(
                         name=f"{name}:{m['id']}", api_key=key, base_url=base, model=m["id"]
                     )
-        # 默认角色路由（2026-09 用户实测裁决：kimi-k3/GLM-5.3 的 max 档效果超 pa/gpt-5.6-sol，
-        # 效果优先——顶层用 kimi-k3@max；fast 用 GLM-5.3 默认档）。
-        # 条件化：dashscope 别名不存在时不动默认（缺 provider 不该硬指）。
+        # 默认角色路由（2026-09 裁决修订链：主力位实测 kimi-k3/GLM-5.3@max 超 pa/gpt-5.6-sol
+        # → 后修订为「调研规划最关键位用 claude-opus-5，gpt-5.6-sol 做异构交叉补充」）。
+        # 优先级：research = opus-5 > kimi-k3；research-alt = gpt-5.6-sol > GLM-5.3；
+        # judge = gpt-5.6-sol（独立裁判）；fast = GLM-5.3 默认档。
+        # 全部条件化：别名不存在时不动上一层默认（缺 provider 不该硬指）。
         default_role_map: dict[str, str] = {}
         default_role_options: dict[str, dict] = {}
         if "dashscope:kimi-k3" in specs:
@@ -469,9 +499,24 @@ class LLMRouter:
             default_role_map["fast"] = "dashscope:kimi-k3"
         if "dashscope:ZHIPU/GLM-5.3" in specs:
             default_role_map["fast"] = "dashscope:ZHIPU/GLM-5.3"
-            # 第二强模型（P4 双强交叉）：GLM-5.3 @ max 档
+            # 第二强模型兜底（P4 双强交叉）：GLM-5.3 @ max 档
             default_role_map["research-alt"] = "dashscope:ZHIPU/GLM-5.3"
             default_role_options["research-alt"] = {"effort": "max", "timeout": 300.0}
+        # GPT 异构补强（2026-09 裁决修订：主力 research 位实测 kimi/GLM 更强，不动；
+        # research-alt 与 judge 改用 GPT 家族——双强综合与独立裁判吃异构先验，
+        # 同源模型交叉验证/自我裁判会打折）。judge 未接线时调用方回落 research。
+        # novita 实测：reasoning_effort 不支持 "max"（400 列明 none/low/medium/high/xhigh），
+        # 最高档取 "xhigh"。
+        if "novita-gpt:pa/gpt-5.6-sol" in specs:
+            default_role_map["research-alt"] = "novita-gpt:pa/gpt-5.6-sol"
+            default_role_options["research-alt"] = {"effort": "xhigh", "timeout": 300.0}
+            default_role_map["judge"] = "novita-gpt:pa/gpt-5.6-sol"
+            default_role_options["judge"] = {"effort": "xhigh", "timeout": 300.0}
+        # 调研规划主力位（最关键位用最强模型）：claude-opus-5 在场 → research 交给 opus-5，
+        # kimi-k3 降为缺位兜底。novita 实测 opus-5 接受 reasoning_effort（max/xhigh 均不 400）。
+        if "novita-gpt:anthropic/claude-opus-5" in specs:
+            default_role_map["research"] = "novita-gpt:anthropic/claude-opus-5"
+            default_role_options["research"] = {"effort": "max", "timeout": 300.0}
         # 三 flash worker 池（Q4 裁决：重吞吐轻判断的维度研究并行，三源分工/冗余）。
         # 条件化：别名不存在时回落到已配置的 flash，宁重复不悬空（worker 绝不该落到强模型价）。
         _flashes = ("dashscope:deepseek-v4-flash-0731", "dashscope:ZHIPU/GLM-5.3-Flash",

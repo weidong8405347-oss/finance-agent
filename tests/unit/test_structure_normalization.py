@@ -339,3 +339,40 @@ class TestNormalizeIdempotent:
         twice, repairs2 = normalize_structures(once)
         assert twice == once
         assert repairs2 == []  # 第二次无新修复（幂等）
+
+
+class TestRichCellUnpacking:
+    """富单元格（dict 形态）拆包（2026-09-12 事故：str(dict) 吞成 repr 字符串，
+    表格渲出 Python  repr 且 obs 引用困死在文本里）。"""
+
+    def test_dict_cell_unpacked_value_note_observation(self):
+        raw = {"comparison_matrix": {
+            "columns": [{"id": "c1", "label": "FY25"}, {"id": "c2", "label": "FY26H1"}],
+            "rows": [{
+                "label": "英矽智能 总收入",
+                "cells": {
+                    "c1": {"value": "27456", "note": "HKEXnews 口径",
+                           "observation_id": "obs-aaa111", "unit": "USD 千"},
+                    "c2": {"value": "106303", "note": "同比 +287.2%",
+                           "observation_id": "obs-bbb222"},
+                },
+                "observation_ids": {},
+            }],
+        }}
+        accepted, failures, repairs = parse_structures_partial(raw)
+        assert not failures
+        row = accepted["comparison_matrix"].rows[0]
+        # value+note 合成文本，observation_id 归位（不困在文本里）
+        assert row.cells["c1"] == "27456（HKEXnews 口径）"
+        assert row.cells["c2"] == "106303（同比 +287.2%）"
+        assert row.observation_ids == {"c1": "obs-aaa111", "c2": "obs-bbb222"}
+        assert any("富单元格拆包" in r for r in repairs)
+
+    def test_plain_cells_untouched(self):
+        raw = {"comparison_matrix": {
+            "columns": [{"id": "c1"}],
+            "rows": [{"label": "r", "cells": {"c1": "100"}, "observation_ids": {}}],
+        }}
+        accepted, failures, _ = parse_structures_partial(raw)
+        assert not failures
+        assert accepted["comparison_matrix"].rows[0].cells == {"c1": "100"}

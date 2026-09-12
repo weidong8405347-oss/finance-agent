@@ -62,8 +62,14 @@ def _submit_attempts(events, run_ids: set[str]) -> list[tuple[int, str, dict[str
     return out
 
 
-def recover_entity(kb, metrics, events, kind: str, eid: str, namespace: str) -> dict[str, Any]:
-    """回收一个实体：返回报告 dict（kinds/来源/修复/拒绝原因），不写库。"""
+def recover_entity(kb, metrics, events, kind: str, eid: str, namespace: str,
+                   extra_run_ids: set[str] | None = None) -> dict[str, Any]:
+    """回收一个实体：返回报告 dict（kinds/来源/修复/拒绝原因），不写库。
+
+    extra_run_ids：产物之外的扫描源（如「模型已提交但 run 未定稿」的
+    synthesize 子 run——2026-09-12 事故：合成步 LLM 流式连接挂死，
+    submit_structures 已接受 5 个 kind 但产物未冻结）。
+    """
     from finance_agent.dossier.structures import (
         parse_structures_partial,
         structures_payload,
@@ -79,6 +85,7 @@ def recover_entity(kb, metrics, events, kind: str, eid: str, namespace: str) -> 
     target = reports[0]  # 最新 report 产物（projector 从新到旧取 structures）
     existing = target.get("structures") or {}
     run_ids = {str(a["run_id"]) for a in reports if a.get("run_id")}
+    run_ids |= {str(r) for r in (extra_run_ids or set())}
     attempts = _submit_attempts(events, run_ids)
     if not attempts:
         return {"entity": f"{kind}:{eid}", "skip": "事件日志无 submit_structures 提交",
@@ -147,7 +154,8 @@ def apply_recovery(kb, metrics, events, report: dict[str, Any], namespace: str,
     limits = list(doc.get("limitations") or [])
     note = (
         f"structures 由 scripts/recover_structures.py 从提交日志回收"
-        f"（{sorted(merge)}；原提交因旧契约形状校验被拒，见 research/structures_recovered 事件）"
+        f"（{sorted(merge)}；原提交未进入产物——形状被拒或运行未定稿，"
+        f"见 research/structures_recovered 事件）"
     )
     if note not in limits:
         limits.append(note)
@@ -191,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--namespace", default="prod")
     ap.add_argument("--entity", action="append", default=[],
                     help="kind:id（可重复；缺省 = 全部实体）")
+    ap.add_argument("--run-id", dest="run_ids", action="append", default=[],
+                    help="额外扫描的 run_id（可重复；用于回收未定稿 run 里的提交）")
     ap.add_argument("--apply", action="store_true", help="写库（默认 dry-run）")
     args = ap.parse_args(argv)
 
@@ -205,7 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     changed = 0
     for kind, eid in targets:
-        report = recover_entity(kb, metrics, events, kind, eid, args.namespace)
+        report = recover_entity(kb, metrics, events, kind, eid, args.namespace,
+                                extra_run_ids=set(args.run_ids))
         if report.get("skip"):
             continue
         merge = report.get("structures_to_merge") or {}

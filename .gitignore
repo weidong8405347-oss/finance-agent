@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
+# 离线导出 viewer 构建产物（npm run build:export；HTML 导出内嵌用）
+dist-export/
 build/
 .pytest_cache/
 .ruff_cache/

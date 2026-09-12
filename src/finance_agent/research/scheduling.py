@@ -267,9 +267,14 @@ def build_schedule(
                     by_group[target]["fields"].append(f)
             folded.append({"from_group": group, "into_group": target,
                            "fields": list(src["fields"])})
-    elif pending and not question_groups and not globals_:
-        # 计划里全是无模块问题：单组承载（不建 N 个空组）
-        _slot(_FALLBACK_GROUP)
+    elif pending and not question_groups:
+        # 计划里全是无模块问题（targeted 自定义问题 = 全局问题）：单组承载，
+        # 且全局问题必须并入该组——否则档案无字段缺口时（完整度 1.0 的定向补研）
+        # 没有任何 worker 承载它们，unassigned 误报装配缺陷（fail-loud 假阳性）。
+        slot = _slot(_FALLBACK_GROUP)
+        for qid in globals_:
+            if qid not in slot["question_ids"]:
+                slot["question_ids"].append(qid)
 
     # 全局问题对每个 worker 可见（回答幂等，重复推进无害）
     for slot in by_group.values():

@@ -30,7 +30,7 @@ def test_cli_research_real_without_provider_fails_actionably(tmp_path, capsys, m
     # 钉住 provider 解析接缝：只看 env（隔离本机真实 pi 配置，防误打付费 API）
     from finance_agent.llm.router import LLMRouter
 
-    monkeypatch.setattr("finance_agent.cli._router", lambda: LLMRouter.from_env())
+    monkeypatch.setattr("finance_agent.cli._router", lambda data_dir=None: LLMRouter.from_env())
     rc = main(["research", "--ticker", "AAA", "--data-dir", str(tmp_path)])
     assert rc == 2  # 非零退出码（SystemExit 由 __main__ 层转换）
     err = capsys.readouterr().err

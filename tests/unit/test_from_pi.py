@@ -61,6 +61,18 @@ def test_from_pi_loads_openai_compatible_providers(tmp_path):
     assert kimi.spec.effort == "max"
     assert kimi._timeout == 300.0  # noqa: SLF001
 
+    # GPT 异构补强（2026-09 裁决修订）：research-alt 与 judge 由 gpt-5.6-sol 承担，
+    # novita 实测 reasoning_effort 最高档为 "xhigh"（不支持 "max"）
+    alt = router.get("research-alt")
+    assert alt.spec.model == "pa/gpt-5.6-sol"
+    assert alt.spec.api_key == "sk-novita"
+    assert alt.spec.effort == "xhigh"
+    assert alt._timeout == 300.0  # noqa: SLF001
+    judge = router.get("judge")
+    assert judge.spec.model == "pa/gpt-5.6-sol"
+    assert judge.spec.effort == "xhigh"
+    assert judge._timeout == 300.0  # noqa: SLF001
+
     # provider 名直取不受角色路由影响；未配置 effort 的不下发该参数
     gpt = router.get("novita-gpt")
     assert gpt.spec.base_url == "https://api.novita.ai/openai/v1"

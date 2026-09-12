@@ -4,7 +4,8 @@
   dossier/published 事件（changed_modules 供 UI 提示）；
 - module：从冻结快照的 context 重投影同一 as_of 的模块 payload（不自动跳最新）；
 - changes：两个快照之间的数据/claim/来源/质量 diff；
-- export：JSON/Markdown 冻结导出（与页面同源，绑定 data_hash）；
+- export：JSON/Markdown/HTML 冻结导出（与页面同源，绑定 data_hash；
+  HTML 为自包含交互导出，内嵌与在线页面同一组件源码的 viewer 包）；
 - 失败可见：publish 失败落 dossier/publish_failed 事件 + 日志（三通道纪律）。
 """
 
@@ -13,13 +14,17 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..eventstore.events import DOSSIER_PUBLISH_FAILED, DOSSIER_PUBLISHED, Event
 from ..eventstore.store import EventStore
 from ..knowledge.metric_store import MetricStore
 from ..knowledge.store import BitemporalStore
+from .changes import compute_change_log
 from .models import MODULE_IDS, ModulePayload
+from .positioning import build_quadrant
+from .profit_pool import build_profit_pool
 from .projector import (
     DossierProjector,
     business_graph,
@@ -49,6 +54,7 @@ class DossierService:
         events: EventStore | None = None,
         decisions: Any | None = None,
         recipes_dir: str | None = None,
+        export_bundle_dir: str | Path | None = None,
     ):
         self._kb = kb
         self._metrics = metrics
@@ -56,6 +62,8 @@ class DossierService:
         self._projector = projector or DossierProjector(
             kb=kb, metrics=metrics, decisions=decisions, recipes_dir=recipes_dir
         )
+        # HTML 导出 viewer 包目录（§11.4）；None → 导出时按 FA_EXPORT_BUNDLE_DIR/默认推导
+        self._export_bundle_dir = Path(export_bundle_dir) if export_bundle_dir else None
 
     # ---------------- 打开/发布 ----------------
 
@@ -79,7 +87,14 @@ class DossierService:
             short = snapshot.data_hash.split(":", 1)[-1][:12]
             snapshot.context.snapshot_id = f"dossier-{entity_id.lower()}-{short}"
             payload = snapshot.model_dump(mode="json")
-            previous = self._metrics.latest_snapshot(entity_kind, entity_id, namespace=namespace)
+            # What Changed（§32）：live 发布序列内相对上一快照的结构化 diff，冻结进快照
+            # （历史/as_of 投影不算「发布」，不产生变化日志，也不进入基线序列）
+            previous = self._metrics.latest_snapshot(
+                entity_kind, entity_id, namespace=namespace,
+                mode="live" if ctx.mode == "live" else ctx.mode,
+            )
+            if ctx.mode == "live":
+                payload["change_log"] = compute_change_log(previous, payload)
             snapshot_id, created = self._metrics.save_snapshot(
                 snapshot_id=snapshot.context.snapshot_id, namespace=namespace, payload=payload
             )
@@ -127,19 +142,10 @@ class DossierService:
         snap = self.get(snapshot_id)
         ctx = snap["context"]
         entity = snap["entity"]
-        # 模块白名单由注册表决定（audit §3.6）：行业模块（industry_chain/candidate_pool）
-        # 不再是「未知模块 422」
-        from . import registry as module_registry
-
-        known = {m.module_id for m in module_registry.modules_for(entity["kind"])}
-        if module not in known and module not in MODULE_IDS \
-                and module not in ("legacy_audit", "timeline"):
-            raise DossierError(
-                f"未知模块 {module!r}（可用：{sorted(known)}）", status=422
-            )
+        kind, eid = entity["kind"], entity["id"]
+        self._assert_module_known(entity["kind"], module)
         t = datetime.fromisoformat(ctx["as_of"])
         ns = ctx["namespace"]
-        kind, eid = entity["kind"], entity["id"]
         state = snap["modules"].get(module, {"status": "missing", "reasons": []})
         payload = self._build_module_payload(kind, eid, module, t, ns, snap, params or {})
         # 数据漂移检测：同一上下文重投影（不落库），hash 不一致 = 有回填数据 → 提示刷新
@@ -164,6 +170,75 @@ class DossierService:
         if refresh:
             out.reasons = [*out.reasons, "底层数据已有更新（刷新可切到新快照）"]
         return out
+
+    @staticmethod
+    def _assert_module_known(entity_kind: str, module: str) -> None:
+        # 模块白名单由注册表决定（audit §3.6）：行业模块（industry_chain/candidate_pool）
+        # 不再是「未知模块 422」
+        from . import registry as module_registry
+
+        known = {m.module_id for m in module_registry.modules_for(entity_kind)}
+        if module not in known and module not in MODULE_IDS \
+                and module not in ("legacy_audit", "timeline"):
+            raise DossierError(
+                f"未知模块 {module!r}（可用：{sorted(known)}）", status=422
+            )
+
+    def module_payload_for_export(self, snapshot_id: str, module: str) -> dict[str, Any]:
+        """HTML 导出用模块 payload（§11.4）：与在线模块接口同源（同一
+        _build_module_payload 与状态），但不做漂移重投影——导出内容以冻结快照为准。"""
+        snap = self.get(snapshot_id)
+        ctx = snap["context"]
+        entity = snap["entity"]
+        self._assert_module_known(entity["kind"], module)
+        t = datetime.fromisoformat(ctx["as_of"])
+        state = snap["modules"].get(module, {"status": "missing", "reasons": []})
+        payload = self._build_module_payload(
+            entity["kind"], entity["id"], module, t, ctx["namespace"], snap, {}
+        )
+        return ModulePayload(
+            module=module,
+            snapshot_id=snapshot_id,
+            status=state.get("status", "missing"),
+            reasons=state.get("reasons", []),
+            as_of=ctx["as_of"],
+            payload=payload,
+        ).model_dump(mode="json")
+
+    def evidence_detail(self, snapshot_id: str, evidence_id: str) -> dict[str, Any]:
+        """快照可见性约束内的证据摘录：仅允许该快照引用的证据（知道 id 也不能
+        绕过快照过滤）。在线路由与 HTML 导出共用本方法（§11.4 同源纪律）。"""
+        snap = self.get(snapshot_id)
+        if evidence_id not in snap.get("evidence_refs", []):
+            raise DossierError(
+                f"快照 {snapshot_id} 未引用证据 {evidence_id}（不允许越快照读取）",
+                status=404,
+            )
+        try:
+            ev = self._kb.get_evidence(evidence_id)
+        except Exception as e:
+            raise DossierError(f"证据不可解析: {e}", status=404) from e
+        document = None
+        for ref in snap.get("document_refs", []):
+            doc = self._metrics.get_document(ref)
+            if doc is not None and doc.url == ev.url:
+                document = doc.model_dump(mode="json")
+                break
+        return {
+            "evidence_id": ev.evidence_id,
+            "provider_id": ev.source_id,  # 命名三层：旧 source_id = provider 层
+            "document": document,
+            "url": ev.url,
+            "verbatim_quote": ev.verbatim_quote,
+            "available_at": ev.available_at.isoformat() if ev.available_at else None,
+            "retrieved_at": ev.retrieved_at.isoformat(),
+            "pit_grade": ev.pit_grade.value,
+            "raw_ref": ev.raw_ref,
+        }
+
+    def artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        """研究产物读取薄封装（HTML 导出收集用；不存在返回 None 而不是抛错）。"""
+        return self._metrics.get_artifact(artifact_id)
 
     def _frozen_view(self, snap: dict[str, Any]) -> dict[str, Any]:
         """按快照冻结的输入版本集读数据（review #2）：模块/来源/序列请求不再
@@ -237,6 +312,9 @@ class DossierService:
             return {
                 "summary": snap.get("summary", {}),
                 "claims": [_claim_item(c) for c in claims[:20]],
+                # Investment Objects（§13）：冻结快照内推导的 ThesisObject；
+                # 旧快照无此字段 → 前端回退现有 ClaimItem 渲染
+                "theses": (snap.get("investment_objects") or {}).get("theses") or [],
                 "assessment": self._latest_assessment(entity_kind, entity_id, ns, t),
                 "notes": frozen_note,
             }
@@ -257,6 +335,9 @@ class DossierService:
                 payload["routes"] = imap.get("routes") or []
                 payload["bottlenecks"] = imap.get("bottlenecks") or []
                 payload["value_flow_note"] = imap.get("value_flow_note") or ""
+                # Profit Pool（§22/§48.4）：value_flow 边有定量份额时才产生；
+                # 单一来源标 Estimated；份额合计偏离 100% 归 notes，不归一化
+                payload["profit_pool"] = build_profit_pool(imap)
                 payload["limitations"] = imap.get("limitations") or []
                 if not payload["nodes"]:
                     payload["notes"].append(
@@ -281,11 +362,17 @@ class DossierService:
                     "尚无结构化候选评估（CandidateAssessment）：下方为旧字段与同业观测，"
                     "不能当作筛选结果（入选/淘汰/待核实原因缺失）"
                 )
+            # 四象限坐标（§20）：离散阶段的规范序映射，不是评分；无法映射的公司
+            # 进 unpositioned（不塞进图里）。纯函数推导，与冻结结构同源。
+            quadrant = build_quadrant(candidates) if candidates else None
             return {
                 "candidates": candidates,
                 "criteria": assessment.get("criteria") or [],
                 "objective": assessment.get("objective") or "",
                 "stage_definitions": assessment.get("stage_definitions") or {},
+                "quadrant": quadrant,
+                # 护城河十维骨架（§28）：评分留空待评级证据通道；证据组为候选评估原文
+                "moat_assessments": (snap.get("investment_objects") or {}).get("moat_assessments") or [],
                 "comparison": matrix,
                 # 对照矩阵的可绘图数值（升级方案 §9 Ranked Bar）：服务端从冻结观测
                 # 按 observation_ids 解析十进制值——前端不从展示字符串（"106,303" "+287.2%"）猜数
@@ -396,6 +483,15 @@ class DossierService:
                 notes.append("无 consensus 快照——只比较公司指引（缺快照不可回填）")
             if not g:
                 notes.append("本模块数据能力缺口：无指引/一致预期观测")
+            # 预期差图表数据源（§26）：① revision 视图——同一目标期间的一致预期快照
+            # 按可知时刻排列（x=快照时刻，非目标期间）；② 价格序列（share_price 观测，
+            # x=交易日）。两者都齐才出 Price vs Revision 图；缺一则如实说明。
+            revision_series = _revision_series(observations)
+            price_points = _price_points(observations)
+            if not revision_series:
+                notes.append("无一致预期修订序列（consensus_eps/consensus_revenue 的多时点快照）")
+            if not price_points:
+                notes.append("无价格 typed 观测（share_price）——Price vs Revision 图不可画")
             return {
                 # guidance/consensus 各自成序列（nature 进语义键，review #15）
                 "guidance_consensus": series_set(g, sorted({o.metric_key for o in g}),
@@ -403,6 +499,8 @@ class DossierService:
                 "actuals": series_set(actuals, sorted({o.metric_key for o in actuals})[:6],
                                       conflicted_sems=conflicted).model_dump(mode="json"),
                 "guidance_delta": calcs,
+                "revision_series": revision_series,
+                "price_series": price_points,
                 "notes": notes,
             }
         if module == "valuation_lab":
@@ -559,7 +657,11 @@ class DossierService:
         }
 
     def export(self, snapshot_id: str, fmt: str = "json") -> tuple[str, str]:
-        """冻结导出（§11.4 第一期 JSON+Markdown）：返回 (文件名, 内容)。"""
+        """冻结导出（§11.4：JSON/Markdown/HTML）：返回 (文件名, 内容)。
+
+        HTML = 自包含交互导出：内嵌 viewer 包（与在线页面同一组件源码）与该快照
+        的全部冻结读模型，file:// 离线可开、交互与在线一致（服务器依赖操作除外）。
+        """
         snap = self.get(snapshot_id)
         entity = snap["entity"]
         stamp = snap["context"]["as_of"][:10]
@@ -575,7 +677,15 @@ class DossierService:
                 f"dossier-{entity['id']}-{stamp}.md",
                 render_snapshot_markdown(snap, self._kb, self._metrics),
             )
-        raise DossierError(f"未知导出格式 {fmt!r}（第一期支持 json/markdown）", status=422)
+        if fmt == "html":
+            from .export_html import default_bundle_dir, render_snapshot_html
+
+            bundle_dir = self._export_bundle_dir or default_bundle_dir()
+            return (
+                f"dossier-{entity['id']}-{stamp}.html",
+                render_snapshot_html(snap, self, bundle_dir),
+            )
+        raise DossierError(f"未知导出格式 {fmt!r}（支持 json/markdown/html）", status=422)
 
     # ---------------- 实体列表（v2） ----------------
 
@@ -731,6 +841,72 @@ def re_split_peers(text: str) -> list[str]:
     import re
 
     return [p for p in re.split(r"[,，;；、\s]+", text) if p and len(p) <= 12]
+
+
+#: 一致预期修订视图覆盖的指标键（§25：EPS/收入为主；EBITDA/FCF 同结构兼容）
+_REVISION_KEYS = frozenset({
+    "consensus_eps", "eps_consensus", "consensus_revenue", "revenue_consensus",
+    "consensus_ebitda", "consensus_fcf",
+})
+
+#: 价格序列指标键（股价的 typed 观测；evaluation 价簿口径不变，本键是档案登记口径）
+_PRICE_KEYS = ("share_price", "price_close")
+
+
+def _revision_series(observations: list[Any]) -> list[dict[str, Any]]:
+    """一致预期修订视图（§26 Revision Line）：同一目标期间的多个 consensus 快照
+    按可知时刻升序排列（x = 快照可知时刻，不是目标期间——「预期随时间怎么变」）。
+
+    纯搬移：value 是十进制字符串原文；每个点带 observation_id 可回溯。
+    """
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for o in observations:
+        if o.nature != "consensus" or o.metric_key not in _REVISION_KEYS:
+            continue
+        if o.value is None or o.status != "ok":
+            continue
+        period_label = o.period.fiscal_label or o.period.end.isoformat()
+        groups.setdefault((o.metric_key, period_label), []).append(o)
+    out: list[dict[str, Any]] = []
+    for (metric_key, period_label), group in sorted(groups.items()):
+        group.sort(key=lambda o: o.knowledge_time)
+        out.append({
+            "metric_key": metric_key,
+            "period_label": period_label,
+            "unit": group[0].unit,
+            "currency": group[0].currency,
+            "points": [
+                {
+                    "at": o.knowledge_time.isoformat(),
+                    "value": o.value,
+                    "observation_id": o.observation_id,
+                    "evidence_refs": list(o.evidence_refs),
+                }
+                for o in group
+            ],
+        })
+    return out
+
+
+def _price_points(observations: list[Any]) -> list[dict[str, Any]]:
+    """价格序列（§26 Price vs Revision 的 Price 腿）：share_price typed 观测按
+    期间（交易日）升序；值是十进制字符串原文（前端绘图边界才转 number）。"""
+    pts = [
+        o for o in observations
+        if o.metric_key in _PRICE_KEYS and o.nature == "reported"
+        and o.value is not None and o.status == "ok" and not o.dimensions
+    ]
+    pts.sort(key=lambda o: o.period.end)
+    return [
+        {
+            "at": o.period.end.isoformat(),
+            "value": o.value,
+            "currency": o.currency,
+            "observation_id": o.observation_id,
+            "evidence_refs": list(o.evidence_refs),
+        }
+        for o in pts
+    ]
 
 
 def _comparison_numerics(matrix: dict[str, Any], observations: list[Any]) -> list[dict[str, Any]]:

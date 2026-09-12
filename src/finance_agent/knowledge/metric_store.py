@@ -1301,13 +1301,21 @@ class MetricStore:
         return json.loads(row[0]) if row else None
 
     def latest_snapshot(
-        self, entity_kind: str, entity_id: str, *, namespace: str = "prod"
+        self, entity_kind: str, entity_id: str, *, namespace: str = "prod",
+        mode: str | None = None,
     ) -> dict[str, Any] | None:
-        row = self._conn.execute(
+        """最新发布快照；mode 给定时只在该模式序列内取（change_log 的「上一发布
+        快照」必须来自同一 live 序列，不回退比较历史 as_of 投影）。"""
+        sql = (
             "SELECT payload_json FROM dossier_snapshots WHERE namespace = ?"
-            " AND entity_kind = ? AND entity_id = ? ORDER BY created_at DESC LIMIT 1",
-            (namespace, entity_kind, entity_id),
-        ).fetchone()
+            " AND entity_kind = ? AND entity_id = ?"
+        )
+        params: list[Any] = [namespace, entity_kind, entity_id]
+        if mode is not None:
+            sql += " AND mode = ?"
+            params.append(mode)
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        row = self._conn.execute(sql, params).fetchone()
         return json.loads(row[0]) if row else None
 
     def list_entities_with_snapshots(self, *, namespace: str = "prod") -> list[tuple[str, str]]:

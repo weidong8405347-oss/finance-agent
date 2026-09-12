@@ -65,7 +65,12 @@ STOCK_MODULES: tuple[ModuleSpec, ...] = (
                legacy_fields=("revenue_fy", "net_income_fy", "cash_flow"),
                question_modules=("financial_quality",)),
     ModuleSpec("expectations", "预期差", "expectation_table",
-               metric_keys=("share_dilution",), question_modules=("expectations",)),
+               metric_keys=("share_dilution", "consensus_eps", "consensus_revenue",
+                            "consensus_ebitda", "consensus_fcf", "eps_actual",
+                            "eps_guidance", "eps_consensus"),
+               question_modules=("expectations",),
+               notes="consensus_* 键为一致预期快照（nature=consensus）；"
+                     "无 consensus 快照时模块如实降级（不虚构一致预期）"),
     ModuleSpec("valuation_lab", "估值实验", "valuation_lab",
                metric_keys=("market_cap", "enterprise_value", "share_price"),
                legacy_fields=("valuation",), question_modules=("valuation", "valuation_lab")),
